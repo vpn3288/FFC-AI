@@ -426,10 +426,10 @@ Channel output MUST NOT contain:
 Commands:
 
 ```text
-/凭据 添加
-/凭据 列表
-/凭据 测试 <handle>
-/凭据 删除 <handle>
+/ai 凭据 添加
+/ai 凭据 列表
+/ai 凭据 测试 <handle>
+/ai 凭据 删除 <handle>
 ```
 
 The platform collects input through modal, one-time upload URL, or local CLI fallback. The AI runner credential broker stores, decrypts, and executes.
@@ -441,16 +441,16 @@ General chat privacy is out of scope. Credential plaintext in ordinary chat hist
 Commands:
 
 ```text
-/全局 查看
-/全局 设置
-/全局 追加
-/全局 替换
-/全局 回滚 <snapshot>
-/项目 查看
-/项目 设置
-/项目 追加
-/项目 替换
-/项目 回滚 <snapshot>
+/ai 全局 查看
+/ai 全局 设置
+/ai 全局 追加
+/ai 全局 替换
+/ai 全局 回滚 <snapshot>
+/ai 项目 查看
+/ai 项目 设置
+/ai 项目 追加
+/ai 项目 替换
+/ai 项目 回滚 <snapshot>
 ```
 
 Rules:
@@ -466,9 +466,9 @@ Rules:
 Commands:
 
 ```text
-/说明
-/说明 生成 <id>
-/说明 编辑 <id>
+/ai 说明
+/ai 说明 生成 <id>
+/ai 说明 编辑 <id>
 ```
 
 Rules:

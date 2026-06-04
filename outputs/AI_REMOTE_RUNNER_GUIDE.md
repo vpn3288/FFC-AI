@@ -280,6 +280,7 @@ env -i \
   HTTPS_PROXY="$CLAUDE_HTTPS_PROXY" \
   NO_PROXY="$NO_PROXY" \
   claude -p --bare \
+    --model "claude-opus-4-6-20260130" \
     --output-format json \
     --max-turns "$CLAUDE_MAX_TURNS" \
     --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" \
@@ -294,19 +295,19 @@ env -i \
 `edit_approved` MUST require explicit preview/approval:
 
 ```bash
-claude -p --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write" --disallowedTools "Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+claude -p --model "claude-opus-4-6-20260130" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write" --disallowedTools "Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
 ```
 
 `shell_approved` MUST require explicit preview/approval:
 
 ```bash
-claude -p --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write,Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+claude -p --model "claude-opus-4-6-20260130" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write,Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
 ```
 
 `continue_mode` MUST NOT use `--no-session-persistence`:
 
 ```bash
-claude -p --output-format json --continue --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "$CLAUDE_TOOLS_FOR_CONTINUE" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+claude -p --model "claude-opus-4-6-20260130" --output-format json --continue --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "$CLAUDE_TOOLS_FOR_CONTINUE" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
 ```
 
 Command construction rules:
@@ -416,20 +417,20 @@ Rules:
 - Optional unresolved items MUST NOT block `core_ready`.
 - `optional_bundle_ready` requires selected optional items to be resolved, pinned, and installed.
 - External tools MUST be pinned by version, checksum, commit, or release tag before automated install.
-- Installed optional items MUST appear in `/功能`, `/命令`, and `/`.
+- Installed optional items MUST appear in `/ai 功能`, `/ai 命令`, and `/ai 帮助`.
 - Newly installed items MUST receive Chinese description metadata.
 
 Phone commands:
 
 ```text
-/扩展 列表
-/扩展 安装 <id>
-/扩展 启用 <id>
-/扩展 禁用 <id>
-/工具 列表
-/工具 安装 <id>
-/mcp 列表
-/mcp 启用 <id>
+/ai 扩展 列表
+/ai 扩展 安装 <id>
+/ai 扩展 启用 <id>
+/ai 扩展 禁用 <id>
+/ai 工具 列表
+/ai 工具 安装 <id>
+/ai mcp 列表
+/ai mcp 启用 <id>
 ```
 
 ## 8. Conversation Policy
@@ -445,14 +446,14 @@ ask_each_request
 Commands:
 
 ```text
-/新对话
-/new
-/继续
-/continue
-/每次新对话
-/mode new_each
-/持续对话
-/mode continue
+/ai 新对话
+/ai new
+/ai 继续
+/ai continue
+/ai 每次新对话
+/ai mode new_each
+/ai 持续对话
+/ai mode continue
 ```
 
 Rules:
@@ -460,7 +461,7 @@ Rules:
 - `new_each_request` MUST create a fresh provider conversation for every user task.
 - `continue` MUST reuse the selected conversation only when provider continuation is safe.
 - If provider continuation is unavailable, runner MUST emulate continuation using compacted summary context.
-- `/status` MUST show current policy, provider, workspace, and conversation id.
+- `/ai 状态` MUST show current policy, provider, workspace, and conversation id.
 
 ## 9. Instruction Files
 
@@ -474,18 +475,18 @@ Canonical files:
 Phone commands:
 
 ```text
-/全局 查看
-/全局 设置
-/全局 追加
-/全局 替换
-/全局 回滚 <snapshot>
-/全局 清空
-/项目 查看
-/项目 设置
-/项目 追加
-/项目 替换
-/项目 回滚 <snapshot>
-/项目 清空
+/ai 全局 查看
+/ai 全局 设置
+/ai 全局 追加
+/ai 全局 替换
+/ai 全局 回滚 <snapshot>
+/ai 全局 清空
+/ai 项目 查看
+/ai 项目 设置
+/ai 项目 追加
+/ai 项目 替换
+/ai 项目 回滚 <snapshot>
+/ai 项目 清空
 ```
 
 Rules:
@@ -511,14 +512,14 @@ Provider application:
 Commands:
 
 ```text
-/
-/帮助
-/命令
-/功能
-/索引
-/说明
-/说明 生成 <id>
-/说明 编辑 <id>
+/ai
+/ai 帮助
+/ai 命令
+/ai 功能
+/ai 索引
+/ai 说明
+/ai 说明 生成 <id>
+/ai 说明 编辑 <id>
 ```
 
 `/ai 帮助` MUST show a categorized Chinese index.
@@ -557,7 +558,7 @@ Chinese description rules:
 - Install of any skill/CLI/MCP extension MUST register `description_zh`.
 - Description generation MUST NOT modify the installed code.
 - If no metadata exists, index MUST show `说明缺失`.
-- `/说明 生成 <id>` MAY generate metadata from README/help/manifest.
+- `/ai 说明 生成 <id>` MAY generate metadata from README/help/manifest.
 - If AI generation is used, mark `description_source=generated_ai`.
 
 ## 11. Context Telemetry And Compaction
@@ -581,11 +582,11 @@ Context state:
 Commands:
 
 ```text
-/上下文
-/context
-/压缩
-/compact
-/整理上下文
+/ai 上下文
+/ai context
+/ai 压缩
+/ai compact
+/ai 整理上下文
 ```
 
 Rules:
@@ -755,11 +756,11 @@ custom
 Commands:
 
 ```text
-/凭据 添加
-/凭据 列表
-/凭据 测试 <handle>
-/凭据 删除 <handle>
-/凭据 授权 <handle> <agent> <action> <duration>
+/ai 凭据 添加
+/ai 凭据 列表
+/ai 凭据 测试 <handle>
+/ai 凭据 删除 <handle>
+/ai 凭据 授权 <handle> <agent> <action> <duration>
 ```
 
 Record schema:
@@ -878,7 +879,7 @@ Budget enforcement:
 If exceeded:
 
 - reject new model calls;
-- allow `/状态`, `/上下文`, `/预算`, `/压缩`, `/新对话`;
+- allow `/ai 状态`, `/ai 上下文`, `/ai 预算`, `/ai 压缩`, `/ai 新对话`;
 - post phone alert;
 - require admin reset.
 
@@ -926,15 +927,15 @@ If `count_tokens` fails:
 
 Core-ready requires:
 
-- `/状态` works from phone.
+- `/ai 状态` works from phone.
 - `/ai 帮助` returns Chinese index.
-- `/压缩` works natively or emulated.
-- `/新对话` starts fresh conversation.
-- `/每次新对话` changes policy.
-- `/上下文` shows native/estimated/unknown context state.
-- `/全局 设置` changes `global.md` after confirmation.
-- `/项目 追加` changes `project.md`.
-- `/凭据 添加` creates handle.
+- `/ai 压缩` works natively or emulated.
+- `/ai 新对话` starts fresh conversation.
+- `/ai 每次新对话` changes policy.
+- `/ai 上下文` shows native/estimated/unknown context state.
+- `/ai 全局 设置` changes `global.md` after confirmation.
+- `/ai 项目 追加` changes `project.md`.
+- `/ai 凭据 添加` creates handle.
 - credential handle can run approved SSH test.
 - AI prompt never receives secret plaintext.
 - Claude Code adapter uses `--tools`, not `--allowedTools`, for restriction.

@@ -7,7 +7,9 @@ Style: AI-only executable specification. Human readability is not a goal.
 
 ## 1. Objective
 
-The system SHALL iteratively produce and refine implementation guidance for a self-hosted mobile-controlled AI operations stack.
+The system SHALL iteratively produce, test, review, and refine implementation scripts for a self-hosted mobile-controlled AI operations stack.
+
+The loop MUST run in infinite convergence mode. It MUST NOT stop because a fixed round count was reached. It MAY stop only when every maintained guidance file and every implementation script satisfies the quality gate with open P0 count = 0, open P1 count = 0, open P2 count = 0, missing required functionality = empty, and all required smoke tests passing.
 
 The stack SHALL support:
 
@@ -34,12 +36,22 @@ Privacy/stealth MUST NOT be optimized beyond minimum credential safety, remote-e
 
 ## 2. Maintained Files
 
-The master-writer AI MUST maintain exactly these output files:
+The master-writer AI MUST maintain exactly these guidance output files:
 
 ```text
 outputs/AI_ITERATION_FACTORY_GUIDE.md
 outputs/AI_REMOTE_RUNNER_GUIDE.md
 outputs/COMMUNICATION_PLATFORM_GUIDE.md
+```
+
+The master-writer AI MUST also maintain implementation artifacts under:
+
+```text
+scripts/
+src/
+tests/
+versions.lock
+work/iteration-state.json
 ```
 
 `AI_ITERATION_FACTORY_GUIDE.md` defines the writer/reviewer loop.
@@ -156,14 +168,17 @@ Each round MUST execute:
 1. Read the three maintained files.
 2. Compute SHA256 for each file.
 3. Apply new user requirements.
-4. Produce revised files.
+4. Produce revised guidance files and implementation script changes.
 5. Start fresh Claude Code review.
 6. Start fresh GPT-5.5 review.
 7. Wait for both reviews or record timeout.
 8. Merge review findings.
-9. Fix P0/P1 and missing user requirements.
-10. Update `work/iteration-state.json`.
-11. Stop only if quality gate passes or stopping condition triggers.
+9. Fix P0/P1/P2 findings and missing required functionality.
+10. Run script smoke tests.
+11. Update `work/iteration-state.json`.
+12. Commit the optimization.
+13. Push the optimization to GitHub.
+14. Continue the next round unless the infinite convergence gate passes.
 
 ## 5. Iteration State
 
@@ -172,7 +187,7 @@ The loop MUST maintain:
 ```json
 {
   "round": 0,
-  "max_rounds": 10,
+  "mode": "infinite_convergence",
   "min_score": 90,
   "max_usd": 25.0,
   "spent_usd_estimate": 0.0,
@@ -190,7 +205,10 @@ The loop MUST maintain:
   "score_history": [],
   "open_p0": 0,
   "open_p1": 0,
+  "open_p2": 0,
   "missing_user_requirements": [],
+  "script_smoke_tests_passing": false,
+  "last_github_push": null,
   "stop_reason": null
 }
 ```
@@ -202,7 +220,11 @@ Pass requires:
 - score >= 90;
 - open P0 count = 0;
 - open P1 count = 0;
+- open P2 count = 0;
 - missing user requirements = empty;
+- implementation scripts exist for runner install, communication install, rollback, bridge, providers, commands, credentials, budget, context, instruction files, and smoke tests;
+- implementation smoke tests pass locally;
+- latest optimization commit has been pushed to GitHub;
 - Telegram absent except as explicit prohibition;
 - Mattermost selected as primary platform;
 - Matrix/Synapse selected as fallback platform;

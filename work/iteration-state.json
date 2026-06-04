@@ -1,0 +1,27 @@
+{
+  "round": 1,
+  "mode": "infinite_convergence",
+  "min_score": 90,
+  "max_usd": 25.0,
+  "spent_usd_estimate": 0.5159375,
+  "score_history": [
+    {
+      "round": 1,
+      "reviewer": "claude-code",
+      "score": 60,
+      "open_p0": 0,
+      "open_p1": 12,
+      "open_p2": 4
+    }
+  ],
+  "open_p0": 0,
+  "open_p1": 12,
+  "open_p2": 4,
+  "missing_user_requirements": [
+    "implementation scripts were absent before round 1 patch"
+  ],
+  "script_smoke_tests_passing": true,
+  "latest_patch_summary": "Round 1 added executable runner modules, installer entrypoints, command parser, HMAC bridge primitives, budget ledger, credential handles, instruction snapshots, provider discovery, and smoke tests. Fresh review is still required before lowering open issue counts.",
+  "last_github_push": null,
+  "stop_reason": null
+}

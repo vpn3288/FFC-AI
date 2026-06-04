@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+work/smoke-state*/
+work/smoke-workspaces*/
+work/test-state*/
+work/test-workspaces*/
+work/dry-state*/
+work/dry-workspaces*/

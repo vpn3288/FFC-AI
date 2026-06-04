@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DRY_RUN=false
+STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
+WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-/srv/ai-workspaces}"
+INSTALL_ROOT="${AI_REMOTE_INSTALL_ROOT:-/opt/ai-remote-runner}"
+CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6-20260130}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
+
+usage() {
+  printf 'usage: %s [--dry-run]\n' "$0"
+}
+
+log() {
+  printf '[install-runner] %s\n' "$*"
+}
+
+run() {
+  if [ "$DRY_RUN" = true ]; then
+    printf '[dry-run] %s\n' "$*"
+  else
+    "$@"
+  fi
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+  shift
+done
+
+log 'stage 01: detect OS, WSL, architecture, systemd availability, shell, PATH'
+OS_ID="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-unknown}")"
+ARCH="$(uname -m)"
+SYSTEMD=false
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  SYSTEMD=true
+fi
+WSL=false
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  WSL=true
+fi
+
+log "detected os=$OS_ID arch=$ARCH systemd=$SYSTEMD wsl=$WSL"
+
+log 'stage 02: install system packages required by runner'
+if command -v apt-get >/dev/null 2>&1; then
+  run sudo apt-get update
+  run sudo apt-get install -y python3 ca-certificates curl git openssl
+else
+  log 'apt-get unavailable; package installation skipped and must be handled externally'
+fi
+
+log 'stage 03: install or verify Claude Code'
+if command -v claude >/dev/null 2>&1; then
+  claude --version
+else
+  log 'claude missing; install from official Claude Code docs before core_ready'
+fi
+
+log 'stage 04: install or verify Codex CLI'
+if command -v codex >/dev/null 2>&1; then
+  codex --version
+else
+  log 'codex missing; codex_status=external_prerequisite'
+fi
+
+log 'stage 05: create runner directories'
+run sudo mkdir -p "$STATE_ROOT"/{credentials,instructions/snapshots,budget} "$WORKSPACE_ROOT" "$INSTALL_ROOT"
+
+log 'stage 06: create runner configuration files'
+if [ "$DRY_RUN" = false ]; then
+  sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
+AI_REMOTE_STATE=$STATE_ROOT
+AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
+CLAUDE_MODEL=$CLAUDE_MODEL
+AI_BRIDGE_SHARED_SECRET=\${AI_BRIDGE_SHARED_SECRET:-}
+EOF
+  sudo chmod 0600 "$STATE_ROOT/config.env"
+else
+  log "would write $STATE_ROOT/config.env"
+fi
+
+log 'stage 07: create credential broker storage backend'
+run sudo chmod 0700 "$STATE_ROOT/credentials"
+
+log 'stage 08: install runner bridge service'
+if [ "$SYSTEMD" = true ]; then
+  if [ "$DRY_RUN" = false ]; then
+    sudo tee /etc/systemd/system/ai-remote-runner.service >/dev/null <<EOF
+[Unit]
+Description=AI Remote Runner Bridge
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$STATE_ROOT/config.env
+WorkingDirectory=$INSTALL_ROOT
+ExecStart=/usr/bin/python3 -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo systemctl daemon-reload
+  else
+    log 'would install /etc/systemd/system/ai-remote-runner.service'
+  fi
+else
+  if [ "$DRY_RUN" = false ]; then
+    sudo tee "$INSTALL_ROOT/run-local.sh" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}/config.env"
+exec python3 -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
+EOF
+    sudo chmod +x "$INSTALL_ROOT/run-local.sh"
+  else
+    log "would write $INSTALL_ROOT/run-local.sh"
+  fi
+fi
+
+log 'stage 09: connect runner to communication platform'
+log 'requires Mattermost/Matrix endpoint, bot token, channel IDs, and bridge shared secret'
+
+log 'stage 10: run provider smoke tests'
+python3 -m ai_remote_runner.cli providers || true
+
+log 'stage 11: run phone command smoke tests'
+python3 -m ai_remote_runner.cli parse '/ai 状态'
+python3 -m ai_remote_runner.cli index >/dev/null
+
+log 'stage 12: report core_ready or failed'
+log 'core_ready=false until bridge pairing, credential test, and phone loopback pass'
