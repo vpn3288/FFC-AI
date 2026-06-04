@@ -110,7 +110,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if cached:
                 self._json(200, cached)
                 return
-            parsed = parse_command(payload.get("raw_text", ""))
+            parsed = parse_command(payload.get("raw_text", ""), allow_bare=True)
             raw_text = payload.get("raw_text", "")
             if parsed.get("status") == "rejected" and parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/"):
                 parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": raw_text}, "requires_confirmation": False}

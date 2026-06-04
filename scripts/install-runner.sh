@@ -61,6 +61,7 @@ log 'stage 03: install or verify Claude Code'
 if command -v claude >/dev/null 2>&1; then
   claude --version
 elif command -v apt-get >/dev/null 2>&1; then
+  # Source: official Claude Code installation docs, https://code.claude.com/docs/en/installation
   run sudo install -d -m 0755 /etc/apt/keyrings
   run sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc
   if [ "$DRY_RUN" = false ]; then

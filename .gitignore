@@ -11,3 +11,7 @@ work/local-workspaces/
 work/cli-cred-state/
 work/verify-state/
 work/verify-workspaces/
+work/pre-review-state/
+work/pre-review-workspaces/
+work/post-clean-state/
+work/post-clean-workspaces/

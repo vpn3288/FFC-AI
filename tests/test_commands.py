@@ -16,6 +16,11 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertEqual(result["error"], "command_must_start_with_/ai")
 
+    def test_bare_command_allowed_when_enabled(self) -> None:
+        result = parse_command("/状态", allow_bare=True)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["canonical_action"], "status")
+
     def test_compound_command_requires_confirmation(self) -> None:
         result = parse_command("/ai 全局 替换")
         self.assertEqual(result["canonical_action"], "global_instructions.set")

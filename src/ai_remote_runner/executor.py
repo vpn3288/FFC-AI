@@ -48,6 +48,19 @@ class RunnerRuntime:
     def events(self) -> EventSink:
         return EventSink(self.state / "events.jsonl", self.webhook_url)
 
+    @property
+    def policy_path(self) -> Path:
+        return self.state / "conversation-policy.json"
+
+    def load_policy(self) -> dict[str, Any]:
+        if self.policy_path.exists():
+            return json.loads(self.policy_path.read_text(encoding="utf-8"))
+        return {"policy": "continue", "conversation_id": "default"}
+
+    def save_policy(self, policy: dict[str, Any]) -> None:
+        self.policy_path.parent.mkdir(parents=True, exist_ok=True)
+        self.policy_path.write_text(json.dumps(policy, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 def _ok(request_id: str, run_id: str | None, message_zh: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"request_id": request_id, "status": "accepted", "run_id": run_id, "message_zh": message_zh, "data": data or {}, "error": None}
@@ -94,9 +107,10 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         providers = provider_status()
         feature_data: dict[str, Any] = {"items": command_index(), "providers": providers}
         codex = next((item for item in providers if item["provider"] == "codex"), None)
+        feature_data["codex_status"] = "external_prerequisite"
+        feature_data["codex_remediation_zh"] = "Codex 若不可用，需要按当前 Codex CLI 官方说明手动安装并重新运行 /ai 提供商 列表。"
         if codex and not codex.get("available"):
             feature_data["codex_remediation_zh"] = "Codex 当前需要手动安装。请查看官方安装说明后重新运行 /ai 提供商 列表。"
-            feature_data["codex_status"] = "external_prerequisite"
         return _ok(request_id, run_id, "索引已生成", feature_data)
     if action == "budget_status":
         return _ok(request_id, run_id, "预算已生成", rt.ledger.load())
@@ -108,12 +122,22 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "task.run":
         prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
         instruction_prompt = build_instruction_prompt(rt.instructions, workspace_id)
-        conversation_id = envelope.get("conversation_id") or "default"
+        global_info = rt.instructions.show("global", workspace_id)
+        project_info = rt.instructions.show("project", workspace_id)
+        policy = rt.load_policy()
+        if envelope.get("conversation_id"):
+            conversation_id = envelope["conversation_id"]
+        elif policy.get("policy") == "new_each_request":
+            conversation_id = str(uuid.uuid4())
+        else:
+            conversation_id = policy.get("conversation_id") or "default"
         existing = rt.contexts.load(conversation_id, envelope.get("provider", "claude-code"))
         used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, prompt)
         context_state = ContextState(conversation_id, envelope.get("provider", "claude-code"), existing["context_limit_tokens"], used)
         if context_state.hard_stop:
             return _error(request_id, "context_hard_stop", "context_hard_stop")
+        if context_state.needs_warning:
+            rt.events.emit(status_event(run_id, "warning", "上下文接近上限，请考虑压缩或新对话", envelope.get("provider", "claude-code")))
         workspace = rt.workspaces / workspace_id
         workspace.mkdir(parents=True, exist_ok=True)
         provider = envelope.get("provider", "claude-code")
@@ -123,7 +147,19 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         else:
             result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, emit=emit)
         rt.contexts.add_exchange(conversation_id, provider, instruction_prompt, prompt, result.output_text)
-        return _ok(request_id, run_id, "任务已完成", {"provider": result.provider, "status": result.status, "output": result.output_text})
+        return _ok(
+            request_id,
+            run_id,
+            "任务已完成",
+            {
+                "provider": result.provider,
+                "status": result.status,
+                "output": result.output_text,
+                "conversation_id": conversation_id,
+                "global_md_sha256": global_info["sha256"],
+                "project_md_sha256": project_info["sha256"],
+            },
+        )
     if action == "compact_context":
         summary_dir = rt.state / "context-summaries"
         summary_dir.mkdir(parents=True, exist_ok=True)
@@ -162,10 +198,15 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         text = " ".join(args)
         return _ok(request_id, run_id, "指令已替换", rt.instructions.write(scope, text, workspace_id, append=False))
     if action in {"new_conversation", "continue_conversation", "set_policy_new_each_request", "set_policy_continue"}:
-        state_path = rt.state / "conversation-policy.json"
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"last_action": action, "conversation_id": str(uuid.uuid4()) if action == "new_conversation" else envelope.get("conversation_id")}
-        state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        data = rt.load_policy()
+        if action == "new_conversation":
+            data["conversation_id"] = str(uuid.uuid4())
+        elif action == "set_policy_new_each_request":
+            data["policy"] = "new_each_request"
+        elif action == "set_policy_continue":
+            data["policy"] = "continue"
+        data["last_action"] = action
+        rt.save_policy(data)
         return _ok(request_id, run_id, "会话策略已更新", data)
     if action == "workspace.list":
         rt.workspaces.mkdir(parents=True, exist_ok=True)
@@ -182,4 +223,20 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         state_path = rt.state / "workspace-selection.json"
         state_path.write_text(json.dumps({"workspace_id": args[0]}, ensure_ascii=False, indent=2), encoding="utf-8")
         return _ok(request_id, run_id, "工作区已选择", {"workspace_id": args[0]})
+    if action in {"extension.list", "tool.list", "mcp.list"}:
+        return _ok(
+            request_id,
+            run_id,
+            "扩展索引已生成",
+            {
+                "items": [
+                    {"id": "filesystem", "kind": "mcp", "installed": False, "description_zh": "文件系统访问扩展。"},
+                    {"id": "git", "kind": "mcp", "installed": False, "description_zh": "Git 仓库操作扩展。"},
+                    {"id": "opencli", "kind": "tool", "installed": False, "description_zh": "可选命令行工具。"},
+                ]
+            },
+        )
+    if action == "description.generate":
+        target = args[0] if args else "unknown"
+        return _ok(request_id, run_id, "说明已生成", {"id": target, "description_zh": f"{target} 的中文说明待人工确认。", "description_source": "generated_ai_stub"})
     return _error(request_id, "unsupported_action", action)

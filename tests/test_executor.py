@@ -70,9 +70,32 @@ class ExecutorTests(unittest.TestCase):
                 response = execute(parsed, {"request_id": "r8", "raw_text": "do work"}, runtime)
             self.assertEqual(response["status"], "accepted")
             self.assertEqual(response["data"]["output"], "done")
+            self.assertIn("global_md_sha256", response["data"])
+            self.assertIn("project_md_sha256", response["data"])
             invoke.assert_called_once()
             context_file = runtime.state / "contexts" / "default.json"
             self.assertTrue(context_file.exists())
+
+    def test_new_each_request_policy_changes_conversation_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 每次新对话"), {"request_id": "p1", "raw_text": "/ai 每次新对话"}, runtime)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake):
+                first = execute(parsed, {"request_id": "p2", "raw_text": "do work"}, runtime)
+                second = execute(parsed, {"request_id": "p3", "raw_text": "do work"}, runtime)
+            self.assertNotEqual(first["data"]["conversation_id"], second["data"]["conversation_id"])
+
+    def test_extension_and_description_handlers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            ext = execute(parse_command("/ai 扩展 列表"), {"request_id": "e1", "raw_text": "/ai 扩展 列表"}, runtime)
+            self.assertEqual(ext["status"], "accepted")
+            self.assertGreater(len(ext["data"]["items"]), 0)
+            desc = execute(parse_command("/ai 说明 生成 filesystem"), {"request_id": "e2", "raw_text": "/ai 说明 生成 filesystem"}, runtime)
+            self.assertEqual(desc["status"], "accepted")
+            self.assertEqual(desc["data"]["id"], "filesystem")
 
 
 if __name__ == "__main__":
