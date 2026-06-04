@@ -402,7 +402,7 @@ else
 fi
 log 'core_ready=false until bridge pairing, credential test, and phone loopback pass'
 if [ "$DRY_RUN" = false ] && [ -n "${MATTERMOST_WEBHOOK_URL:-}" ]; then
-  "$SCRIPT_DIR/validate-core-ready.sh"
+  bash "$SCRIPT_DIR/validate-core-ready.sh"
 else
   log 'skip core_ready validation until pairing supplies bridge secret and Mattermost webhook'
 fi

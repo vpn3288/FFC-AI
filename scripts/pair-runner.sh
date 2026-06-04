@@ -99,5 +99,5 @@ EOF
 sudo chmod 0600 "$STATE_ROOT/config.env"
 printf '[pair-runner] pairing config written; running bridge loopback validation\n'
 if [ "${PAIR_RUNNER_SKIP_VALIDATE:-false}" != true ]; then
-  AI_REMOTE_STATE="$STATE_ROOT" "$SCRIPT_DIR/validate-core-ready.sh"
+  AI_REMOTE_STATE="$STATE_ROOT" bash "$SCRIPT_DIR/validate-core-ready.sh"
 fi
