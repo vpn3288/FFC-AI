@@ -52,7 +52,7 @@ log "detected os=$OS_ID arch=$ARCH systemd=$SYSTEMD wsl=$WSL"
 log 'stage 02: install system packages required by runner'
 if command -v apt-get >/dev/null 2>&1; then
   run sudo apt-get update
-  run sudo apt-get install -y python3 python3-pip ca-certificates curl git openssl
+  run sudo apt-get install -y python3 python3-pip ca-certificates curl git openssl gpg
 else
   log 'apt-get unavailable; package installation skipped and must be handled externally'
 fi
@@ -61,6 +61,21 @@ log 'stage 03: install or verify Claude Code'
 if command -v claude >/dev/null 2>&1; then
   claude --version
 elif command -v apt-get >/dev/null 2>&1; then
+  run sudo install -d -m 0755 /etc/apt/keyrings
+  run sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc
+  if [ "$DRY_RUN" = false ]; then
+    if command -v gpg >/dev/null 2>&1; then
+      gpg --show-keys /etc/apt/keyrings/claude-code.asc | grep -q '31DD DE24 DDFA B679 F42D  7BD2 BAA9 29FF 1A7E CACE' || {
+        log 'Claude Code apt signing key fingerprint mismatch'
+        exit 1
+      }
+    fi
+    echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+      | sudo tee /etc/apt/sources.list.d/claude-code.list >/dev/null
+  else
+    log 'would verify Claude Code apt key fingerprint and write /etc/apt/sources.list.d/claude-code.list'
+  fi
+  run sudo apt-get update
   run sudo apt-get install -y claude-code
   command -v claude >/dev/null 2>&1 || { log 'claude install failed; see official Claude Code installation docs'; exit 1; }
   claude --version
@@ -123,8 +138,15 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
+    sudo systemctl enable ai-remote-runner.service
+    if [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ]; then
+      sudo systemctl start ai-remote-runner.service
+    else
+      log 'AI_BRIDGE_SHARED_SECRET is empty; service installed/enabled but not started until pairing'
+    fi
   else
     log 'would install /etc/systemd/system/ai-remote-runner.service'
+    log 'would enable/start ai-remote-runner.service after bridge secret is configured'
   fi
 else
   if [ "$DRY_RUN" = false ]; then
@@ -145,6 +167,12 @@ log 'use scripts/pair-runner.sh with Mattermost URL, webhook URL, bot token, and
 
 log 'stage 10: run provider smoke tests'
 python3 -m ai_remote_runner.cli providers
+if [ "$DRY_RUN" = false ] && command -v claude >/dev/null 2>&1; then
+  claude auth status --json >/dev/null || log 'claude auth/API config pending'
+  claude -p --bare --output-format json --max-turns 1 --max-budget-usd 0.05 --tools "" --no-session-persistence -- 'Return OK only.' >/dev/null || log 'claude print-json smoke pending'
+elif [ "$DRY_RUN" = true ]; then
+  log 'would run claude auth status and print-json smoke test'
+fi
 
 log 'stage 11: run phone command smoke tests'
 python3 -m ai_remote_runner.cli parse '/ai 状态'
@@ -177,3 +205,6 @@ else
   log "would write $STATE_ROOT/install-manifest.json"
 fi
 log 'core_ready=false until bridge pairing, credential test, and phone loopback pass'
+if [ "$DRY_RUN" = false ]; then
+  "$SCRIPT_DIR/validate-core-ready.sh" || log 'core_ready validation failed'
+fi

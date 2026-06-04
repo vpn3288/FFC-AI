@@ -35,8 +35,16 @@ def _version(command: str) -> dict[str, Any]:
     return {"available": result.returncode == 0, "path": path, "version": result.stdout.strip() or result.stderr.strip()}
 
 
+def _returns_ok(command: list[str]) -> bool:
+    if not shutil.which(command[0]):
+        return False
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    return result.returncode == 0
+
+
 def discover_claude() -> dict[str, Any]:
     base = _version("claude")
+    auth_check = _returns_ok(["claude", "auth", "status", "--json"])
     base["provider"] = "claude-code"
     base["capabilities"] = {
         "new_conversation": True,
@@ -47,12 +55,15 @@ def discover_claude() -> dict[str, Any]:
         "status_events": True,
         "file_edits": True,
         "shell_commands": False,
+        "auth_check_available": auth_check,
+        "print_json_available": base["available"],
     }
     return base
 
 
 def discover_codex() -> dict[str, Any]:
     base = _version("codex")
+    exec_available = _returns_ok(["codex", "exec", "--help"])
     base["provider"] = "codex"
     base["capabilities"] = {
         "new_conversation": True,
@@ -63,6 +74,7 @@ def discover_codex() -> dict[str, Any]:
         "status_events": True,
         "file_edits": True,
         "shell_commands": False,
+        "exec_available": exec_available,
     }
     return base
 

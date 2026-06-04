@@ -3,6 +3,10 @@ set -euo pipefail
 
 INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
 MANIFEST="$INSTALL_DIR/mattermost-objects.json"
+MATTERMOST_URL="${MATTERMOST_URL:-}"
+MATTERMOST_ADMIN_TOKEN="${MATTERMOST_ADMIN_TOKEN:-}"
+BRIDGE_COMMAND_URL="${BRIDGE_COMMAND_URL:-}"
+WEBHOOK_CHANNEL_ID="${WEBHOOK_CHANNEL_ID:-}"
 
 log() {
   printf '[bootstrap-mattermost] %s\n' "$*"
@@ -43,6 +47,23 @@ for bot in ai-bridge master-writer-ai claude-code-ai codex-ai reviewer-ai-1 revi
 done
 
 log 'slash command and incoming webhook require admin token on Mattermost editions without mmctl local integration support'
+if [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE_COMMAND_URL" ]; then
+  log 'creating /ai slash command through Mattermost REST API'
+  TEAM_ID="$(curl -fsS "$MATTERMOST_URL/api/v4/teams/name/ai-lab" \
+    -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+  curl -fsS -X POST "$MATTERMOST_URL/api/v4/commands" \
+    -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null || true
+fi
+if [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$WEBHOOK_CHANNEL_ID" ]; then
+  log 'creating incoming webhook through Mattermost REST API'
+  curl -fsS -X POST "$MATTERMOST_URL/api/v4/hooks/incoming" \
+    -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" >/dev/null || true
+fi
 sudo tee "$MANIFEST" >/dev/null <<EOF
 {
   "team": "ai-lab",
