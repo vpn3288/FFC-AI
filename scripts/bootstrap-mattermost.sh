@@ -163,7 +163,8 @@ for command in commands:
     COMMAND_ID="$(printf '%s' "$EXISTING_COMMAND" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')"
     EXISTING_URL="$(printf '%s' "$EXISTING_COMMAND" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("url", ""))')"
     if [ "$EXISTING_URL" != "$BRIDGE_COMMAND_URL" ]; then
-      rest_json PUT "$MATTERMOST_URL/api/v4/commands/$COMMAND_ID" "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
+      rest_json DELETE "$MATTERMOST_URL/api/v4/commands/$COMMAND_ID" >/dev/null
+      rest_json POST "$MATTERMOST_URL/api/v4/commands" "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
     fi
   fi
   COMMAND_JSON="$(
