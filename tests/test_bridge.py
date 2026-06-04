@@ -113,6 +113,39 @@ class BridgeHTTPTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_confirmation_command_executes_pending_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server, secret, url = self._server(tmp)
+            try:
+                body = json.dumps({"request_id": "confirm-1", "raw_text": "/ai 全局 替换 hello"}, ensure_ascii=False).encode("utf-8")
+                status, payload = self._post(url, secret, body, nonce="confirm-nonce-1")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["status"], "needs_confirmation")
+                token = payload["data"]["confirmation_token"]
+                confirm_body = json.dumps({"request_id": "confirm-2", "raw_text": f"/ai 确认 {token}"}, ensure_ascii=False).encode("utf-8")
+                confirmed_status, confirmed = self._post(url, secret, confirm_body, nonce="confirm-nonce-2")
+                self.assertEqual(confirmed_status, 200)
+                self.assertEqual(confirmed["status"], "accepted")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_confirmed_credential_add_returns_upload_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server, secret, url = self._server(tmp)
+            try:
+                body = json.dumps({"request_id": "cred-1", "raw_text": "/ai 凭据 添加 credential://phone/test"}, ensure_ascii=False).encode("utf-8")
+                _, pending = self._post(url, secret, body, nonce="cred-nonce-1")
+                token = pending["data"]["confirmation_token"]
+                confirm_body = json.dumps({"request_id": "cred-2", "raw_text": f"/ai 确认 {token}"}, ensure_ascii=False).encode("utf-8")
+                _, confirmed = self._post(url, secret, confirm_body, nonce="cred-nonce-2")
+                self.assertEqual(confirmed["status"], "accepted")
+                self.assertEqual(confirmed["data"]["upload_method"], "PUT")
+                self.assertTrue(confirmed["data"]["upload_path"].startswith("/bridge/credential-upload/"))
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_exact_bare_slash_is_treated_as_task_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server, secret, url = self._server(tmp)

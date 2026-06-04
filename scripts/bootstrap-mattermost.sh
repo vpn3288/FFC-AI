@@ -88,6 +88,10 @@ done
 log 'slash command and incoming webhook require admin token on Mattermost editions without mmctl local integration support'
 log 'if REST fallback is used, create or log in as a Mattermost admin first and export MATTERMOST_ADMIN_TOKEN'
 require_rest_config
+rest_json GET "$MATTERMOST_URL/api/v4/users/me" >/dev/null || {
+  log 'MATTERMOST_ADMIN_TOKEN validation failed'
+  exit 1
+}
 log 'creating /ai slash command through Mattermost REST API'
 TEAM_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/name/ai-lab" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 if ! rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)'; then

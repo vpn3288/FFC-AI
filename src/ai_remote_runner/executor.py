@@ -233,6 +233,8 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         else:
             conversation_id = policy.get("conversation_id") or "default"
         existing = rt.contexts.load(conversation_id, provider)
+        if existing.get("summary_artifact") and Path(existing["summary_artifact"]).exists():
+            instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(existing['summary_artifact']).read_text(encoding='utf-8')}\n"
         used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, prompt)
         context_state = ContextState(conversation_id, provider, existing["context_limit_tokens"], used)
         if context_state.hard_stop:

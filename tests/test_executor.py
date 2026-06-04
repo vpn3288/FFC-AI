@@ -198,6 +198,18 @@ class ExecutorTests(unittest.TestCase):
                 second = execute(parsed, {"request_id": "p3", "raw_text": "do work"}, runtime)
             self.assertNotEqual(first["data"]["conversation_id"], second["data"]["conversation_id"])
 
+    def test_compacted_summary_is_injected_into_next_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.contexts.add_exchange("default", "claude-code", "important previous context")
+            compacted = runtime.contexts.compact("default", "claude-code")
+            runtime.save_policy({"policy": "continue", "conversation_id": compacted["new_conversation_id"], "auto_compact_enabled": False, "permission_scope": "chat"})
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "continue"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                execute(parsed, {"request_id": "sum1", "raw_text": "continue"}, runtime)
+            self.assertIn("important previous context", invoke.call_args.args[2])
+
     def test_extension_and_description_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")

@@ -16,6 +16,7 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
     ("状态",): CommandSpec("status", "显示当前运行、上下文、预算、工作区和提供商状态。"),
     ("status",): CommandSpec("status", "显示当前运行、上下文、预算、工作区和提供商状态。"),
     ("帮助",): CommandSpec("command_index", "显示中文命令索引。"),
+    ("确认",): CommandSpec("confirm", "确认待执行的高风险操作。"),
     ("命令",): CommandSpec("command_index", "显示中文命令索引。"),
     ("功能",): CommandSpec("feature_index", "显示提供商、工具、扩展和能力状态。"),
     ("压缩",): CommandSpec("compact_context", "压缩当前上下文，必要时创建摘要并开启新会话。"),

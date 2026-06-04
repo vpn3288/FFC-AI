@@ -517,6 +517,7 @@ Commands:
 ```text
 /ai
 /ai 帮助
+/ai 确认 <token>
 /ai 命令
 /ai 功能
 /ai 索引
@@ -707,6 +708,7 @@ Required compound mappings:
   "/ai 持续对话": {"canonical_action": "set_policy_continue"},
   "/ai 继续": {"canonical_action": "continue_conversation"},
   "/ai 帮助": {"canonical_action": "command_index"},
+  "/ai 确认": {"canonical_action": "confirm"},
   "/ai 功能": {"canonical_action": "feature_index"},
   "/ai 上下文": {"canonical_action": "context_status"},
   "/ai 预算": {"canonical_action": "budget_status"},

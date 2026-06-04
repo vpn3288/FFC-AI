@@ -23,6 +23,7 @@ class BridgeState:
         self.commands_path = root / "bridge-commands.jsonl"
         self.events_path = root / "bridge-events.jsonl"
         self.responses_path = root / "bridge-responses.json"
+        self.confirmations_path = root / "bridge-confirmations.json"
         self.credential_uploads_path = root / "credential-upload-tokens.json"
         self.nonce_store = NonceStore(root / "bridge-nonces.json")
         self.runtime = RunnerRuntime(root, Path(os.environ.get("AI_WORKSPACE_ROOT", "/srv/ai-workspaces")), os.environ.get("MATTERMOST_WEBHOOK_URL"))
@@ -36,14 +37,42 @@ class BridgeState:
         if not self.responses_path.exists():
             return {}
         try:
-            return json.loads(self.responses_path.read_text(encoding="utf-8"))
+            raw = json.loads(self.responses_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return {}
+        responses = {}
+        for request_id, value in raw.items():
+            responses[request_id] = value.get("response", value) if isinstance(value, dict) else value
+        return responses
 
     def save_response(self, request_id: str, response: dict) -> None:
-        data = self.responses()
-        data[request_id] = response
+        now = int(time.time())
+        raw = {}
+        if self.responses_path.exists():
+            try:
+                raw = json.loads(self.responses_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                raw = {}
+        data = {
+            key: value
+            for key, value in raw.items()
+            if isinstance(value, dict) and now - int(value.get("cached_at", now)) <= 86400
+        }
+        data[request_id] = {"cached_at": now, "response": response}
         self.responses_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+    def confirmations(self) -> dict[str, dict]:
+        if not self.confirmations_path.exists():
+            return {}
+        try:
+            raw = json.loads(self.confirmations_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        now = int(time.time())
+        return {token: item for token, item in raw.items() if now - int(item.get("created_at", 0)) <= 600}
+
+    def save_confirmations(self, data: dict[str, dict]) -> None:
+        self.confirmations_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
     def credential_uploads(self) -> dict[str, dict]:
         if not self.credential_uploads_path.exists():
@@ -136,16 +165,52 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             parsed = parse_command(payload.get("raw_text", ""), allow_bare=True)
             raw_text = payload.get("raw_text", "")
+            if parsed.get("canonical_action") == "confirm":
+                token = " ".join(parsed.get("args", {}).get("tail", []))
+                pending = self.state.confirmations()
+                item = pending.pop(token, None)
+                self.state.save_confirmations(pending)
+                if not item:
+                    self._json(404, {"status": "rejected", "error": {"code": "confirmation_not_found", "detail": "confirmation_not_found"}})
+                    return
+                item["envelope"]["confirmed"] = True
+                response = execute(item["parsed"], item["envelope"], self.state.runtime)
+                if item["parsed"].get("canonical_action") == "credential.add" and response.get("status") == "accepted":
+                    token = uuid.uuid4().hex
+                    metadata = {"handle": response.get("data", {}).get("handle"), "type": "custom"}
+                    uploads = self.state.credential_uploads()
+                    uploads[token] = {"metadata": metadata, "expires_at": int(time.time()) + 600}
+                    self.state.save_credential_uploads(uploads)
+                    response.setdefault("data", {})["upload_path"] = f"/bridge/credential-upload/{token}"
+                    response["data"]["upload_method"] = "PUT"
+                self.state.save_response(item["envelope"]["request_id"], response)
+                self._json(200, response)
+                return
             if parsed.get("status") == "rejected" and (
                 (parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/"))
                 or parsed.get("error") == "bare_slash_not_command"
             ):
                 parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": raw_text}, "requires_confirmation": False}
             item = dict(payload)
+            item.pop("confirmed", None)
             item.update(parsed)
             item["request_id"] = request_id
             self.state.append_jsonl(self.state.commands_path, item)
             response = execute(parsed, item, self.state.runtime)
+            if response.get("status") == "needs_confirmation":
+                token = response.get("data", {}).get("confirmation_token")
+                if token:
+                    pending = self.state.confirmations()
+                    pending[token] = {"created_at": int(time.time()), "parsed": parsed, "envelope": item}
+                    self.state.save_confirmations(pending)
+            if parsed.get("canonical_action") == "credential.add" and response.get("status") == "accepted":
+                token = uuid.uuid4().hex
+                metadata = {"handle": response.get("data", {}).get("handle"), "type": "custom"}
+                uploads = self.state.credential_uploads()
+                uploads[token] = {"metadata": metadata, "expires_at": int(time.time()) + 600}
+                self.state.save_credential_uploads(uploads)
+                response.setdefault("data", {})["upload_path"] = f"/bridge/credential-upload/{token}"
+                response["data"]["upload_method"] = "PUT"
             self.state.save_response(request_id, response)
             self._json(200, response)
             return

@@ -68,6 +68,18 @@ if len(raw) < 32:
 PY
 
 sudo mkdir -p "$STATE_ROOT"
+if [ -f "$STATE_ROOT/config.env" ]; then
+  TMP_CONFIG="$(mktemp)"
+  sudo awk -F= '
+    $1 != "MATTERMOST_PLATFORM_URL" &&
+    $1 != "MATTERMOST_WEBHOOK_URL" &&
+    $1 != "MATTERMOST_BOT_TOKEN" &&
+    $1 != "AI_BRIDGE_SHARED_SECRET" &&
+    $1 != "AI_BRIDGE_SECRET_TRANSFER_METHOD"
+  ' "$STATE_ROOT/config.env" > "$TMP_CONFIG"
+  sudo cp "$TMP_CONFIG" "$STATE_ROOT/config.env"
+  rm -f "$TMP_CONFIG"
+fi
 sudo tee -a "$STATE_ROOT/config.env" >/dev/null <<EOF
 MATTERMOST_PLATFORM_URL=$PLATFORM_URL
 MATTERMOST_WEBHOOK_URL=$WEBHOOK_URL

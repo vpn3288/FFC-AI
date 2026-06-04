@@ -129,9 +129,11 @@ case "$BRIDGE_SECRET" in
 esac
 if [ "$DRY_RUN" = false ]; then
   sudo mkdir -p "$SNAPSHOT_DIR"
+  SNAPSHOT_CONFIG_ENV_JSON=null
   if [ -f "$STATE_ROOT/config.env" ]; then
     sudo cp "$STATE_ROOT/config.env" "$SNAPSHOT_DIR/config.env.preinstall"
     sudo chmod 0600 "$SNAPSHOT_DIR/config.env.preinstall"
+    SNAPSHOT_CONFIG_ENV_JSON="\"$SNAPSHOT_DIR/config.env.preinstall\""
   fi
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
@@ -221,7 +223,7 @@ if [ "$DRY_RUN" = false ]; then
   "codex_remediation_zh": "$CODEX_REMEDIATION_ZH",
   "claude_model": "$CLAUDE_MODEL",
   "snapshots": {
-    "config_env": "$SNAPSHOT_DIR/config.env.preinstall"
+    "config_env": $SNAPSHOT_CONFIG_ENV_JSON
   },
   "created_files": [
     "$STATE_ROOT/config.env",
