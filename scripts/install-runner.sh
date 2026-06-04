@@ -30,6 +30,14 @@ run() {
   fi
 }
 
+apt_install() {
+  if [ "$DRY_RUN" = true ]; then
+    run sudo apt-get install -y "$@"
+  else
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
@@ -56,7 +64,7 @@ log "detected os=$OS_ID arch=$ARCH systemd=$SYSTEMD wsl=$WSL"
 log 'stage 02: install system packages required by runner'
 if command -v apt-get >/dev/null 2>&1; then
   run sudo apt-get update
-  run sudo apt-get install -y python3 python3-pip ca-certificates curl git openssl gpg
+  apt_install python3 python3-pip ca-certificates curl git openssl gpg
 else
   log 'apt-get unavailable; package installation skipped and must be handled externally'
 fi
@@ -83,7 +91,7 @@ elif command -v apt-get >/dev/null 2>&1; then
     log 'would verify Claude Code apt key fingerprint and write /etc/apt/sources.list.d/claude-code.list'
   fi
   run sudo apt-get update
-  run sudo apt-get install -y claude-code
+  apt_install claude-code
   command -v claude >/dev/null 2>&1 || { log 'claude install failed; see official Claude Code installation docs'; exit 1; }
   claude --version
 else
@@ -102,6 +110,42 @@ if command -v codex >/dev/null 2>&1; then
   CODEX_REMEDIATION_ZH=""
 else
   log 'codex missing; codex_status=external_prerequisite'
+fi
+if [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
+  CODEX_KEY="${CODEX_API_KEY:-$OPENAI_API_KEY}"
+  if [ "$DRY_RUN" = false ]; then
+    mkdir -p "$HOME/.codex"
+    cat > "$HOME/.codex/config.toml" <<EOF
+model_provider = "${CODEX_MODEL_PROVIDER:-OpenAI}"
+model = "${CODEX_MODEL:-gpt-5.5}"
+review_model = "${CODEX_REVIEW_MODEL:-${CODEX_MODEL:-gpt-5.5}}"
+model_reasoning_effort = "${CODEX_REASONING_EFFORT:-xhigh}"
+disable_response_storage = true
+network_access = "enabled"
+model_context_window = ${CODEX_CONTEXT_WINDOW:-200000}
+model_auto_compact_token_limit = ${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-160000}
+
+[model_providers.${CODEX_MODEL_PROVIDER:-OpenAI}]
+name = "${CODEX_MODEL_PROVIDER:-OpenAI}"
+base_url = "${CODEX_BASE_URL:-https://api.openai.com/v1}"
+wire_api = "responses"
+requires_openai_auth = true
+
+[features]
+goals = true
+EOF
+    CODEX_KEY="$CODEX_KEY" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+path = Path.home() / ".codex" / "auth.json"
+path.write_text(json.dumps({"OPENAI_API_KEY": os.environ["CODEX_KEY"]}, indent=2), encoding="utf-8")
+path.chmod(0o600)
+PY
+    chmod 0600 "$HOME/.codex/config.toml"
+  else
+    log 'would write ~/.codex/config.toml and ~/.codex/auth.json from CODEX_* environment'
+  fi
 fi
 
 log 'stage 05: create runner directories'
@@ -139,9 +183,21 @@ if [ "$DRY_RUN" = false ]; then
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
 CLAUDE_MODEL=$CLAUDE_MODEL
-CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=\${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 EOF
+  if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+    printf 'ANTHROPIC_BASE_URL=%s\n' "$ANTHROPIC_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  fi
+  if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+    printf 'ANTHROPIC_AUTH_TOKEN=%s\n' "$ANTHROPIC_AUTH_TOKEN" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  fi
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  fi
+  if [ -n "${CODEX_BASE_URL:-}" ]; then
+    printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  fi
   sudo chmod 0600 "$STATE_ROOT/config.env"
 else
   log "would write $STATE_ROOT/config.env with a generated bridge secret"
