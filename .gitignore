@@ -9,3 +9,5 @@ work/dry-workspaces*/
 work/local-state/
 work/local-workspaces/
 work/cli-cred-state/
+work/verify-state/
+work/verify-workspaces/
