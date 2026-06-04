@@ -14,6 +14,7 @@ from .events import EventSink, status_event
 from .instructions import InstructionStore
 from .paths import state_root, workspace_root
 from .providers import provider_status
+from .providers import build_instruction_prompt, invoke_claude, invoke_codex
 
 
 @dataclass
@@ -99,6 +100,22 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         used = estimate_tokens(prompt_text)
         state = ContextState("unknown", envelope.get("provider", "runner"), 200000, used)
         return _ok(request_id, run_id, "上下文状态已生成", state.__dict__ | {"context_used_percent": state.context_used_percent})
+    if action == "task.run":
+        prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
+        instruction_prompt = build_instruction_prompt(rt.instructions, workspace_id)
+        used = estimate_tokens(instruction_prompt, prompt)
+        context_state = ContextState(envelope.get("conversation_id") or "new", envelope.get("provider", "claude-code"), 200000, used)
+        if context_state.hard_stop:
+            return _error(request_id, "context_hard_stop", "context_hard_stop")
+        workspace = rt.workspaces / workspace_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        provider = envelope.get("provider", "claude-code")
+        emit = rt.events.emit
+        if provider == "codex":
+            result = invoke_codex(prompt, workspace, rt.ledger, run_id=run_id, emit=emit)
+        else:
+            result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, emit=emit)
+        return _ok(request_id, run_id, "任务已完成", {"provider": result.provider, "status": result.status, "output": result.output_text})
     if action == "compact_context":
         summary_dir = rt.state / "context-summaries"
         summary_dir.mkdir(parents=True, exist_ok=True)

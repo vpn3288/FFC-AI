@@ -158,10 +158,11 @@ def invoke_claude(
     run_id: str | None = None,
     reserved_usd: float = 1.0,
     timeout_seconds: int = 1800,
+    max_output_bytes: int = 200000,
     emit: Callable[[dict[str, Any]], None] | None = None,
 ) -> ProviderResult:
     actual_run_id = run_id or str(uuid.uuid4())
-    ledger.reserve(actual_run_id, "claude-code", reserved_usd, timeout_seconds=timeout_seconds)
+    ledger.reserve(actual_run_id, "claude-code", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
     command = [
         *CLAUDE_CHAT_ONLY_TEMPLATE,
         "--model",
@@ -192,6 +193,8 @@ def invoke_claude(
         output_text = str(raw.get("result") or raw.get("message") or result.stdout)
     except json.JSONDecodeError:
         pass
+    if len(output_text.encode("utf-8")) > max_output_bytes:
+        output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
     ledger.complete(actual_run_id, None, status="completed" if result.returncode == 0 else "failed")
     if emit:
         emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "done" if result.returncode == 0 else "error"})
@@ -217,10 +220,11 @@ def invoke_codex(
     run_id: str | None = None,
     reserved_usd: float = 1.0,
     timeout_seconds: int = 1800,
+    max_output_bytes: int = 200000,
     emit: Callable[[dict[str, Any]], None] | None = None,
 ) -> ProviderResult:
     actual_run_id = run_id or str(uuid.uuid4())
-    ledger.reserve(actual_run_id, "codex", reserved_usd, timeout_seconds=timeout_seconds)
+    ledger.reserve(actual_run_id, "codex", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
     output_file = workspace / ".ai-remote-codex-last-message.txt"
     command = codex_command(prompt, workspace, output_file)
     if emit:
@@ -231,5 +235,7 @@ def invoke_codex(
         ledger.complete(actual_run_id, None, status="timeout")
         return ProviderResult(actual_run_id, "codex", "timeout", "", None, -1)
     output_text = output_file.read_text(encoding="utf-8") if output_file.exists() else result.stdout
+    if len(output_text.encode("utf-8")) > max_output_bytes:
+        output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
     ledger.complete(actual_run_id, None, status="completed" if result.returncode == 0 else "failed")
     return ProviderResult(actual_run_id, "codex", "completed" if result.returncode == 0 else "failed", output_text, None, result.returncode)

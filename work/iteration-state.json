@@ -1,5 +1,5 @@
 {
-  "round": 8,
+  "round": 9,
   "mode": "infinite_convergence",
   "min_score": 90,
   "max_usd": 25.0,
@@ -68,16 +68,24 @@
       "open_p0": 1,
       "open_p1": 13,
       "open_p2": 5
+    },
+    {
+      "round": 9,
+      "reviewer": "claude-code",
+      "score": 68,
+      "open_p0": 0,
+      "open_p1": 13,
+      "open_p2": 5
     }
   ],
-  "open_p0": 1,
+  "open_p0": 0,
   "open_p1": 13,
   "open_p2": 5,
   "missing_user_requirements": [
     "implementation scripts were absent before round 1 patch"
   ],
   "script_smoke_tests_passing": true,
-  "latest_patch_summary": "Round 8 made Claude Code GPG verification a hard exact-fingerprint check, parsed Claude auth JSON for readiness, enforced confirmation before dangerous commands, implemented workspace create/select/list paths, and added confirmation/workspace tests. Fresh review is still required before lowering open issue counts.",
+  "latest_patch_summary": "Round 9 wired non-command task routing into provider invocation, injected global/project instructions into Claude task calls, added Codex invocation wrapper usage path, enforced output byte caps in provider wrappers, added context hard-stop checks before task execution, and tested task routing with mocked provider calls. Fresh review is still required before lowering open issue counts.",
   "last_github_push": null,
   "stop_reason": null
 }

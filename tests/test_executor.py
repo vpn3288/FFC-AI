@@ -3,9 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_remote_runner.commands import parse_command
 from ai_remote_runner.executor import RunnerRuntime, execute
+from ai_remote_runner.providers import ProviderResult
 
 
 class ExecutorTests(unittest.TestCase):
@@ -58,6 +60,17 @@ class ExecutorTests(unittest.TestCase):
             response = execute(parsed, {"request_id": "r7", "raw_text": "/ai 工作区 创建 demo", "confirmed": True}, runtime)
             self.assertEqual(response["status"], "accepted")
             self.assertTrue((runtime.workspaces / "demo").exists())
+
+    def test_task_run_invokes_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                response = execute(parsed, {"request_id": "r8", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(response["data"]["output"], "done")
+            invoke.assert_called_once()
 
 
 if __name__ == "__main__":
