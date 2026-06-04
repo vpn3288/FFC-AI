@@ -35,6 +35,27 @@ class ProviderTests(unittest.TestCase):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
         self.assertNotIn("--sandbox", command)
 
+    def test_codex_command_skips_git_repo_trust_check_when_supported(self) -> None:
+        with patch("ai_remote_runner.providers._help_has", return_value=True):
+            command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
+        self.assertIn("--skip-git-repo-check", command)
+        self.assertLess(command.index("--skip-git-repo-check"), command.index("--cd"))
+
+    def test_invoke_codex_returns_stderr_when_last_message_missing(self) -> None:
+        import subprocess
+        import tempfile
+
+        completed = subprocess.CompletedProcess(["codex"], 1, stdout="", stderr="not inside a trusted directory")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed),
+            ):
+                result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.output_text, "not inside a trusted directory")
+
     def test_invoke_codex_timeout_releases_run(self) -> None:
         import tempfile
         import subprocess

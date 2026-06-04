@@ -303,6 +303,8 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
         if sandbox_index + 1 >= len(command) or not command[sandbox_index + 1].startswith("workspace-"):
             raise RuntimeError("unexpected_codex_sandbox_template")
         del command[sandbox_index : sandbox_index + 2]
+    if _help_has(["codex", "exec", "--help"], "--skip-git-repo-check"):
+        command.insert(command.index("--cd"), "--skip-git-repo-check")
     return command
 
 
@@ -328,7 +330,10 @@ def invoke_codex(
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
         return ProviderResult(actual_run_id, "codex", "timeout", "", None, -1)
-    output_text = output_file.read_text(encoding="utf-8") if output_file.exists() else result.stdout
+    if output_file.exists():
+        output_text = output_file.read_text(encoding="utf-8")
+    else:
+        output_text = result.stdout or result.stderr
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
     ledger.complete(actual_run_id, None, status="completed" if result.returncode == 0 else "failed")
