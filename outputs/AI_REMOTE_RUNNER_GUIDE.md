@@ -605,6 +605,7 @@ Rules:
 - If native context usage is unavailable, estimate as `ceil((utf8_bytes(messages + injected_instructions + attached_text_artifacts) / 4) * 1.20)` and mark `estimated`.
 - At auto threshold, post phone warning.
 - If `auto_compact_enabled=true`, runner MUST compact before accepting the next long task after threshold.
+- Runner MAY compact inline before starting the current provider call when the threshold is already exceeded at request acceptance time.
 - If conversation policy is `new_each_request`, runner MUST NOT auto-compact; it MUST create a fresh provider conversation for each task instead.
 - If a task is running when threshold is crossed, runner MUST finish the current provider call, compact, then continue only if conversation policy permits.
 - If compaction requires approval, runner MUST enter `compaction_pending_approval` and reject new long tasks until approved or skipped.

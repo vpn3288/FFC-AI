@@ -109,6 +109,8 @@ stage 14: run phone command smoke tests
 stage 15: run backup smoke test
 ```
 
+Stages 08-11 MAY delegate Mattermost team, channel, bot, slash-command, and webhook creation to `scripts/bootstrap-mattermost.sh`; the parent installer MUST still validate the resulting objects before setting `platform_ready=true`.
+
 Fresh Mattermost bootstrap MUST obtain an admin personal access token through initial web login or an equivalent `mmctl --local` admin bootstrap before REST slash-command and webhook creation. `scripts/mattermost-first-admin.sh` creates or confirms the first system admin, then the operator MUST create a personal access token and export `MATTERMOST_ADMIN_TOKEN`. Installer MUST fail loudly, not mark platform ready, when `MATTERMOST_ADMIN_TOKEN` is absent.
 
 Bridge shared secret:

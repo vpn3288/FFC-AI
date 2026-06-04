@@ -164,6 +164,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if cached:
                 self._json(200, cached)
                 return
+            # Mattermost slash-command payloads can arrive without the /ai prefix after platform routing.
             parsed = parse_command(payload.get("raw_text", ""), allow_bare=True)
             raw_text = payload.get("raw_text", "")
             if parsed.get("canonical_action") == "confirm":
