@@ -24,6 +24,7 @@ scripts/install-runner.sh --dry-run
 scripts/install-communication-vps.sh --dry-run --domain ai.example.com
 scripts/mattermost-first-admin.sh --help
 scripts/bootstrap-mattermost.sh
+scripts/setup-runner-tunnel.sh --help
 scripts/pair-runner.sh --help
 scripts/validate-integration.sh
 scripts/rollback-communication.sh --help
