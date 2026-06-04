@@ -71,6 +71,8 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["status"], "accepted")
             self.assertEqual(response["data"]["output"], "done")
             invoke.assert_called_once()
+            context_file = runtime.state / "contexts" / "default.json"
+            self.assertTrue(context_file.exists())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+{
+  "daily_period": "2026-06-04",
+  "daily_usd_limit": 10.0,
+  "daily_used_usd_estimate": 0.01,
+  "freeze_on_exceed": true,
+  "monthly_period": "2026-06",
+  "monthly_usd_limit": 100.0,
+  "monthly_used_usd_estimate": 0.01,
+  "runs": {
+    "smoke-run": {
+      "actual_usd": null,
+      "created_at": 1780584360,
+      "max_output_bytes": 200000,
+      "provider": "claude-code",
+      "reserved_usd": 0.01,
+      "run_id": "smoke-run",
+      "status": "reserved",
+      "timeout_seconds": 1800
+    }
+  }
+}

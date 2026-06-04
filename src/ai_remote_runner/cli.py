@@ -39,6 +39,9 @@ def main() -> int:
     instr_p.add_argument("--text", default="")
     cred_p = sub.add_parser("credential-list")
     cred_p.add_argument("--root")
+    cred_add = sub.add_parser("credential-add-secret")
+    cred_add.add_argument("--metadata-json", required=True)
+    cred_add.add_argument("--root")
     ctx_p = sub.add_parser("estimate-context")
     ctx_p.add_argument("text", nargs="*")
     bridge_p = sub.add_parser("bridge")
@@ -73,6 +76,12 @@ def main() -> int:
     elif args.cmd == "credential-list":
         broker = CredentialBroker(Path(args.root) if args.root else state_root() / "credentials")
         print_json(broker.list_public())
+    elif args.cmd == "credential-add-secret":
+        import sys
+
+        broker = CredentialBroker(Path(args.root) if args.root else state_root() / "credentials")
+        metadata = json.loads(args.metadata_json)
+        print_json(broker.add_local_secret(metadata, sys.stdin.read()))
     elif args.cmd == "estimate-context":
         print_json({"estimated_tokens": estimate_tokens(*args.text)})
     elif args.cmd == "bridge":

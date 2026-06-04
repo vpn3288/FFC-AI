@@ -45,6 +45,21 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(broker.delete("api://test")["deleted"])
             self.assertEqual(broker.list_public(), [])
 
+    def test_credential_authorization_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = CredentialBroker(Path(tmp))
+            broker.add_local_secret(
+                {
+                    "handle": "api://locked",
+                    "type": "api_token",
+                    "allowed_agents": ["claude-code"],
+                    "allowed_actions": ["api.call"],
+                },
+                "secret-value",
+            )
+            with self.assertRaises(PermissionError):
+                broker.authorize("api://locked", "runner", "ssh.exec")
+
     def test_context_thresholds(self) -> None:
         used = estimate_tokens("x" * 320)
         state = ContextState("c1", "claude-code", 100, used)

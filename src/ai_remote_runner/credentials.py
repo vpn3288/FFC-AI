@@ -5,6 +5,8 @@ import os
 import secrets
 import shutil
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +104,17 @@ class CredentialBroker:
     def list_public(self) -> list[dict[str, Any]]:
         return [self.public_record(handle) for handle in sorted(self._load_index())]
 
+    def authorize(self, handle: str, agent: str, action: str) -> None:
+        record = self._load_index()[handle]
+        if record.get("expires_at") and float(record["expires_at"]) < time.time():
+            raise PermissionError("credential_expired")
+        allowed_agents = record.get("allowed_agents") or []
+        allowed_actions = record.get("allowed_actions") or []
+        if allowed_agents and agent not in allowed_agents:
+            raise PermissionError("agent_not_allowed")
+        if allowed_actions and action not in allowed_actions:
+            raise PermissionError("action_not_allowed")
+
     def delete(self, handle: str) -> dict[str, Any]:
         data = self._load_index()
         record = data.pop(handle)
@@ -117,7 +130,32 @@ class CredentialBroker:
         return {"handle": handle, "ok": bool(secret), "type": record.get("type")}
 
     def with_secret_env(self, handle: str, env_name: str, command: list[str]) -> subprocess.CompletedProcess[str]:
+        self.authorize(handle, "runner", "env.inject")
         record = self._load_index()[handle]
         secret = self._decrypt_file(Path(record["secret_path"]))
         env = {env_name: secret, "PATH": os.environ.get("PATH", "")}
         return subprocess.run(command, env=env, text=True, capture_output=True, check=False)
+
+    def ssh_exec(self, handle: str, command: str, timeout_seconds: int = 60) -> subprocess.CompletedProcess[str]:
+        self.authorize(handle, "runner", "ssh.exec")
+        record = self._load_index()[handle]
+        if record.get("type") != "ssh_private_key":
+            raise ValueError("credential_type_not_ssh_private_key")
+        key = self._decrypt_file(Path(record["secret_path"]))
+        host = record["host"]
+        username = record["username"]
+        port = str(record.get("port", 22))
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
+            fh.write(key)
+            key_path = Path(fh.name)
+        os.chmod(key_path, 0o600)
+        try:
+            return subprocess.run(
+                ["ssh", "-i", str(key_path), "-p", port, "-o", "BatchMode=yes", f"{username}@{host}", command],
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        finally:
+            key_path.unlink(missing_ok=True)

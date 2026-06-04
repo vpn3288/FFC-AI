@@ -10,6 +10,7 @@ from .budget import BudgetLedger
 from .commands import command_index
 from .context import ContextState, estimate_tokens
 from .credentials import CredentialBroker
+from .context_store import ContextStore
 from .events import EventSink, status_event
 from .instructions import InstructionStore
 from .paths import state_root, workspace_root
@@ -38,6 +39,10 @@ class RunnerRuntime:
     @property
     def credentials(self) -> CredentialBroker:
         return CredentialBroker(self.state / "credentials")
+
+    @property
+    def contexts(self) -> ContextStore:
+        return ContextStore(self.state / "contexts")
 
     @property
     def events(self) -> EventSink:
@@ -103,8 +108,10 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "task.run":
         prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
         instruction_prompt = build_instruction_prompt(rt.instructions, workspace_id)
-        used = estimate_tokens(instruction_prompt, prompt)
-        context_state = ContextState(envelope.get("conversation_id") or "new", envelope.get("provider", "claude-code"), 200000, used)
+        conversation_id = envelope.get("conversation_id") or "default"
+        existing = rt.contexts.load(conversation_id, envelope.get("provider", "claude-code"))
+        used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, prompt)
+        context_state = ContextState(conversation_id, envelope.get("provider", "claude-code"), existing["context_limit_tokens"], used)
         if context_state.hard_stop:
             return _error(request_id, "context_hard_stop", "context_hard_stop")
         workspace = rt.workspaces / workspace_id
@@ -115,6 +122,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             result = invoke_codex(prompt, workspace, rt.ledger, run_id=run_id, emit=emit)
         else:
             result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, emit=emit)
+        rt.contexts.add_exchange(conversation_id, provider, instruction_prompt, prompt, result.output_text)
         return _ok(request_id, run_id, "任务已完成", {"provider": result.provider, "status": result.status, "output": result.output_text})
     if action == "compact_context":
         summary_dir = rt.state / "context-summaries"
