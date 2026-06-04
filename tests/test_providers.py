@@ -15,6 +15,7 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("-c", command)
         self.assertIn('approval_policy="never"', command)
         self.assertNotIn("--ask-for-approval", command)
+        self.assertNotIn("--ignore-user-config", command)
 
     def test_codex_command_includes_instruction_prompt(self) -> None:
         with patch("ai_remote_runner.providers._help_has", return_value=True):

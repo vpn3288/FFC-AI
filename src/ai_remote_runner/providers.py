@@ -175,7 +175,6 @@ CODEX_EXEC_TEMPLATE = [
     'approval_policy="never"',
     "--json",
     "--ephemeral",
-    "--ignore-user-config",
     "--sandbox",
     "workspace-write",
 ]
