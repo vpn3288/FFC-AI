@@ -27,6 +27,21 @@ class InstallRunnerScriptTests(unittest.TestCase):
             state = root / "state"
             workspaces = root / "workspaces"
             install = root / "install"
+            state.mkdir()
+            existing_bridge_secret = "A" * 43
+            (state / "config.env").write_text(
+                "\n".join(
+                    [
+                        f"AI_BRIDGE_SHARED_SECRET={existing_bridge_secret}",
+                        "MATTERMOST_PLATFORM_URL=https://mattermost.example",
+                        "MATTERMOST_WEBHOOK_URL=https://mattermost.example/hooks/hook-id",
+                        "MATTERMOST_SLASH_TOKEN=slash-token",
+                        "AI_BRIDGE_SECRET_TRANSFER_METHOD=ssh",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             write_executable(
                 fakebin / "sudo",
@@ -111,6 +126,11 @@ class InstallRunnerScriptTests(unittest.TestCase):
             self.assertIn("claude auth not required unless claude-code provider is requested", result.stdout)
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn("AI_RUNNER_PROVIDERS=codex\n", config)
+            self.assertIn(f"AI_BRIDGE_SHARED_SECRET={existing_bridge_secret}\n", config)
+            self.assertIn("MATTERMOST_PLATFORM_URL=https://mattermost.example\n", config)
+            self.assertIn("MATTERMOST_WEBHOOK_URL=https://mattermost.example/hooks/hook-id\n", config)
+            self.assertIn("MATTERMOST_SLASH_TOKEN=slash-token\n", config)
+            self.assertIn("AI_BRIDGE_SECRET_TRANSFER_METHOD=ssh\n", config)
             provider_selection = json.loads((state / "provider-selection.json").read_text(encoding="utf-8"))
             self.assertEqual(provider_selection, {"provider": "codex"})
 

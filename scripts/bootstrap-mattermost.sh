@@ -201,10 +201,26 @@ else
 fi
 
 log 'creating incoming webhook through Mattermost REST API'
-if [ -z "$WEBHOOK_CHANNEL_ID" ]; then
-  WEBHOOK_CHANNEL_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/$TEAM_ID/channels/name/ai-status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+HOOK_ID=""
+if [ -f "$MANIFEST" ]; then
+  HOOK_ID="$(python3 - "$MANIFEST" <<'PY'
+import json
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    print(json.loads(path.read_text(encoding="utf-8")).get("incoming_webhook_id", ""))
+except json.JSONDecodeError:
+    print("")
+PY
+)"
 fi
-HOOK_ID="$(rest_json POST "$MATTERMOST_URL/api/v4/hooks/incoming" "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')"
+if [ -z "$HOOK_ID" ]; then
+  if [ -z "$WEBHOOK_CHANNEL_ID" ]; then
+    WEBHOOK_CHANNEL_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/$TEAM_ID/channels/name/ai-status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+  fi
+  HOOK_ID="$(rest_json POST "$MATTERMOST_URL/api/v4/hooks/incoming" "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')"
+fi
 [ -n "$HOOK_ID" ] || { log 'incoming webhook creation did not return an id'; exit 1; }
 sudo tee "$MANIFEST" >/dev/null <<EOF
 {

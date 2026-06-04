@@ -48,6 +48,13 @@ apt_install() {
   fi
 }
 
+config_value() {
+  local key="$1"
+  if [ "$DRY_RUN" = false ] && [ -f "$STATE_ROOT/config.env" ]; then
+    sudo awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$STATE_ROOT/config.env"
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
@@ -249,6 +256,8 @@ log 'stage 06: create runner configuration files'
 SNAPSHOT_DIR="$STATE_ROOT/install-snapshots"
 if [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ]; then
   BRIDGE_SECRET="$AI_BRIDGE_SHARED_SECRET"
+elif [ -n "$(config_value AI_BRIDGE_SHARED_SECRET)" ]; then
+  BRIDGE_SECRET="$(config_value AI_BRIDGE_SHARED_SECRET)"
 else
   BRIDGE_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 fi
@@ -266,6 +275,11 @@ if [ "$DRY_RUN" = false ]; then
     sudo chmod 0600 "$SNAPSHOT_DIR/config.env.preinstall"
     SNAPSHOT_CONFIG_ENV_JSON="\"$SNAPSHOT_DIR/config.env.preinstall\""
   fi
+  PREVIOUS_MATTERMOST_PLATFORM_URL="$(config_value MATTERMOST_PLATFORM_URL)"
+  PREVIOUS_MATTERMOST_WEBHOOK_URL="$(config_value MATTERMOST_WEBHOOK_URL)"
+  PREVIOUS_MATTERMOST_BOT_TOKEN="$(config_value MATTERMOST_BOT_TOKEN)"
+  PREVIOUS_MATTERMOST_SLASH_TOKEN="$(config_value MATTERMOST_SLASH_TOKEN)"
+  PREVIOUS_AI_BRIDGE_SECRET_TRANSFER_METHOD="$(config_value AI_BRIDGE_SECRET_TRANSFER_METHOD)"
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
@@ -286,6 +300,21 @@ EOF
   if [ -n "${CODEX_BASE_URL:-}" ]; then
     printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
+  for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD; do
+    value="$(printenv "$key" || true)"
+    if [ -z "$value" ]; then
+      case "$key" in
+        MATTERMOST_PLATFORM_URL) value="$PREVIOUS_MATTERMOST_PLATFORM_URL" ;;
+        MATTERMOST_WEBHOOK_URL) value="$PREVIOUS_MATTERMOST_WEBHOOK_URL" ;;
+        MATTERMOST_BOT_TOKEN) value="$PREVIOUS_MATTERMOST_BOT_TOKEN" ;;
+        MATTERMOST_SLASH_TOKEN) value="$PREVIOUS_MATTERMOST_SLASH_TOKEN" ;;
+        AI_BRIDGE_SECRET_TRANSFER_METHOD) value="$PREVIOUS_AI_BRIDGE_SECRET_TRANSFER_METHOD" ;;
+      esac
+    fi
+    if [ -n "$value" ]; then
+      printf '%s=%s\n' "$key" "$value" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    fi
+  done
   sudo chmod 0600 "$STATE_ROOT/config.env"
   if [ -n "$AI_DEFAULT_PROVIDER" ]; then
     sudo mkdir -p "$STATE_ROOT"
