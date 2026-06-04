@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import secrets
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from ai_remote_runner.security import b64url_encode, sign_body, verify_headers, NonceStore
+from ai_remote_runner.security import MAX_STORED_NONCES, b64url_encode, sign_body, verify_headers, NonceStore
 
 
 class SecurityTests(unittest.TestCase):
@@ -22,7 +23,7 @@ class SecurityTests(unittest.TestCase):
                 "X-AI-Bridge-Nonce": nonce,
                 "X-AI-Bridge-Signature": signature,
             }
-            store = NonceStore(Path(tmp) / "nonces.json")
+            store = NonceStore(Path(tmp) / "nonces.json", ttl_seconds=MAX_STORED_NONCES + 10)
             self.assertEqual(verify_headers(secret, headers, body, store), (True, "ok"))
             self.assertEqual(verify_headers(secret, headers, body, store), (False, "replay_nonce"))
 
@@ -52,6 +53,15 @@ class SecurityTests(unittest.TestCase):
             ok, reason = verify_headers(secret, headers, tampered, NonceStore(Path(tmp) / "nonces.json"))
             self.assertFalse(ok)
             self.assertEqual(reason, "bad_signature")
+
+    def test_nonce_store_rotates_when_large(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NonceStore(Path(tmp) / "nonces.json", ttl_seconds=MAX_STORED_NONCES + 10)
+            store.path.write_text(json.dumps({f"nonce-{index}": float(index) for index in range(MAX_STORED_NONCES)}), encoding="utf-8")
+            self.assertTrue(store.check_and_store(f"nonce-{MAX_STORED_NONCES}", now=float(MAX_STORED_NONCES)))
+            data = store._load()
+            self.assertLessEqual(len(data), 5000)
+            self.assertIn(f"nonce-{MAX_STORED_NONCES}", data)
 
 
 if __name__ == "__main__":

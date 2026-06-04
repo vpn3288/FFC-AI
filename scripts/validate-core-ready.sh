@@ -19,6 +19,10 @@ fi
 python3 -m ai_remote_runner.cli providers >/dev/null
 python3 -m ai_remote_runner.cli index >/dev/null
 : "${AI_BRIDGE_SHARED_SECRET:?AI_BRIDGE_SHARED_SECRET is required for bridge loopback validation}"
+if command -v claude >/dev/null 2>&1; then
+  claude auth status --json >/dev/null
+  claude -p --bare --output-format json --max-turns 1 --max-budget-usd 0.05 --tools "" --no-session-persistence -- 'Return OK only.' >/dev/null
+fi
 
 python3 - "$BRIDGE_COMMAND_URL" "$AI_BRIDGE_SHARED_SECRET" <<'PY' >/dev/null
 import json

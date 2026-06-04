@@ -183,9 +183,9 @@ log 'stage 10: run provider smoke tests'
 python3 -m ai_remote_runner.cli providers
 if [ "$DRY_RUN" = false ] && command -v claude >/dev/null 2>&1; then
   claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready'; exit 1; }
-  claude -p --bare --output-format json --max-turns 1 --max-budget-usd 0.05 --tools "" --no-session-persistence -- 'Return OK only.' >/dev/null || { log 'claude print-json smoke failed'; exit 1; }
+  log 'defer real Claude print-json smoke to scripts/validate-core-ready.sh to avoid install-time provider spend'
 elif [ "$DRY_RUN" = true ]; then
-  log 'would run claude auth status and print-json smoke test'
+  log 'would run claude auth status; real print-json smoke is deferred to core-ready validation'
 fi
 
 log 'stage 11: run phone command smoke tests'

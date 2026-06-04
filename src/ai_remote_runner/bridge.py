@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from .commands import parse_command
 from .executor import RunnerRuntime, execute
-from .security import NonceStore, verify_headers
+from .security import NonceStore, verify_header_preamble, verify_headers
 
 
 MAX_BODY_BYTES = int(os.environ.get("AI_BRIDGE_MAX_BODY_BYTES", str(10 * 1024 * 1024)))
@@ -23,6 +23,7 @@ class BridgeState:
         self.commands_path = root / "bridge-commands.jsonl"
         self.events_path = root / "bridge-events.jsonl"
         self.responses_path = root / "bridge-responses.json"
+        self.credential_uploads_path = root / "credential-upload-tokens.json"
         self.nonce_store = NonceStore(root / "bridge-nonces.json")
         self.runtime = RunnerRuntime(root, Path(os.environ.get("AI_WORKSPACE_ROOT", "/srv/ai-workspaces")), os.environ.get("MATTERMOST_WEBHOOK_URL"))
         root.mkdir(parents=True, exist_ok=True)
@@ -44,9 +45,24 @@ class BridgeState:
         data[request_id] = response
         self.responses_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
+    def credential_uploads(self) -> dict[str, dict]:
+        if not self.credential_uploads_path.exists():
+            return {}
+        try:
+            return json.loads(self.credential_uploads_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+
+    def save_credential_uploads(self, data: dict[str, dict]) -> None:
+        self.credential_uploads_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
 
 class BridgeHandler(BaseHTTPRequestHandler):
     server_version = "AIRemoteBridge/0.1"
+
+    def log_message(self, format: str, *args: object) -> None:
+        if os.environ.get("AI_BRIDGE_ACCESS_LOG") == "1":
+            super().log_message(format, *args)
 
     @property
     def state(self) -> BridgeState:
@@ -70,6 +86,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         headers = {key: self.headers[key] for key in self.headers}
         return verify_headers(self.state.shared_secret, headers, body, self.state.nonce_store)
 
+    def _preauth(self) -> tuple[bool, str]:
+        headers = {key: self.headers[key] for key in self.headers}
+        return verify_header_preamble(headers)
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         ok, reason = self._auth(b"")
@@ -89,6 +109,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        ok, reason = self._preauth()
+        if not ok:
+            self._json(401, {"status": "rejected", "error": {"code": reason, "detail": reason}})
+            return
         try:
             body = self._read_body()
         except ValueError:
@@ -123,12 +147,45 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._json(200, response)
             return
 
+        if path == "/bridge/credential-upload-url":
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            handle = metadata.get("handle") or f"credential://pending/{uuid.uuid4()}"
+            metadata["handle"] = handle
+            token = uuid.uuid4().hex
+            uploads = self.state.credential_uploads()
+            uploads[token] = {"metadata": metadata, "expires_at": int(time.time()) + 600}
+            self.state.save_credential_uploads(uploads)
+            self._json(200, {"status": "accepted", "handle": handle, "expires_at": uploads[token]["expires_at"], "upload_path": f"/bridge/credential-upload/{token}", "method": "PUT"})
+            return
+
         if path == "/bridge/event":
             self.state.append_jsonl(self.state.events_path, payload)
             self._json(200, {"status": "accepted"})
             return
 
         self._json(404, {"error": "not_found"})
+
+    def do_PUT(self) -> None:
+        path = urlparse(self.path).path
+        prefix = "/bridge/credential-upload/"
+        if not path.startswith(prefix):
+            self._json(404, {"error": "not_found"})
+            return
+        token = path[len(prefix) :]
+        uploads = self.state.credential_uploads()
+        record = uploads.get(token)
+        if not record or int(record.get("expires_at", 0)) < int(time.time()):
+            self._json(404, {"status": "rejected", "error": {"code": "upload_token_not_found", "detail": "upload_token_not_found"}})
+            return
+        try:
+            body = self._read_body()
+        except ValueError:
+            self._json(413, {"status": "rejected", "error": {"code": "request_too_large", "detail": "request_too_large"}})
+            return
+        public = self.state.runtime.credentials.add_local_secret(record["metadata"], body.decode("utf-8"))
+        uploads.pop(token, None)
+        self.state.save_credential_uploads(uploads)
+        self._json(200, {"status": "accepted", "credential": public})
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765) -> None:

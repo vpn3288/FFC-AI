@@ -79,6 +79,45 @@ class ExecutorTests(unittest.TestCase):
             context_file = runtime.state / "contexts" / "default.json"
             self.assertTrue(context_file.exists())
 
+    def test_task_run_rejects_secret_like_instruction_before_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            fake_key = "sk-" + "a" * 24
+            runtime.instructions.write("global", f"api_key={fake_key}")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            with patch("ai_remote_runner.executor.invoke_claude") as invoke:
+                response = execute(parsed, {"request_id": "sec1", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "secrets_in_instructions")
+            invoke.assert_not_called()
+
+    def test_budget_preflight_blocks_provider_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            data = runtime.ledger.load()
+            data["daily_usd_limit"] = 0.5
+            data["monthly_usd_limit"] = 0.5
+            runtime.ledger.save(data)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            with patch("ai_remote_runner.executor.invoke_claude") as invoke:
+                response = execute(parsed, {"request_id": "bud1", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "daily_budget_exceeded")
+            invoke.assert_not_called()
+
+    def test_context_hard_stop_includes_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            old_state = runtime.contexts.load("default", "claude-code", limit=100)
+            old_state["context_used_tokens"] = 94
+            old_state["context_limit_tokens"] = 100
+            runtime.contexts.path("default").write_text(json.dumps(old_state), encoding="utf-8")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            response = execute(parsed, {"request_id": "ctx1", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "context_hard_stop")
+            self.assertIn("/ai 压缩", response["error"]["detail"])
+
     def test_provider_selection_persists_and_drives_task_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")

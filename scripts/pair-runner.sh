@@ -6,9 +6,13 @@ PLATFORM_URL=""
 WEBHOOK_URL=""
 BOT_TOKEN=""
 BRIDGE_SECRET=""
+BRIDGE_SECRET_FILE=""
+BRIDGE_SECRET_STDIN=false
+TRANSFER_METHOD=""
+UNDERSTAND_RISK=false
 
 usage() {
-  printf 'usage: %s --platform-url URL --webhook-url URL --bot-token TOKEN --bridge-secret SECRET\n' "$0"
+  printf 'usage: %s --platform-url URL --webhook-url URL --bot-token TOKEN --transfer-method ssh|broker|manual-secure [--bridge-secret-file PATH|--bridge-secret-stdin|--bridge-secret SECRET --i-understand-risk]\n' "$0"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -17,13 +21,32 @@ while [ "$#" -gt 0 ]; do
     --webhook-url) WEBHOOK_URL="$2"; shift ;;
     --bot-token) BOT_TOKEN="$2"; shift ;;
     --bridge-secret) BRIDGE_SECRET="$2"; shift ;;
+    --bridge-secret-file) BRIDGE_SECRET_FILE="$2"; shift ;;
+    --bridge-secret-stdin) BRIDGE_SECRET_STDIN=true ;;
+    --transfer-method) TRANSFER_METHOD="$2"; shift ;;
+    --i-understand-risk) UNDERSTAND_RISK=true ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
   shift
 done
 
-[ -n "$PLATFORM_URL" ] && [ -n "$WEBHOOK_URL" ] && [ -n "$BOT_TOKEN" ] && [ -n "$BRIDGE_SECRET" ] || { usage; exit 2; }
+[ -n "$PLATFORM_URL" ] && [ -n "$WEBHOOK_URL" ] && [ -n "$BOT_TOKEN" ] && [ -n "$TRANSFER_METHOD" ] || { usage; exit 2; }
+case "$TRANSFER_METHOD" in
+  ssh|broker|manual-secure) ;;
+  *) printf '[pair-runner] --transfer-method must be ssh, broker, or manual-secure\n' >&2; exit 2 ;;
+esac
+if [ -n "$BRIDGE_SECRET_FILE" ]; then
+  BRIDGE_SECRET="$(tr -d '\r\n' < "$BRIDGE_SECRET_FILE")"
+elif [ "$BRIDGE_SECRET_STDIN" = true ]; then
+  BRIDGE_SECRET="$(tr -d '\r\n')"
+elif [ -n "$BRIDGE_SECRET" ]; then
+  [ "$TRANSFER_METHOD" = "manual-secure" ] && [ "$UNDERSTAND_RISK" = true ] || {
+    printf '[pair-runner] raw --bridge-secret arguments may enter shell history; use --bridge-secret-file/--bridge-secret-stdin or acknowledge --transfer-method manual-secure --i-understand-risk\n' >&2
+    exit 2
+  }
+fi
+[ -n "$BRIDGE_SECRET" ] || { usage; exit 2; }
 case "$BRIDGE_SECRET" in
   *[!A-Za-z0-9_-]*)
     printf '[pair-runner] bridge secret must be base64url characters only\n' >&2
@@ -49,6 +72,7 @@ MATTERMOST_PLATFORM_URL=$PLATFORM_URL
 MATTERMOST_WEBHOOK_URL=$WEBHOOK_URL
 MATTERMOST_BOT_TOKEN=$BOT_TOKEN
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
+AI_BRIDGE_SECRET_TRANSFER_METHOD=$TRANSFER_METHOD
 EOF
 sudo chmod 0600 "$STATE_ROOT/config.env"
 printf '[pair-runner] pairing config written; run bridge loopback smoke test next\n'

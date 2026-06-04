@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,14 @@ from .instructions import InstructionStore
 from .paths import state_root, workspace_root
 from .providers import provider_status
 from .providers import build_instruction_prompt, invoke_claude, invoke_codex
+
+
+SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("github_token", re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b")),
+    ("anthropic_or_openai_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")),
+    ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*[A-Za-z0-9_-]{32,}\b")),
+)
 
 
 @dataclass
@@ -99,6 +108,10 @@ def _provider_from_args(args: list[str]) -> str | None:
     return None
 
 
+def _secret_findings(text: str) -> list[str]:
+    return [name for name, pattern in SECRET_PATTERNS if pattern.search(text)]
+
+
 def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
     return {
         "core_ready": False,
@@ -154,7 +167,14 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "task.run":
         prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
         provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        reserved_usd = float(envelope.get("reserved_usd", 1.0))
+        budget_ok, budget_reason = rt.ledger.can_reserve(reserved_usd)
+        if not budget_ok:
+            return _error(request_id, budget_reason, f"Budget preflight failed before provider start: {budget_reason}")
         instruction_prompt = build_instruction_prompt(rt.instructions, workspace_id)
+        secret_findings = _secret_findings(instruction_prompt)
+        if secret_findings:
+            return _error(request_id, "secrets_in_instructions", f"Secret-like material in instructions: {', '.join(secret_findings)}. Move secrets into credential handles.")
         global_info = rt.instructions.show("global", workspace_id)
         project_info = rt.instructions.show("project", workspace_id)
         policy = rt.load_policy()
@@ -168,7 +188,11 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, prompt)
         context_state = ContextState(conversation_id, provider, existing["context_limit_tokens"], used)
         if context_state.hard_stop:
-            return _error(request_id, "context_hard_stop", "context_hard_stop")
+            return _error(
+                request_id,
+                "context_hard_stop",
+                f"Context usage {context_state.context_used_percent}% exceeds hard limit {context_state.hard_stop_threshold_percent}%. Run /ai 压缩 or /ai 新对话 to continue.",
+            )
         if context_state.needs_warning:
             rt.events.emit(status_event(run_id, "warning", "上下文接近上限，请考虑压缩或新对话", provider))
             auto_compact_enabled = bool(policy.get("auto_compact_enabled")) or str(envelope.get("auto_compact_enabled", "")).lower() in {"1", "true", "yes"}
@@ -182,9 +206,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         workspace.mkdir(parents=True, exist_ok=True)
         emit = rt.events.emit
         if provider == "codex":
-            result = invoke_codex(prompt, workspace, rt.ledger, run_id=run_id, emit=emit)
+            result = invoke_codex(prompt, workspace, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
         else:
-            result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, emit=emit)
+            result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
         rt.contexts.add_exchange(conversation_id, provider, instruction_prompt, prompt, result.output_text)
         return _ok(
             request_id,
@@ -225,6 +249,8 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             {
                 "handle": handle,
                 "secret_material": "never send secret material in chat",
+                "bridge_upload_url_endpoint": "/bridge/credential-upload-url",
+                "bridge_upload_url_method": "POST",
                 "local_capture_command": f"python3 -m ai_remote_runner.cli credential-add-secret --metadata-json '{{\"handle\":\"{handle}\"}}'",
                 "status": "awaiting_local_secret_capture",
             },

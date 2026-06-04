@@ -22,6 +22,9 @@ class CredentialBroker:
     def _require_openssl(self) -> None:
         if not shutil.which("openssl"):
             raise RuntimeError("openssl_required_for_local_encrypted_file")
+        result = subprocess.run(["openssl", "enc", "-help"], text=True, capture_output=True, check=False)
+        if result.returncode != 0 or "-pbkdf2" not in result.stdout + result.stderr:
+            raise RuntimeError("openssl_pbkdf2_required_for_local_encrypted_file")
 
     def _ensure_key(self) -> None:
         if not self.key_path.exists():

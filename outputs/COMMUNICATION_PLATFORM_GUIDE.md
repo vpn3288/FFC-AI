@@ -109,6 +109,8 @@ stage 14: run phone command smoke tests
 stage 15: run backup smoke test
 ```
 
+Fresh Mattermost bootstrap MUST obtain an admin personal access token through initial web login or an equivalent `mmctl --local` admin bootstrap before REST slash-command and webhook creation. Installer MUST fail loudly, not mark platform ready, when `MATTERMOST_ADMIN_TOKEN` is absent.
+
 Bridge shared secret:
 
 ```text
@@ -435,7 +437,7 @@ Commands:
 /ai 凭据 删除 <handle>
 ```
 
-The platform collects input through modal, one-time upload URL, or local CLI fallback. The AI runner credential broker stores, decrypts, and executes.
+The platform collects input through modal, one-time upload URL, or local CLI fallback. `/bridge/credential-upload-url` MUST mint a short-lived token; `/bridge/credential-upload/{token}` MUST accept the secret once and return only public credential metadata. The AI runner credential broker stores, decrypts, and executes.
 
 General chat privacy is out of scope. Credential plaintext in ordinary chat history is still prohibited.
 

@@ -7,6 +7,9 @@ import json
 import time
 from pathlib import Path
 
+MAX_STORED_NONCES = 10000
+ROTATED_NONCES = 5000
+
 
 def b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -44,8 +47,27 @@ class NonceStore:
         if nonce in data:
             return False
         data[nonce] = current
+        if len(data) > MAX_STORED_NONCES:
+            newest = sorted(data.items(), key=lambda item: float(item[1]), reverse=True)[:ROTATED_NONCES]
+            data = dict(newest)
         self.path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
         return True
+
+
+def verify_header_preamble(headers: dict[str, str], max_skew_seconds: int = 300) -> tuple[bool, str]:
+    normalized = {key.lower(): value for key, value in headers.items()}
+    timestamp = normalized.get("x-ai-bridge-timestamp", "")
+    nonce = normalized.get("x-ai-bridge-nonce", "")
+    signature = normalized.get("x-ai-bridge-signature", "")
+    if not timestamp or not nonce or not signature:
+        return False, "missing_bridge_auth_header"
+    try:
+        ts_value = float(timestamp)
+    except ValueError:
+        return False, "invalid_timestamp"
+    if abs(time.time() - ts_value) > max_skew_seconds:
+        return False, "timestamp_skew"
+    return True, "ok"
 
 
 def verify_headers(
@@ -55,17 +77,13 @@ def verify_headers(
     nonce_store: NonceStore,
     max_skew_seconds: int = 300,
 ) -> tuple[bool, str]:
-    timestamp = headers.get("X-AI-Bridge-Timestamp", "")
-    nonce = headers.get("X-AI-Bridge-Nonce", "")
-    signature = headers.get("X-AI-Bridge-Signature", "")
-    if not timestamp or not nonce or not signature:
-        return False, "missing_bridge_auth_header"
-    try:
-        ts_value = float(timestamp)
-    except ValueError:
-        return False, "invalid_timestamp"
-    if abs(time.time() - ts_value) > max_skew_seconds:
-        return False, "timestamp_skew"
+    ok, reason = verify_header_preamble(headers, max_skew_seconds=max_skew_seconds)
+    if not ok:
+        return ok, reason
+    normalized = {key.lower(): value for key, value in headers.items()}
+    timestamp = normalized.get("x-ai-bridge-timestamp", "")
+    nonce = normalized.get("x-ai-bridge-nonce", "")
+    signature = normalized.get("x-ai-bridge-signature", "")
     expected = sign_body(shared_secret, timestamp, nonce, raw_body)
     if not hmac.compare_digest(expected, signature):
         return False, "bad_signature"

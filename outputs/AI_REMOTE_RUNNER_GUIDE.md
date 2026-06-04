@@ -115,6 +115,8 @@ Bridge protocol contract:
 ```http
 POST /bridge/command        # direct/VPN mode only
 POST /bridge/event          # runner-to-VPS event post
+POST /bridge/credential-upload-url
+PUT  /bridge/credential-upload/{token}
 GET  /bridge/health
 GET  /bridge/poll           # runner-initiated polling mode
 WS   /bridge/ws             # preferred runner-initiated persistent mode
