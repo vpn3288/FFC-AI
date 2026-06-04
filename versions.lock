@@ -1,4 +1,5 @@
 mattermost_app_image=mattermost/mattermost-team-edition:10.5.3@sha256:2f780eac14d4fdb02f46a592489605f5024fd20ac7a0a44697bd8c57ff6ce942
+mattermost_version=10.5.3
 mattermost_db_image=postgres:15.10-alpine@sha256:a58cec2ba7a60b4c08d51f2ca93c1ad65fbf96e75cf0c89b7c0d2684860d3bb3
 mattermost_caddy_image=caddy:2.8.4-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
 mattermost_docker_ref=3b62fdbb4d8e0f189b7c5e1f8a5f9fba2a5b35c8

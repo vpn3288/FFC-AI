@@ -13,7 +13,11 @@ log() {
 }
 
 mmctl() {
-  (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl --local "$@")
+  if [ -x "$INSTALL_DIR/mattermost/bin/mmctl" ]; then
+    (cd "$INSTALL_DIR/mattermost" && bin/mmctl --local "$@")
+  else
+    (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl --local "$@")
+  fi
 }
 
 compose() {
@@ -81,8 +85,8 @@ require_rest_config() {
 }
 
 log 'creating Mattermost team/channels/bot identities with mmctl --local'
-if ! (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl version >/dev/null 2>&1); then
-  log 'mmctl not available in Mattermost container; bootstrap requires a healthy Mattermost container'
+if ! mmctl version >/dev/null 2>&1; then
+  log 'mmctl not available; bootstrap requires a healthy Mattermost service'
   exit 1
 fi
 ensure_team ai-lab "AI Lab"

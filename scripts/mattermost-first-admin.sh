@@ -23,7 +23,11 @@ done
 [ -n "$ADMIN_PASSWORD" ] || { usage; exit 2; }
 
 mmctl() {
-  (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl --local "$@")
+  if [ -x "$INSTALL_DIR/mattermost/bin/mmctl" ]; then
+    (cd "$INSTALL_DIR/mattermost" && bin/mmctl --local "$@")
+  else
+    (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl --local "$@")
+  fi
 }
 
 compose() {
