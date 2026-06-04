@@ -6,6 +6,8 @@ STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
 WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-/srv/ai-workspaces}"
 INSTALL_ROOT="${AI_REMOTE_INSTALL_ROOT:-/opt/ai-remote-runner}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6-20260130}"
+AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-}"
+AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
@@ -20,6 +22,14 @@ usage() {
 
 log() {
   printf '[install-runner] %s\n' "$*"
+}
+
+normalize_provider() {
+  case "$1" in
+    claude) printf 'claude-code' ;;
+    claude-code|codex) printf '%s' "$1" ;;
+    *) return 1 ;;
+  esac
 }
 
 run() {
@@ -47,6 +57,56 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+REQUEST_CLAUDE=false
+REQUEST_CODEX=false
+if [ -z "$AI_RUNNER_PROVIDERS" ]; then
+  if [ -n "$AI_DEFAULT_PROVIDER" ]; then
+    AI_RUNNER_PROVIDERS="$AI_DEFAULT_PROVIDER"
+  else
+    AI_RUNNER_PROVIDERS="claude-code,codex"
+  fi
+fi
+for provider in ${AI_RUNNER_PROVIDERS//,/ }; do
+  case "$provider" in
+    all|both)
+      REQUEST_CLAUDE=true
+      REQUEST_CODEX=true
+      ;;
+    claude|claude-code|codex)
+      normalized_provider="$(normalize_provider "$provider")"
+      case "$normalized_provider" in
+        claude-code) REQUEST_CLAUDE=true ;;
+        codex) REQUEST_CODEX=true ;;
+      esac
+      ;;
+    *)
+      log "AI_RUNNER_PROVIDERS contains unsupported provider: $provider"
+      exit 2
+      ;;
+  esac
+done
+if [ "$REQUEST_CLAUDE" = false ] && [ "$REQUEST_CODEX" = false ]; then
+  log 'AI_RUNNER_PROVIDERS must request claude-code, codex, or both'
+  exit 2
+fi
+if [ "$REQUEST_CLAUDE" = true ] && [ "$REQUEST_CODEX" = true ]; then
+  AI_RUNNER_PROVIDERS="claude-code,codex"
+elif [ "$REQUEST_CLAUDE" = true ]; then
+  AI_RUNNER_PROVIDERS="claude-code"
+else
+  AI_RUNNER_PROVIDERS="codex"
+fi
+if [ -z "$AI_DEFAULT_PROVIDER" ] && { [ "$REQUEST_CLAUDE" = false ] || [ "$REQUEST_CODEX" = false ]; }; then
+  AI_DEFAULT_PROVIDER="$AI_RUNNER_PROVIDERS"
+fi
+if [ -n "$AI_DEFAULT_PROVIDER" ]; then
+  AI_DEFAULT_PROVIDER="$(normalize_provider "$AI_DEFAULT_PROVIDER")" || { log 'AI_DEFAULT_PROVIDER must be claude-code, claude, or codex'; exit 2; }
+  case ",$AI_RUNNER_PROVIDERS," in
+    *",$AI_DEFAULT_PROVIDER,"*) ;;
+    *) log "AI_DEFAULT_PROVIDER=$AI_DEFAULT_PROVIDER must be included in AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS"; exit 2 ;;
+  esac
+fi
+
 log 'stage 01: detect OS, WSL, architecture, systemd availability, shell, PATH'
 OS_ID="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-unknown}")"
 ARCH="$(uname -m)"
@@ -69,37 +129,41 @@ else
   log 'apt-get unavailable; package installation skipped and must be handled externally'
 fi
 
-log 'stage 03: install or verify Claude Code'
-if command -v claude >/dev/null 2>&1; then
-  claude --version
-elif command -v apt-get >/dev/null 2>&1; then
-  # Source: official Claude Code installation docs, https://code.claude.com/docs/en/installation
-  run sudo install -d -m 0755 /etc/apt/keyrings
-  run sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc
-  if [ "$DRY_RUN" = false ]; then
-    command -v gpg >/dev/null 2>&1 || { log 'gpg required for Claude Code apt key verification'; exit 1; }
-    ACTUAL_FINGERPRINT="$(gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc | awk -F: '/^fpr:/ {print $10; exit}')"
-    EXPECTED_FINGERPRINT="$(read_lock claude_code_apt_key_fingerprint)"
-    [ -n "$EXPECTED_FINGERPRINT" ] || { log 'versions.lock must pin claude_code_apt_key_fingerprint'; exit 1; }
-    [ "$ACTUAL_FINGERPRINT" = "$EXPECTED_FINGERPRINT" ] || {
-      log 'Claude Code apt signing key fingerprint mismatch'
-      exit 1
-    }
-    echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
-      | sudo tee /etc/apt/sources.list.d/claude-code.list >/dev/null
+log 'stage 03: install or verify requested Claude Code provider'
+if [ "$REQUEST_CLAUDE" = true ]; then
+  if command -v claude >/dev/null 2>&1; then
+    claude --version
+  elif command -v apt-get >/dev/null 2>&1; then
+    # Source: official Claude Code installation docs, https://code.claude.com/docs/en/installation
+    run sudo install -d -m 0755 /etc/apt/keyrings
+    run sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc
+    if [ "$DRY_RUN" = false ]; then
+      command -v gpg >/dev/null 2>&1 || { log 'gpg required for Claude Code apt key verification'; exit 1; }
+      ACTUAL_FINGERPRINT="$(gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc | awk -F: '/^fpr:/ {print $10; exit}')"
+      EXPECTED_FINGERPRINT="$(read_lock claude_code_apt_key_fingerprint)"
+      [ -n "$EXPECTED_FINGERPRINT" ] || { log 'versions.lock must pin claude_code_apt_key_fingerprint'; exit 1; }
+      [ "$ACTUAL_FINGERPRINT" = "$EXPECTED_FINGERPRINT" ] || {
+        log 'Claude Code apt signing key fingerprint mismatch'
+        exit 1
+      }
+      echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+        | sudo tee /etc/apt/sources.list.d/claude-code.list >/dev/null
+    else
+      log 'would verify Claude Code apt key fingerprint and write /etc/apt/sources.list.d/claude-code.list'
+    fi
+    run sudo apt-get update
+    apt_install claude-code
+    command -v claude >/dev/null 2>&1 || { log 'claude install failed; see official Claude Code installation docs'; exit 1; }
+    claude --version
   else
-    log 'would verify Claude Code apt key fingerprint and write /etc/apt/sources.list.d/claude-code.list'
+    log 'claude missing and native installer unavailable; install from official Claude Code docs before core_ready'
+    exit 1
   fi
-  run sudo apt-get update
-  apt_install claude-code
-  command -v claude >/dev/null 2>&1 || { log 'claude install failed; see official Claude Code installation docs'; exit 1; }
-  claude --version
 else
-  log 'claude missing and native installer unavailable; install from official Claude Code docs before core_ready'
-  exit 1
+  log 'skip Claude Code install; provider not requested'
 fi
 
-log 'stage 04: install or verify Codex CLI'
+log 'stage 04: install or verify requested Codex CLI provider'
 CODEX_NPM_PACKAGE="$(read_lock codex_npm_package || true)"
 CODEX_NPM_VERSION="$(read_lock codex_npm_version || true)"
 CODEX_NPM_PACKAGE="${CODEX_NPM_PACKAGE:-@openai/codex}"
@@ -107,26 +171,32 @@ CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.137.0}"
 CODEX_READY=false
 CODEX_STATUS="external_prerequisite"
 CODEX_REMEDIATION_ZH="Codex CLI 未安装；请按当前 Codex 官方安装说明手动安装后重新运行 /ai 提供商 列表。"
-if command -v codex >/dev/null 2>&1; then
-  codex --version
-  CODEX_READY=true
-  CODEX_STATUS="installed"
-  CODEX_REMEDIATION_ZH=""
-elif command -v apt-get >/dev/null 2>&1; then
-  log "codex missing; installing $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION through npm"
-  apt_install nodejs npm
-  if [ "$DRY_RUN" = false ]; then
-    npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
-    command -v codex >/dev/null 2>&1 || { log 'codex npm install did not place codex on PATH'; exit 1; }
+if [ "$REQUEST_CODEX" = true ]; then
+  if command -v codex >/dev/null 2>&1; then
     codex --version
     CODEX_READY=true
     CODEX_STATUS="installed"
     CODEX_REMEDIATION_ZH=""
+  elif command -v apt-get >/dev/null 2>&1; then
+    log "codex missing; installing $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION through npm"
+    apt_install nodejs npm
+    if [ "$DRY_RUN" = false ]; then
+      npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+      command -v codex >/dev/null 2>&1 || { log 'codex npm install did not place codex on PATH'; exit 1; }
+      codex --version
+      CODEX_READY=true
+      CODEX_STATUS="installed"
+      CODEX_REMEDIATION_ZH=""
+    else
+      log "would run npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+    fi
   else
-    log "would run npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+    log 'codex missing; codex_status=external_prerequisite'
   fi
 else
-  log 'codex missing; codex_status=external_prerequisite'
+  CODEX_STATUS="not_requested"
+  CODEX_REMEDIATION_ZH=""
+  log 'skip Codex CLI install; provider not requested'
 fi
 if [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
   CODEX_KEY="${CODEX_API_KEY:-$OPENAI_API_KEY}"
@@ -199,6 +269,7 @@ if [ "$DRY_RUN" = false ]; then
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
+AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS
 CLAUDE_MODEL=$CLAUDE_MODEL
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
@@ -216,6 +287,18 @@ EOF
     printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
   sudo chmod 0600 "$STATE_ROOT/config.env"
+  if [ -n "$AI_DEFAULT_PROVIDER" ]; then
+    sudo mkdir -p "$STATE_ROOT"
+    python3 - "$AI_DEFAULT_PROVIDER" <<'PY' | sudo tee "$STATE_ROOT/provider-selection.json" >/dev/null
+import json
+import sys
+provider = sys.argv[1]
+if provider not in {"claude-code", "codex"}:
+    raise SystemExit("AI_DEFAULT_PROVIDER must be claude-code or codex")
+print(json.dumps({"provider": provider}, indent=2, sort_keys=True))
+PY
+    sudo chmod 0600 "$STATE_ROOT/provider-selection.json"
+  fi
 else
   log "would write $STATE_ROOT/config.env with a generated bridge secret"
 fi
@@ -268,11 +351,15 @@ log 'use scripts/pair-runner.sh with Mattermost URL, webhook URL, bot token, and
 
 log 'stage 10: run provider smoke tests'
 python3 -m ai_remote_runner.cli providers
-if [ "$DRY_RUN" = false ] && command -v claude >/dev/null 2>&1; then
-  claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready'; exit 1; }
+if [ "$DRY_RUN" = false ] && [ "$REQUEST_CLAUDE" = true ]; then
+  command -v claude >/dev/null 2>&1 || { log 'claude is required before core_ready for requested provider claude-code'; exit 1; }
+  claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready for requested provider claude-code'; exit 1; }
   log 'defer real Claude print-json smoke to scripts/validate-core-ready.sh to avoid install-time provider spend'
+elif [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
+  command -v codex >/dev/null 2>&1 || { log 'codex is required before core_ready for AI_DEFAULT_PROVIDER=codex'; exit 1; }
+  log 'claude auth not required unless claude-code provider is requested'
 elif [ "$DRY_RUN" = true ]; then
-  log 'would run claude auth status; real print-json smoke is deferred to core-ready validation'
+  log "would run provider smoke tests for AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS"
 fi
 
 log 'stage 11: run phone command smoke tests'

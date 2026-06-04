@@ -9,6 +9,7 @@ BRIDGE_COMMAND_URL="${BRIDGE_COMMAND_URL:-http://127.0.0.1:8765/bridge/command}"
 export AI_REMOTE_STATE="$STATE_ROOT"
 export AI_WORKSPACE_ROOT="$WORKSPACE_ROOT"
 export PYTHONPATH="${PYTHONPATH:-$ROOT/src}"
+AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-claude-code,codex}"
 if [ -f "$STATE_ROOT/config.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -19,8 +20,12 @@ fi
 python3 -m ai_remote_runner.cli providers >/dev/null
 python3 -m ai_remote_runner.cli index >/dev/null
 : "${AI_BRIDGE_SHARED_SECRET:?AI_BRIDGE_SHARED_SECRET is required for bridge loopback validation}"
-if command -v claude >/dev/null 2>&1; then
+if [[ ",$AI_RUNNER_PROVIDERS," == *",claude-code,"* ]]; then
+  command -v claude >/dev/null 2>&1 || { printf '[validate-core-ready] claude is required for requested provider claude-code\n' >&2; exit 1; }
   claude auth status --json >/dev/null
+fi
+if [[ ",$AI_RUNNER_PROVIDERS," == *",codex,"* ]]; then
+  command -v codex >/dev/null 2>&1 || { printf '[validate-core-ready] codex is required for requested provider codex\n' >&2; exit 1; }
 fi
 
 python3 - "$BRIDGE_COMMAND_URL" "$AI_BRIDGE_SHARED_SECRET" <<'PY' >/dev/null
