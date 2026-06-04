@@ -7,4 +7,6 @@ claude_code_install_source=https://code.claude.com/docs/en/installation
 claude_code_apt_key_fingerprint=31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
 claude_code_default_model=claude-opus-4-6-20260130
 claude_code_model_fallbacks=claude-opus-4-6-thinking,claude-opus-4-6,claude-opus-4-7-thinking,claude-opus-4-7,claude-opus-4-8-thinking,claude-opus-4-8
-codex_install_source=external_prerequisite
+codex_install_source=npm
+codex_npm_package=@openai/codex
+codex_npm_version=0.137.0

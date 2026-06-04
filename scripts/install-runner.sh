@@ -100,6 +100,10 @@ else
 fi
 
 log 'stage 04: install or verify Codex CLI'
+CODEX_NPM_PACKAGE="$(read_lock codex_npm_package || true)"
+CODEX_NPM_VERSION="$(read_lock codex_npm_version || true)"
+CODEX_NPM_PACKAGE="${CODEX_NPM_PACKAGE:-@openai/codex}"
+CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.137.0}"
 CODEX_READY=false
 CODEX_STATUS="external_prerequisite"
 CODEX_REMEDIATION_ZH="Codex CLI 未安装；请按当前 Codex 官方安装说明手动安装后重新运行 /ai 提供商 列表。"
@@ -108,6 +112,19 @@ if command -v codex >/dev/null 2>&1; then
   CODEX_READY=true
   CODEX_STATUS="installed"
   CODEX_REMEDIATION_ZH=""
+elif command -v apt-get >/dev/null 2>&1; then
+  log "codex missing; installing $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION through npm"
+  apt_install nodejs npm
+  if [ "$DRY_RUN" = false ]; then
+    npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+    command -v codex >/dev/null 2>&1 || { log 'codex npm install did not place codex on PATH'; exit 1; }
+    codex --version
+    CODEX_READY=true
+    CODEX_STATUS="installed"
+    CODEX_REMEDIATION_ZH=""
+  else
+    log "would run npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+  fi
 else
   log 'codex missing; codex_status=external_prerequisite'
 fi
