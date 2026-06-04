@@ -35,6 +35,20 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(parse_command("/ai context")["canonical_action"], "context_status")
         self.assertEqual(parse_command("/ai 整理上下文")["canonical_action"], "compact_context")
 
+    def test_permission_mode_commands_require_confirmation_when_risky(self) -> None:
+        edit = parse_command("/ai 编辑模式 开启")
+        shell = parse_command("/ai shell模式 开启")
+        chat = parse_command("/ai 聊天模式 开启")
+        self.assertEqual(edit["canonical_action"], "set_permission_edit")
+        self.assertTrue(edit["requires_confirmation"])
+        self.assertTrue(shell["requires_confirmation"])
+        self.assertFalse(chat["requires_confirmation"])
+
+    def test_bare_slash_is_not_a_command(self) -> None:
+        result = parse_command("/", allow_bare=True)
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["error"], "bare_slash_not_command")
+
     def test_index_has_chinese_descriptions(self) -> None:
         rows = command_index()
         self.assertGreater(len(rows), 10)

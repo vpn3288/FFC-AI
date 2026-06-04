@@ -26,25 +26,41 @@ SAFE_ENV_KEYS = [
 ]
 
 
+PROBE_TIMEOUT_SECONDS = 10
+
+
+def _run_probe(command: list[str], timeout_seconds: int = PROBE_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(command, text=True, capture_output=True, check=False, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def _version(command: str) -> dict[str, Any]:
     path = shutil.which(command)
     if not path:
         return {"available": False, "path": None, "version": None}
-    result = subprocess.run([command, "--version"], text=True, capture_output=True, check=False)
+    result = _run_probe([command, "--version"])
+    if result is None:
+        return {"available": False, "path": path, "version": None, "error": "probe_timeout"}
     return {"available": result.returncode == 0, "path": path, "version": result.stdout.strip() or result.stderr.strip()}
 
 
 def _returns_ok(command: list[str]) -> bool:
     if not shutil.which(command[0]):
         return False
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    result = _run_probe(command)
+    if result is None:
+        return False
     return result.returncode == 0
 
 
 def _help_has(command: list[str], *needles: str) -> bool:
     if not shutil.which(command[0]):
         return False
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    result = _run_probe(command)
+    if result is None:
+        return False
     haystack = result.stdout + result.stderr
     return result.returncode == 0 and all(needle in haystack for needle in needles)
 
@@ -52,7 +68,9 @@ def _help_has(command: list[str], *needles: str) -> bool:
 def _claude_auth_ready() -> bool:
     if not shutil.which("claude"):
         return False
-    result = subprocess.run(["claude", "auth", "status", "--json"], text=True, capture_output=True, check=False)
+    result = _run_probe(["claude", "auth", "status", "--json"])
+    if result is None:
+        return False
     if result.returncode != 0:
         return False
     try:
@@ -123,6 +141,32 @@ CLAUDE_CHAT_ONLY_TEMPLATE = [
 ]
 
 
+CLAUDE_EDIT_APPROVED_TEMPLATE = [
+    "claude",
+    "-p",
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "plan",
+    "--tools",
+    "Read,Grep,Glob,Edit,Write",
+    "--no-session-persistence",
+]
+
+
+CLAUDE_SHELL_APPROVED_TEMPLATE = [
+    "claude",
+    "-p",
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "plan",
+    "--tools",
+    "Read,Grep,Glob,Edit,Write,Bash",
+    "--no-session-persistence",
+]
+
+
 CODEX_EXEC_TEMPLATE = [
     "codex",
     "exec",
@@ -157,6 +201,28 @@ class ProviderResult:
     returncode: int
 
 
+def _actual_cost_usd(raw: dict[str, Any] | None) -> float | None:
+    if not raw:
+        return None
+    candidates: list[Any] = [
+        raw.get("total_cost_usd"),
+        raw.get("cost_usd"),
+        raw.get("total_cost"),
+    ]
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        candidates.extend([usage.get("total_cost_usd"), usage.get("cost_usd"), usage.get("total_cost")])
+    for value in candidates:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                pass
+    return None
+
+
 def build_instruction_prompt(store: InstructionStore, workspace_id: str) -> str:
     global_doc = store.show("global")["preview"]
     project_doc = store.show("project", workspace_id)["preview"]
@@ -173,11 +239,17 @@ def invoke_claude(
     timeout_seconds: int = 1800,
     max_output_bytes: int = 200000,
     emit: Callable[[dict[str, Any]], None] | None = None,
+    permission_scope: str = "chat",
 ) -> ProviderResult:
     actual_run_id = run_id or str(uuid.uuid4())
     ledger.reserve(actual_run_id, "claude-code", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
+    template = {
+        "chat": CLAUDE_CHAT_ONLY_TEMPLATE,
+        "edit": CLAUDE_EDIT_APPROVED_TEMPLATE,
+        "shell": CLAUDE_SHELL_APPROVED_TEMPLATE,
+    }.get(permission_scope, CLAUDE_CHAT_ONLY_TEMPLATE)
     command = [
-        *CLAUDE_CHAT_ONLY_TEMPLATE,
+        *template,
         "--model",
         os.environ.get("CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL),
         "--max-turns",
@@ -208,13 +280,14 @@ def invoke_claude(
         pass
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
-    ledger.complete(actual_run_id, None, status="completed" if result.returncode == 0 else "failed")
+    ledger.complete(actual_run_id, _actual_cost_usd(raw), status="completed" if result.returncode == 0 else "failed")
     if emit:
         emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "done" if result.returncode == 0 else "error"})
     return ProviderResult(actual_run_id, "claude-code", "completed" if result.returncode == 0 else "failed", output_text, raw, result.returncode)
 
 
-def codex_command(prompt: str, workspace: Path, output_file: Path) -> list[str]:
+def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_prompt: str = "") -> list[str]:
+    effective_prompt = f"{instruction_prompt}\n\n# User Task\n{prompt}" if instruction_prompt else prompt
     command = [
         *CODEX_EXEC_TEMPLATE,
         "--cd",
@@ -222,7 +295,7 @@ def codex_command(prompt: str, workspace: Path, output_file: Path) -> list[str]:
         "--output-last-message",
         str(output_file),
         "--",
-        prompt,
+        effective_prompt,
     ]
     if not _help_has(["codex", "exec", "--help"], "--sandbox"):
         sandbox_index = command.index("--sandbox")
@@ -234,6 +307,7 @@ def invoke_codex(
     prompt: str,
     workspace: Path,
     ledger: BudgetLedger,
+    instruction_prompt: str = "",
     run_id: str | None = None,
     reserved_usd: float = 1.0,
     timeout_seconds: int = 1800,
@@ -243,7 +317,7 @@ def invoke_codex(
     actual_run_id = run_id or str(uuid.uuid4())
     ledger.reserve(actual_run_id, "codex", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
     output_file = workspace / ".ai-remote-codex-last-message.txt"
-    command = codex_command(prompt, workspace, output_file)
+    command = codex_command(prompt, workspace, output_file, instruction_prompt)
     if emit:
         emit({"run_id": actual_run_id, "provider": "codex", "phase": "calling_model"})
     try:

@@ -10,8 +10,10 @@ import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib import error, request
+from unittest.mock import patch
 
 from ai_remote_runner.bridge import BridgeHandler, BridgeState
+from ai_remote_runner.providers import ProviderResult
 from ai_remote_runner.security import b64url_encode, sign_body
 
 
@@ -107,6 +109,21 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(payload["credential"]["handle"], "credential://test/api")
                 self.assertEqual(payload["credential"]["secret_material"], "never returned")
                 self.assertNotIn("super-secret-value", json.dumps(payload))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_exact_bare_slash_is_treated_as_task_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server, secret, url = self._server(tmp)
+            try:
+                body = json.dumps({"request_id": "slash-1", "raw_text": "/"}, ensure_ascii=False).encode("utf-8")
+                fake = ProviderResult("run", "claude-code", "completed", "slash", None, 0)
+                with patch("ai_remote_runner.executor.invoke_claude", return_value=fake):
+                    status, payload = self._post(url, secret, body, nonce="slash-nonce")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["status"], "accepted")
+                self.assertEqual(payload["data"]["output"], "slash")
             finally:
                 server.shutdown()
                 server.server_close()

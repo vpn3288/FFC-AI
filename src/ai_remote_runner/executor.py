@@ -62,7 +62,7 @@ class RunnerRuntime:
         return self.state / "conversation-policy.json"
 
     def load_policy(self) -> dict[str, Any]:
-        default = {"policy": "continue", "conversation_id": "default", "auto_compact_enabled": False}
+        default = {"policy": "continue", "conversation_id": "default", "auto_compact_enabled": False, "permission_scope": "chat"}
         if self.policy_path.exists():
             return default | json.loads(self.policy_path.read_text(encoding="utf-8"))
         return default
@@ -206,9 +206,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         workspace.mkdir(parents=True, exist_ok=True)
         emit = rt.events.emit
         if provider == "codex":
-            result = invoke_codex(prompt, workspace, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
+            result = invoke_codex(prompt, workspace, rt.ledger, instruction_prompt=instruction_prompt, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
         else:
-            result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
+            result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=policy.get("permission_scope", "chat"))
         rt.contexts.add_exchange(conversation_id, provider, instruction_prompt, prompt, result.output_text)
         return _ok(
             request_id,
@@ -303,6 +303,12 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         data["last_action"] = action
         rt.save_policy(data)
         return _ok(request_id, run_id, "自动压缩策略已更新", data)
+    if action in {"set_permission_chat", "set_permission_edit", "set_permission_shell"}:
+        data = rt.load_policy()
+        data["permission_scope"] = action.removeprefix("set_permission_")
+        data["last_action"] = action
+        rt.save_policy(data)
+        return _ok(request_id, run_id, "执行权限模式已更新", data)
     if action == "workspace.list":
         rt.workspaces.mkdir(parents=True, exist_ok=True)
         return _ok(request_id, run_id, "工作区列表已生成", {"workspaces": sorted(path.name for path in rt.workspaces.iterdir() if path.is_dir())})

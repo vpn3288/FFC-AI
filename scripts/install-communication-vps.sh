@@ -5,7 +5,6 @@ DRY_RUN=false
 DOMAIN="${MATTERMOST_DOMAIN:-}"
 LOCK_FILE="${LOCK_FILE:-versions.lock}"
 INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
-BRIDGE_COMMAND_URL="${BRIDGE_COMMAND_URL:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
@@ -82,39 +81,6 @@ secret_b64() {
   python3 - <<'PY'
 import secrets
 print(secrets.token_urlsafe(32))
-PY
-}
-
-bridge_loopback() {
-  local url="$1"
-  local secret="$2"
-  python3 - "$url" "$secret" <<'PY' >/dev/null
-import base64
-import hashlib
-import hmac
-import json
-import sys
-import time
-import uuid
-from urllib import request
-
-url, secret = sys.argv[1], sys.argv[2]
-raw_key = base64.urlsafe_b64decode((secret + "=" * (-len(secret) % 4)).encode("ascii"))
-body = json.dumps({"request_id": str(uuid.uuid4()), "raw_text": "/ai 状态"}, ensure_ascii=False).encode("utf-8")
-timestamp = str(time.time())
-nonce = str(uuid.uuid4())
-payload = timestamp.encode("utf-8") + b"\n" + nonce.encode("utf-8") + b"\n" + body
-signature = base64.urlsafe_b64encode(hmac.new(raw_key, payload, hashlib.sha256).digest()).rstrip(b"=").decode("ascii")
-headers = {
-    "Content-Type": "application/json",
-    "X-AI-Bridge-Timestamp": timestamp,
-    "X-AI-Bridge-Nonce": nonce,
-    "X-AI-Bridge-Signature": signature,
-}
-response = request.urlopen(request.Request(url, data=body, headers=headers, method="POST"), timeout=10)
-data = json.loads(response.read().decode("utf-8"))
-if data.get("status") != "accepted":
-    raise SystemExit(f"bridge loopback failed: {data}")
 PY
 }
 
@@ -201,8 +167,6 @@ fi
 
 log 'stage 13-15: connect runner, run phone smoke tests, run backup smoke test'
 if [ "$DRY_RUN" = false ]; then
-  [ -n "$BRIDGE_COMMAND_URL" ] || { log 'BRIDGE_COMMAND_URL is required for platform bridge loopback'; exit 1; }
-  bridge_loopback "$BRIDGE_COMMAND_URL" "$AI_BRIDGE_SHARED_SECRET"
   sudo tee "$INSTALL_DIR/install-manifest.json" >/dev/null <<EOF
 {
   "component": "mattermost-communication-platform",
@@ -212,8 +176,8 @@ if [ "$DRY_RUN" = false ]; then
   "mattermost_db_image": "$DB_IMAGE",
   "mattermost_caddy_image": "$CADDY_IMAGE",
   "mattermost_docker_ref": "$DOCKER_REF",
-  "bridge_command_url": "$BRIDGE_COMMAND_URL",
-  "platform_ready": true,
+  "platform_ready": false,
+  "platform_ready_status": "pending_pairing_and_integration_validation",
   "created_files": [
     "$INSTALL_DIR/.env",
     "$INSTALL_DIR/caddy/Caddyfile",
@@ -238,8 +202,4 @@ EOF
 else
   log "would write $INSTALL_DIR/install-manifest.json"
 fi
-if [ "$DRY_RUN" = false ]; then
-  log 'platform_ready=true'
-else
-  log 'platform_ready=false until Mattermost stack is running and signed /ai loopback reaches runner'
-fi
+log 'platform_ready=false until scripts/validate-integration.sh passes after runner pairing'

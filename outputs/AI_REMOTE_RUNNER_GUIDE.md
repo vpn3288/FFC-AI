@@ -592,6 +592,9 @@ Commands:
 /ai 整理上下文
 /ai 自动压缩 开启
 /ai 自动压缩 关闭
+/ai 聊天模式 开启
+/ai 编辑模式 开启
+/ai shell模式 开启
 ```
 
 Rules:
@@ -731,6 +734,9 @@ Required compound mappings:
   "/ai 提供商 使用": {"canonical_action": "provider.select"},
   "/ai 自动压缩 开启": {"canonical_action": "set_auto_compact_enabled"},
   "/ai 自动压缩 关闭": {"canonical_action": "set_auto_compact_disabled"},
+  "/ai 聊天模式 开启": {"canonical_action": "set_permission_chat"},
+  "/ai 编辑模式 开启": {"canonical_action": "set_permission_edit", "requires_confirmation": true},
+  "/ai shell模式 开启": {"canonical_action": "set_permission_shell", "requires_confirmation": true},
   "/ai 扩展 列表": {"canonical_action": "extension.list"},
   "/ai 工具 列表": {"canonical_action": "tool.list"},
   "/ai mcp 列表": {"canonical_action": "mcp.list"}

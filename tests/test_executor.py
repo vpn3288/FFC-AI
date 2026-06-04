@@ -194,6 +194,16 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(pending["status"], "accepted")
             self.assertEqual(pending["data"]["secret_material"], "never send secret material in chat")
 
+    def test_permission_scope_persists_and_reaches_claude_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 编辑模式 开启"), {"request_id": "pm1", "raw_text": "/ai 编辑模式 开启", "confirmed": True}, runtime)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "edit work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                execute(parsed, {"request_id": "pm2", "raw_text": "edit work"}, runtime)
+            self.assertEqual(invoke.call_args.kwargs["permission_scope"], "edit")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -136,7 +136,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             parsed = parse_command(payload.get("raw_text", ""), allow_bare=True)
             raw_text = payload.get("raw_text", "")
-            if parsed.get("status") == "rejected" and parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/"):
+            if parsed.get("status") == "rejected" and (
+                (parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/"))
+                or parsed.get("error") == "bare_slash_not_command"
+            ):
                 parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": raw_text}, "requires_confirmation": False}
             item = dict(payload)
             item.update(parsed)

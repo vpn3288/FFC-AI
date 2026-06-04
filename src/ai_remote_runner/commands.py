@@ -29,6 +29,9 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
     ("context",): CommandSpec("context_status", "显示上下文用量、阈值和压缩状态。"),
     ("自动压缩", "开启"): CommandSpec("set_auto_compact_enabled", "达到上下文预警阈值时自动压缩。"),
     ("自动压缩", "关闭"): CommandSpec("set_auto_compact_disabled", "关闭达到上下文预警阈值时的自动压缩。"),
+    ("聊天模式", "开启"): CommandSpec("set_permission_chat", "仅允许对话，不允许文件编辑或 shell。"),
+    ("编辑模式", "开启"): CommandSpec("set_permission_edit", "允许文件编辑工具，需确认。", True),
+    ("shell模式", "开启"): CommandSpec("set_permission_shell", "允许 shell 命令工具，需确认。", True),
     ("预算",): CommandSpec("budget_status", "显示每日、每月和当前运行预算状态。"),
     ("停止",): CommandSpec("cancel", "取消当前运行。"),
     ("取消",): CommandSpec("cancel", "取消当前运行。"),
@@ -64,6 +67,8 @@ def parse_command(raw_text: str, allow_bare: bool = False) -> dict[str, Any]:
     text = raw_text.strip()
     if text.startswith("/ai"):
         rest = text[3:].strip()
+    elif allow_bare and text == "/":
+        return {"status": "rejected", "error": "bare_slash_not_command"}
     elif allow_bare and text.startswith("/"):
         rest = text[1:].strip()
     else:

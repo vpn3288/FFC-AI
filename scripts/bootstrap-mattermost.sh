@@ -67,8 +67,8 @@ rest_json() {
 }
 
 require_rest_config() {
-  [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE_COMMAND_URL" ] && [ -n "$WEBHOOK_CHANNEL_ID" ] && return
-  log 'MATTERMOST_URL, MATTERMOST_ADMIN_TOKEN, BRIDGE_COMMAND_URL, and WEBHOOK_CHANNEL_ID are required to create /ai and the incoming webhook'
+  [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE_COMMAND_URL" ] && return
+  log 'MATTERMOST_URL, MATTERMOST_ADMIN_TOKEN, and BRIDGE_COMMAND_URL are required to create /ai and the incoming webhook'
   exit 1
 }
 
@@ -99,6 +99,9 @@ rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -
 }
 
 log 'creating incoming webhook through Mattermost REST API'
+if [ -z "$WEBHOOK_CHANNEL_ID" ]; then
+  WEBHOOK_CHANNEL_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/$TEAM_ID/channels/name/ai-status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+fi
 HOOK_ID="$(rest_json POST "$MATTERMOST_URL/api/v4/hooks/incoming" "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')"
 [ -n "$HOOK_ID" ] || { log 'incoming webhook creation did not return an id'; exit 1; }
 sudo tee "$MANIFEST" >/dev/null <<EOF
