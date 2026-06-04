@@ -41,25 +41,25 @@ require_mmctl_match() {
 ensure_team() {
   local name="$1"
   local display="$2"
-  mmctl team list | grep -q " $name " || mmctl team create --name "$name" --display-name "$display"
-  require_mmctl_match "team:$name" " $name " team list
+  mmctl team list | grep -q "$name" || mmctl team create --name "$name" --display-name "$display"
+  require_mmctl_match "team:$name" "$name" team list
 }
 
 ensure_channel() {
   local team="$1"
   local name="$2"
   local display="$3"
-  mmctl channel list "$team" | grep -q " $name " || mmctl channel create --team "$team" --name "$name" --display-name "$display"
-  require_mmctl_match "channel:$team/$name" " $name " channel list "$team"
+  mmctl channel list "$team" | grep -q "$name" || mmctl channel create --team "$team" --name "$name" --display-name "$display"
+  require_mmctl_match "channel:$team/$name" "$name" channel list "$team"
 }
 
 ensure_bot() {
   local username="$1"
   local display="$2"
-  if ! mmctl bot list | grep -q " $username "; then
+  if ! mmctl bot list | grep -q "$username"; then
     mmctl bot create "$username" --display-name "$display" --description "FFC-AI bot identity"
   fi
-  require_mmctl_match "bot:$username" " $username " bot list
+  require_mmctl_match "bot:$username" "$username" bot list
 }
 
 rest_json() {
