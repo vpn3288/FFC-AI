@@ -54,7 +54,165 @@ AI runner SHOULD run on local small host, Debian VM, or WSL when source code and
 
 VPS communication server MUST NOT require AI provider secrets for core operation.
 
-## 3. Provider Adapter Contract
+## 3. Core Runner Installer Scope
+
+The core runner installer MUST install or verify every core runtime component required for phone-controlled Claude Code/Codex operation.
+
+Core runner installer MUST execute these stages:
+
+```text
+stage 01: detect OS, WSL, architecture, systemd availability, shell, PATH
+stage 02: install system packages required by runner
+stage 03: install or verify Claude Code
+stage 04: install or verify Codex CLI
+stage 05: create runner directories
+stage 06: create runner configuration files
+stage 07: create credential broker storage backend
+stage 08: install runner bridge service
+stage 09: connect runner to communication platform
+stage 10: run provider smoke tests
+stage 11: run phone command smoke tests
+stage 12: report core_ready or failed
+```
+
+Claude Code installation requirement:
+
+- installer MUST install Claude Code if `claude` is missing;
+- installer MUST verify `claude --version`;
+- installer MUST verify `claude auth status --json` command exists;
+- installer MUST verify `claude -p --output-format json` works after authentication/API configuration;
+- installer MUST use official Claude Code installation source pinned or referenced in release lock file.
+- Debian/Ubuntu installer MUST prefer official Claude Code signed apt/native installer from Claude Code installation docs.
+- npm fallback MAY be used only when official installer is unavailable.
+- npm fallback MUST NOT use `sudo npm install -g`.
+
+Codex installation requirement:
+
+- installer MUST install Codex CLI if `codex` is missing and a resolved install source exists;
+- installer MUST verify `codex --version`;
+- installer MUST verify `codex doctor` exists;
+- installer MUST verify `codex exec` exists;
+- installer MUST verify remote adapter can call Codex non-interactively or mark Codex adapter `auth_pending`;
+- if public release cannot ship a resolved Codex install source, installer MUST set `codex_ready=false`, `codex_status=external_prerequisite`, and MUST show remediation in `/功能`.
+
+Runner service installation requirement:
+
+- Linux/systemd target MUST install `ai-remote-runner.service`.
+- WSL without systemd MUST generate `run-local.sh`.
+- Service MUST load runner config but MUST NOT load communication platform admin secrets into provider subprocesses.
+- Service MUST expose local health endpoint or health command for communication bridge.
+
+Bridge connection requirement:
+
+- installer MUST accept communication platform endpoint, bot token, team/room/channel identifiers, and bridge shared secret;
+- installer MUST test posting status event to communication platform;
+- installer MUST test receiving a command from communication platform or run an equivalent loopback test.
+- default bridge topology MUST be runner-initiated outbound WebSocket or runner-initiated long-poll queue.
+- VPS MUST NOT require inbound access to a home/WSL runner.
+
+Bridge protocol contract:
+
+```http
+POST /bridge/command        # direct/VPN mode only
+POST /bridge/event          # runner-to-VPS event post
+GET  /bridge/health
+GET  /bridge/poll           # runner-initiated polling mode
+WS   /bridge/ws             # preferred runner-initiated persistent mode
+```
+
+All bridge requests MUST include:
+
+```text
+X-AI-Bridge-Timestamp
+X-AI-Bridge-Nonce
+X-AI-Bridge-Signature
+```
+
+Signature:
+
+```text
+shared_secret is stored base64url-encoded.
+HMAC key is base64url-decode(shared_secret).
+signature = base64url(HMAC-SHA256(key, timestamp + "\n" + nonce + "\n" + raw_body_bytes))
+```
+
+Signature validation:
+
+- timestamp skew max: 300 seconds;
+- nonce TTL: 600 seconds;
+- nonce store MUST reject replay;
+- `raw_body_bytes` MUST be exact UTF-8 request body bytes before JSON parsing.
+
+Command envelope:
+
+```json
+{
+  "request_id": "uuid",
+  "platform": "mattermost|matrix",
+  "room_id": "string",
+  "thread_id": "string|null",
+  "sender_id": "string",
+  "raw_text": "/ai 压缩",
+  "canonical_action": "compact_context",
+  "args": {},
+  "requires_confirmation": false,
+  "created_at": "ISO-8601"
+}
+```
+
+Response envelope:
+
+```json
+{
+  "request_id": "uuid",
+  "status": "accepted|rejected|needs_confirmation|error",
+  "run_id": "uuid|null",
+  "message_zh": "string",
+  "error": {
+    "code": "string",
+    "detail": "string"
+  }
+}
+```
+
+Bridge MUST be idempotent by `request_id`.
+
+Bridge retry policy MUST use exponential backoff and MUST NOT duplicate accepted commands.
+
+Core smoke tests:
+
+```text
+claude_version
+claude_auth_or_api_config
+claude_print_json
+codex_version_or_external_prerequisite
+codex_exec_or_auth_pending
+communication_bridge_post
+phone_status_command
+phone_slash_index
+credential_handle_create
+global_md_show
+project_md_append
+context_status
+```
+
+`core_ready` requires Claude Code ready, communication bridge ready, phone commands ready, credential broker ready, and instruction files ready.
+
+`codex_ready` is separate from `core_ready`.
+
+`full_ready` requires `core_ready=true`, `codex_ready=true`, and selected optional bundle items installed.
+
+Codex MAY be `external_prerequisite` only if the release cannot legally or reliably install it. In that case `/功能` MUST show Codex as unavailable with exact remediation.
+
+Rollback contract:
+
+- installer MUST write an install manifest at `/var/lib/ai-remote-runner/install-manifest.json`;
+- every stage MUST be idempotent;
+- every stage MUST record pre-change state when it mutates system files;
+- `rollback-install.sh` MUST restore systemd unit state, runner directory, bridge config, and generated config files;
+- rollback MUST NOT delete workspaces or credential store unless explicit destructive confirmation is provided.
+
+## 4. Provider Adapter Contract
 
 Every provider adapter MUST expose:
 
@@ -86,7 +244,7 @@ Adapter MUST return unsupported features explicitly:
 
 Adapter MUST NOT invent provider APIs.
 
-## 4. Claude Code Adapter
+## 5. Claude Code Adapter
 
 Verified local Claude Code CLI facts:
 
@@ -106,7 +264,9 @@ Verified local Claude Code CLI facts:
 - `--system-prompt` and `--append-system-prompt` are valid.
 - `claude auth status --json` returns JSON containing `loggedIn`, `authMethod`, and `apiProvider`.
 
-Default remote Claude command:
+Claude mode templates:
+
+`chat_only` MUST be default:
 
 ```bash
 cd "$RUNNER_WORKSPACE"
@@ -124,23 +284,38 @@ env -i \
     --max-turns "$CLAUDE_MAX_TURNS" \
     --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" \
     --permission-mode plan \
-    --tools "$CLAUDE_TOOLS" \
-    --disallowedTools "$CLAUDE_DISALLOWED_TOOLS" \
+    --tools "" \
     --no-session-persistence \
     --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" \
+    -- \
     "$PROMPT"
 ```
 
-Default:
+`edit_approved` MUST require explicit preview/approval:
 
-```text
-CLAUDE_TOOLS=""
-CLAUDE_DISALLOWED_TOOLS="Bash,Edit,Write"
+```bash
+claude -p --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write" --disallowedTools "Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
 ```
 
-`Bash` MUST NOT be enabled by default.
+`shell_approved` MUST require explicit preview/approval:
 
-## 5. Codex Adapter
+```bash
+claude -p --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write,Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+```
+
+`continue_mode` MUST NOT use `--no-session-persistence`:
+
+```bash
+claude -p --output-format json --continue --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "$CLAUDE_TOOLS_FOR_CONTINUE" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+```
+
+Command construction rules:
+
+- `--tools` is variadic; command MUST terminate options with `--` before prompt or pass prompt through stdin.
+- `--bare` plus `--append-system-prompt` was locally verified in print mode.
+- `Bash` MUST NOT be enabled by default.
+
+## 6. Codex Adapter
 
 Codex support MUST be adapter-based.
 
@@ -165,7 +340,29 @@ Required adapter operations:
 - compact context natively or emulate;
 - expose unsupported features with reason.
 
-## 6. Optional Extension/Tool Bundle
+Default Codex `exec` template:
+
+```bash
+cd "$RUNNER_WORKSPACE"
+env -i \
+  HOME="$CODEX_RUNNER_HOME" \
+  CODEX_HOME="$CODEX_HOME" \
+  PATH="$SAFE_PATH" \
+  codex exec \
+    --json \
+    --ephemeral \
+    --ignore-user-config \
+    --sandbox workspace-write \
+    --ask-for-approval never \
+    --cd "$RUNNER_WORKSPACE" \
+    --output-last-message "$RUN_OUTPUT_FILE" \
+    -- \
+    "$PROMPT"
+```
+
+Codex adapter MUST wrap `codex exec` with service-level budget reservation, timeout, kill, and output-size caps because verified local `codex exec --help` does not expose a universal `--max-budget-usd`.
+
+## 7. Optional Extension/Tool Bundle
 
 The following items are optional post-core enhancements. They MUST NOT block `core_ready`.
 
@@ -235,7 +432,7 @@ Phone commands:
 /mcp 启用 <id>
 ```
 
-## 7. Conversation Policy
+## 8. Conversation Policy
 
 Supported policies:
 
@@ -265,7 +462,7 @@ Rules:
 - If provider continuation is unavailable, runner MUST emulate continuation using compacted summary context.
 - `/status` MUST show current policy, provider, workspace, and conversation id.
 
-## 8. Instruction Files
+## 9. Instruction Files
 
 Canonical files:
 
@@ -309,7 +506,7 @@ Provider application:
 - Codex adapter SHOULD map to `AGENTS.md` or verified Codex instruction mechanism when available.
 - If provider mechanism is unavailable, adapter MUST inject instruction text into runner-managed prompt wrapper.
 
-## 9. Command And Feature Index
+## 10. Command And Feature Index
 
 Commands:
 
@@ -324,7 +521,9 @@ Commands:
 /说明 编辑 <id>
 ```
 
-`/` alone MUST show a categorized Chinese index.
+`/ai 帮助` MUST show a categorized Chinese index.
+
+Bare `/` MAY show the same index only when the selected communication platform can deliver normal-message shortcuts to the bridge.
 
 Index MUST include:
 
@@ -361,7 +560,7 @@ Chinese description rules:
 - `/说明 生成 <id>` MAY generate metadata from README/help/manifest.
 - If AI generation is used, mark `description_source=generated_ai`.
 
-## 10. Context Telemetry And Compaction
+## 11. Context Telemetry And Compaction
 
 Context state:
 
@@ -392,14 +591,17 @@ Commands:
 Rules:
 
 - If native context usage exists, use it.
-- If native context usage is unavailable, estimate and mark `estimated`.
+- If native context usage is unavailable, estimate as `ceil((utf8_bytes(messages + injected_instructions + attached_text_artifacts) / 4) * 1.20)` and mark `estimated`.
 - At auto threshold, post phone warning.
+- If `auto_compact_enabled=true`, runner MUST compact before accepting the next long task after threshold.
+- If a task is running when threshold is crossed, runner MUST finish the current provider call, compact, then continue only if conversation policy permits.
+- If compaction requires approval, runner MUST enter `compaction_pending_approval` and reject new long tasks until approved or skipped.
 - At hard threshold, reject long tasks until compact or new conversation.
 - Manual compaction MUST return old conversation id, new conversation id if created, summary artifact path, before/after estimate, and status.
 - Native compaction MAY be used if verified.
 - Otherwise runner MUST emulate compaction with summary artifact plus new conversation.
 
-## 11. Phone Status Events
+## 12. Phone Status Events
 
 Status events MUST be token-free when possible.
 
@@ -441,7 +643,13 @@ Allowed visible messages:
 
 Hidden chain-of-thought MUST NOT be displayed.
 
-## 12. Command Normalization
+Minimum redaction rules:
+
+- Redact API keys, bearer tokens, private key blocks, passwords, and credential values.
+- Redaction applies before communication platform posting and before runner-visible logs.
+- General chat-content privacy is out of scope.
+
+## 13. Command Normalization
 
 Chinese aliases MUST be normalized before provider invocation.
 
@@ -473,7 +681,57 @@ Mapping MUST include:
 
 Chinese slash commands MUST NOT be passed directly to Claude Code/Codex unless adapter explicitly supports them.
 
-## 13. Credential Broker
+Compound command grammar:
+
+```text
+/ai <verb> [object] [args...]
+```
+
+Required compound mappings:
+
+```json
+{
+  "/ai 状态": {"canonical_action": "status"},
+  "/ai 压缩": {"canonical_action": "compact_context"},
+  "/ai 新对话": {"canonical_action": "new_conversation"},
+  "/ai 每次新对话": {"canonical_action": "set_policy_new_each_request"},
+  "/ai 持续对话": {"canonical_action": "set_policy_continue"},
+  "/ai 继续": {"canonical_action": "continue_conversation"},
+  "/ai 帮助": {"canonical_action": "command_index"},
+  "/ai 功能": {"canonical_action": "feature_index"},
+  "/ai 上下文": {"canonical_action": "context_status"},
+  "/ai 预算": {"canonical_action": "budget_status"},
+  "/ai 停止": {"canonical_action": "cancel"},
+  "/ai 取消": {"canonical_action": "cancel"},
+  "/ai 全局 查看": {"canonical_action": "global_instructions.show"},
+  "/ai 全局 设置": {"canonical_action": "global_instructions.set", "requires_confirmation": true},
+  "/ai 全局 追加": {"canonical_action": "global_instructions.append"},
+  "/ai 全局 替换": {"canonical_action": "global_instructions.set", "requires_confirmation": true},
+  "/ai 全局 回滚": {"canonical_action": "global_instructions.rollback", "requires_confirmation": true},
+  "/ai 全局 应用": {"canonical_action": "global_instructions.apply"},
+  "/ai 项目 查看": {"canonical_action": "project_instructions.show"},
+  "/ai 项目 设置": {"canonical_action": "project_instructions.set", "requires_confirmation": true},
+  "/ai 项目 追加": {"canonical_action": "project_instructions.append"},
+  "/ai 项目 替换": {"canonical_action": "project_instructions.set", "requires_confirmation": true},
+  "/ai 项目 回滚": {"canonical_action": "project_instructions.rollback", "requires_confirmation": true},
+  "/ai 项目 应用": {"canonical_action": "project_instructions.apply"},
+  "/ai 凭据 添加": {"canonical_action": "credential.add"},
+  "/ai 凭据 列表": {"canonical_action": "credential.list"},
+  "/ai 凭据 测试": {"canonical_action": "credential.test"},
+  "/ai 工作区 列表": {"canonical_action": "workspace.list"},
+  "/ai 工作区 使用": {"canonical_action": "workspace.select"},
+  "/ai 工作区 创建": {"canonical_action": "workspace.create", "requires_confirmation": true},
+  "/ai 提供商 列表": {"canonical_action": "provider.list"},
+  "/ai 提供商 使用": {"canonical_action": "provider.select"},
+  "/ai 扩展 列表": {"canonical_action": "extension.list"},
+  "/ai 工具 列表": {"canonical_action": "tool.list"},
+  "/ai mcp 列表": {"canonical_action": "mcp.list"}
+}
+```
+
+Mattermost guaranteed trigger is `/ai`. Bare Chinese aliases MAY be parsed only as optional normal-message shortcuts.
+
+## 14. Credential Broker
 
 The credential broker MUST allow mobile-side secret input and handle-based execution.
 
@@ -537,7 +795,9 @@ Rules:
 - Plaintext MUST NOT appear in channel history.
 - Plaintext MUST NOT appear in logs.
 - For SSH private key execution, broker writes temporary `0600` key file, uses it, then deletes it.
-- For SSH password execution, `sshpass` MAY be used only if explicitly enabled.
+- `sshpass` MUST NOT be used.
+- SSH password execution MUST NOT pass password via process arguments.
+- Password-based SSH MAY use broker-controlled stdin/pty helper only after explicit approval.
 - API tokens are injected only into exact subprocess environment via `env -i`.
 
 Action request:
@@ -551,7 +811,19 @@ Action request:
 }
 ```
 
-## 14. Minimum Safety
+Remote exec approval preview MUST include:
+
+```text
+credential_handle
+target_host
+username
+command
+working_directory
+timeout_seconds
+one_time_approval_token
+```
+
+## 15. Minimum Safety
 
 Privacy/stealth is not a goal.
 
@@ -565,7 +837,7 @@ Minimum safety MUST cover only:
 - budget freeze;
 - recoverable install/update/rollback.
 
-## 15. Budget Ledger
+## 16. Budget Ledger
 
 Service-level budget state:
 
@@ -579,6 +851,30 @@ Service-level budget state:
 }
 ```
 
+Run reservation schema:
+
+```json
+{
+  "run_id": "uuid",
+  "provider": "claude-code|codex|other",
+  "reserved_usd": 1.0,
+  "actual_usd": null,
+  "timeout_seconds": 1800,
+  "max_output_bytes": 200000,
+  "status": "reserved|running|completed|failed|killed"
+}
+```
+
+Budget enforcement:
+
+- runner MUST reserve estimated cost before starting provider process.
+- runner MUST enforce max concurrent provider runs. Default: 1.
+- runner MUST enforce timeout and kill provider subprocess on timeout.
+- runner MUST enforce output byte cap.
+- runner MUST update ledger after completion or failure.
+- if actual cost is unavailable, runner MUST commit conservative estimate.
+- Codex and non-Claude providers MUST have per-run reservation caps because they may lack native budget flags.
+
 If exceeded:
 
 - reject new model calls;
@@ -586,7 +882,13 @@ If exceeded:
 - post phone alert;
 - require admin reset.
 
-## 16. Third-Party API Validation
+Budget preflight:
+
+- runner MUST check daily/monthly budget before every provider call;
+- if budget is exhausted, provider process MUST NOT start;
+- per-call provider budget flags do not replace service-level budget preflight.
+
+## 17. Third-Party API Validation
 
 Anthropic-compatible gateway validation MUST test:
 
@@ -620,12 +922,12 @@ If `count_tokens` fails:
 - require explicit confirmation;
 - require real Claude Code smoke test before automation.
 
-## 17. Acceptance Tests
+## 18. Acceptance Tests
 
 Core-ready requires:
 
 - `/状态` works from phone.
-- `/` returns Chinese index.
+- `/ai 帮助` returns Chinese index.
 - `/压缩` works natively or emulated.
 - `/新对话` starts fresh conversation.
 - `/每次新对话` changes policy.
@@ -638,4 +940,3 @@ Core-ready requires:
 - Claude Code adapter uses `--tools`, not `--allowedTools`, for restriction.
 - Codex adapter reports unsupported native features.
 - optional unresolved tools do not block core-ready.
-

@@ -83,7 +83,82 @@ Core ops:
 - TLS expiry monitoring;
 - bridge heartbeat monitoring.
 
-## 4. Mattermost Target
+## 4. VPS Communication Server Installer Scope
+
+The VPS communication installer MUST install, configure, and validate the self-hosted communication server.
+
+Default target MUST be Mattermost.
+
+Installer stages:
+
+```text
+stage 01: detect VPS OS, CPU, memory, disk, public IP
+stage 02: install Docker Engine and Docker Compose plugin
+stage 03: configure domain and TLS
+stage 04: clone or vendor Mattermost Docker deployment
+stage 05: pin Mattermost release tag or commit
+stage 06: configure Mattermost environment
+stage 07: start Mattermost stack
+stage 08: create team and channels
+stage 09: create bot identities
+stage 10: configure slash-command or command bridge
+stage 11: configure incoming status webhook or bot token
+stage 12: configure bridge shared secret
+stage 13: connect VPS communication platform to AI remote runner
+stage 14: run phone command smoke tests
+stage 15: run backup smoke test
+```
+
+Bridge shared secret:
+
+```text
+format: base64url
+entropy: >= 256 bits
+generation: cryptographically secure random generator
+storage: VPS bridge env + local runner env
+transport: shown once during pairing or transferred through credential broker
+rotation: supported by pairing command
+```
+
+Mattermost server install MUST produce:
+
+```text
+Mattermost URL
+admin account bootstrap state
+team ai-lab
+channels ai-ops, ai-status, ai-reviews, ai-errors, ai-archive
+bot identity ai-bridge
+bot identities for Claude Code, Codex, master-writer, reviewers
+command endpoint /ai
+status posting endpoint
+bridge shared secret
+backup path
+restore instructions
+```
+
+Communication bridge integration MUST validate:
+
+```text
+/ai 状态
+/ai 帮助
+/ai 新对话
+/ai 压缩
+/ai 上下文
+/ai 继续
+/ai 每次新对话
+/ai 全局 查看
+/ai 全局 替换
+/ai 项目 追加
+/ai 项目 替换
+/ai 凭据 添加
+/ai 扩展 列表
+```
+
+This smoke list MUST match AI runner bridge smoke tests.
+
+If Mattermost install fails with a P1 blocker, installer MAY switch to Matrix/Synapse fallback only after recording reason.
+
+## 5. Mattermost Target
 
 Mattermost source:
 
@@ -91,7 +166,17 @@ Mattermost source:
 https://github.com/mattermost/docker
 ```
 
-Implementation MUST pin release tag or commit in project lock file before public release.
+Implementation MUST pin Docker image tags and Mattermost Docker deployment reference in project lock file before public release.
+
+Mattermost release pinning:
+
+```text
+versions.lock MUST contain mattermost_app_image, mattermost_db_image, and mattermost_docker_ref.
+mattermost_app_image MUST be an explicit Docker image tag, not `latest`.
+mattermost_db_image MUST be an explicit Docker image tag, not `latest`.
+mattermost_docker_ref MUST be a commit or release reference from https://github.com/mattermost/docker.
+Installer MUST fail before public release if any pin is absent.
+```
 
 Mattermost setup MUST create:
 
@@ -106,6 +191,15 @@ channels:
   ai-archive
 ```
 
+Mattermost bootstrap method:
+
+- installer SHOULD use `mmctl --local` inside Mattermost container when available;
+- installer MAY use Mattermost REST API when `mmctl --local` is unavailable;
+- installer MUST be idempotent: existing team/channel/bot/slash-command objects are reused and corrected, not duplicated;
+- installer MUST create slash command trigger `/ai`;
+- installer MUST create incoming status webhook or bot token for status events;
+- installer MUST record created object IDs in install manifest.
+
 Accounts:
 
 ```text
@@ -119,11 +213,19 @@ reviewer-ai-2
 optional-specialist-ai
 ```
 
+Bot authentication:
+
+- each bot identity MUST have a distinct platform token or webhook identity;
+- tokens MUST NOT be shared across Claude Code AI, Codex AI, reviewers, and bridge;
+- bridge MAY post on behalf of identities only through explicit identity mapping;
+- identity mapping MUST be stored in bridge config.
+
 Mattermost command strategy:
 
 - platform slash trigger: `/ai`;
 - Chinese subcommands parsed by bridge;
-- normal messages beginning with Chinese slash aliases MAY also be parsed.
+- `/ai` is the only guaranteed Mattermost trigger;
+- normal messages beginning with Chinese slash aliases MAY be parsed only as optional shortcuts.
 
 Required examples:
 
@@ -152,9 +254,22 @@ Required examples:
 /ai 帮助
 /ai 功能
 /ai 说明 生成 <id>
+/ai 上下文
+/ai 继续
+/ai 全局 替换
+/ai 全局 应用
+/ai 项目 替换
+/ai 项目 应用
+/ai 预算
+/ai 停止
+/ai 取消
+/ai 工作区 列表
+/ai 工作区 使用
+/ai 提供商 列表
+/ai 提供商 使用
 ```
 
-## 5. Matrix/Synapse Fallback
+## 6. Matrix/Synapse Fallback
 
 Matrix/Synapse MUST be used only if Mattermost is blocked or user overrides.
 
@@ -179,9 +294,9 @@ Rooms:
 
 Matrix bridge MUST implement same canonical actions and Chinese aliases as Mattermost.
 
-If mobile client lacks modal UI, credential/instruction workflows MUST use step-by-step DM flow.
+If mobile client lacks modal UI, non-secret credential metadata and instruction workflows MAY use step-by-step DM flow. Secret values MUST use one-time bridge upload URL or local CLI.
 
-## 6. Internal AI Group
+## 7. Internal AI Group
 
 The platform MUST support an internal group/channel model with:
 
@@ -202,7 +317,7 @@ Rules:
 - master-writer merges after both reviews complete;
 - human can interrupt using Chinese commands.
 
-## 7. Status Rendering
+## 8. Status Rendering
 
 Status post MUST include:
 
@@ -232,7 +347,7 @@ Status events MUST be copied from runner events without extra model calls when p
 
 Hidden chain-of-thought MUST NOT be rendered.
 
-## 8. Mobile Command UX
+## 9. Mobile Command UX
 
 The phone UX MUST support:
 
@@ -251,8 +366,8 @@ The phone UX MUST support:
 
 `/` behavior:
 
-- `/` alone MUST return categorized Chinese index.
-- `/ ` MUST behave as `/`.
+- In Mattermost, `/ai` and `/ai 帮助` MUST return categorized Chinese index.
+- Bare `/` and `/ ` MAY return index only if the platform client/bridge can observe normal messages.
 - known command MUST execute canonical mapping.
 - unknown command MUST return `未知命令，输入 / 查看索引`.
 - fuzzy search MAY match command aliases and Chinese descriptions.
@@ -270,7 +385,7 @@ short usage
 installed source/version when relevant
 ```
 
-## 9. Credential Capture UX
+## 10. Credential Capture UX
 
 Credential capture MUST support:
 
@@ -290,9 +405,10 @@ allowed actions
 Accepted flows:
 
 - Mattermost modal/form if available;
-- DM to bridge bot followed by immediate broker storage and redaction;
 - one-time bridge upload URL;
 - local CLI fallback.
+
+DM plaintext credential capture MUST NOT be used.
 
 Channel output after capture MUST use handle only:
 
@@ -316,9 +432,11 @@ Commands:
 /凭据 删除 <handle>
 ```
 
-The platform collects input. The AI runner credential broker stores, decrypts, and executes.
+The platform collects input through modal, one-time upload URL, or local CLI fallback. The AI runner credential broker stores, decrypts, and executes.
 
-## 10. Instruction File UX
+General chat privacy is out of scope. Credential plaintext in ordinary chat history is still prohibited.
+
+## 11. Instruction File UX
 
 Commands:
 
@@ -341,9 +459,9 @@ Rules:
 - set/replace requires confirmation;
 - append records snapshot;
 - rollback requires confirmation;
-- Matrix fallback MUST implement same flow through messages if modals unavailable.
+- Matrix fallback MAY implement non-secret instruction flow through messages if modals unavailable. Secret values MUST use one-time bridge upload URL or local CLI.
 
-## 11. Command Description UX
+## 12. Command Description UX
 
 Commands:
 
@@ -361,7 +479,7 @@ Rules:
 - installed tool implementation MUST NOT be modified;
 - if AI-generated, mark `description_source=generated_ai`.
 
-## 12. Minimum Safety
+## 13. Minimum Safety
 
 Privacy/stealth is not a goal.
 
@@ -374,7 +492,7 @@ Minimum safety only:
 - backups not accidentally public;
 - basic admin 2FA SHOULD be enabled when available.
 
-## 13. Acceptance
+## 14. Acceptance
 
 Platform-ready requires:
 
@@ -392,11 +510,10 @@ Platform-ready requires:
 - status updates appear on phone.
 - final output appears on phone.
 
-## 14. Source Anchors
+## 15. Source Anchors
 
 - Mattermost Docker install: https://docs.mattermost.com/deployment-guide/server/containers/install-docker.html
 - Mattermost container deployment: https://docs.mattermost.com/deployment-guide/server/deploy-containers.html
 - Mattermost slash commands: https://docs.mattermost.com/integrations-guide/slash-commands.html
 - Mattermost Docker repository: https://github.com/mattermost/docker
 - Matrix Synapse installation: https://github.com/matrix-org/synapse/blob/develop/docs/setup/installation.md
-

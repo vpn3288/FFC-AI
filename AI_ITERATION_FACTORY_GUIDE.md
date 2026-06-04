@@ -62,6 +62,8 @@ The master-writer AI MUST:
 - maintain version hashes and review state;
 - reject recommendations that reintroduce Telegram;
 - reject privacy/stealth expansion unless required for credential or remote-execution safety.
+- engage reviewer AIs adversarially instead of using them only as defect detectors;
+- maintain a separate creative-proposal track for strong non-blocking ideas.
 
 ### 3.2 Claude Code Reviewer AI
 
@@ -80,6 +82,14 @@ It MUST focus on:
 - install/update/rollback feasibility;
 - P0/P1 blockers.
 
+It SHOULD propose aggressive implementation alternatives that improve functionality, mobile UX, extensibility, or implementation quality.
+
+It MUST detect:
+
+- over-compression by the master-writer that removes needed implementation detail;
+- unnecessary optimization that adds complexity without improving the user's target effect;
+- speculative hardening that distracts from core functionality.
+
 ### 3.3 GPT-5.5 Reviewer AI
 
 GPT-5.5 reviewer MUST run in a fresh conversation per review.
@@ -97,7 +107,47 @@ It MUST focus on:
 - missing user requirements;
 - P0/P1 blockers.
 
+It SHOULD challenge master-writer assumptions and propose product-level alternatives.
+
+It MUST detect:
+
+- underspecified areas caused by excessive simplification;
+- over-engineered areas caused by unnecessary optimization;
+- feature omissions hidden by concise wording;
+- constraints that should be relaxed to improve the final product.
+
 Reviewer AIs MUST NOT read each other's review before both reviews finish.
+
+### 3.4 Adversarial Creativity Mode
+
+The loop MUST run in adversarial creativity mode.
+
+Reviewer output MUST be partitioned:
+
+```text
+P0
+P1
+High-value P2
+Creative proposals
+Rejected constraints to reconsider
+Over-compression findings
+Over-engineering findings
+Must fix
+Score
+```
+
+Rules:
+
+- P0/P1 findings are mandatory to address.
+- Creative proposals MAY exceed current implementation scope.
+- Creative proposals MUST NOT be treated as blockers unless they expose P0/P1 risk.
+- Master-writer MUST mark each creative proposal as `adopted`, `deferred`, or `rejected`.
+- Master-writer MAY relax non-safety constraints when a proposal improves core functionality, mobile UX, extensibility, or implementation quality.
+- Master-writer MUST NOT relax: no Telegram, no secrets in AI prompts, no uncontrolled remote execution, no unlimited spend.
+- Reviewer AIs SHOULD actively disagree with weak assumptions.
+- Reviewer AIs SHOULD propose at least three non-obvious improvements per round unless none are useful.
+- Reviewer AIs MUST explicitly state whether the master-writer over-compressed necessary implementation detail.
+- Reviewer AIs MUST explicitly state whether the master-writer over-engineered unnecessary optimizations.
 
 ## 4. Iteration Procedure
 
@@ -157,6 +207,11 @@ Pass requires:
 - Mattermost selected as primary platform;
 - Matrix/Synapse selected as fallback platform;
 - AI runner core install not blocked by optional skills/CLI/MCP tools;
+- AI runner installer explicitly installs or verifies Claude Code;
+- AI runner installer explicitly installs, verifies, or marks Codex as external prerequisite with remediation;
+- communication VPS installer explicitly installs Mattermost server by default;
+- communication VPS installer explicitly configures team/channels/bots/bridge endpoints;
+- bridge integration between phone communication platform and local AI runner has smoke tests;
 - phone commands include Chinese aliases;
 - `/` index shows Chinese descriptions for commands, skills, MCP extensions, CLI tools, and provider features;
 - newly installed skill/CLI/MCP registers Chinese description metadata;
@@ -217,13 +272,13 @@ P3:
 Claude Code reviewer prompt MUST include:
 
 ```text
-Review all three files. Only report P0/P1 blockers, missing user requirements, and necessary fixes. Do not expand privacy/stealth scope. Verify that Telegram is prohibited, Mattermost is primary, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, optional tools do not block core-ready, and command index shows Chinese descriptions.
+Review all three files. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Verify that Telegram is prohibited, Mattermost is primary, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, optional tools do not block core-ready, and command index shows Chinese descriptions.
 ```
 
 GPT-5.5 reviewer prompt MUST include:
 
 ```text
-Review all three files in a fresh conversation. Only report P0/P1 blockers, missing user requirements, and necessary fixes. Do not expand privacy/stealth scope. Check mobile UX completeness, AI compatibility, communication platform choice, credential handle workflow, context compaction, command index, Chinese descriptions, and optional post-install tooling.
+Review all three files in a fresh conversation. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Check mobile UX completeness, AI compatibility, communication platform choice, credential handle workflow, context compaction, command index, Chinese descriptions, and optional post-install tooling.
 ```
 
 ## 10. Source Anchors
@@ -237,4 +292,3 @@ Primary external anchors:
 - Mattermost slash commands: https://docs.mattermost.com/integrations-guide/slash-commands.html
 - Mattermost Docker repository: https://github.com/mattermost/docker
 - Matrix Synapse installation: https://github.com/matrix-org/synapse/blob/develop/docs/setup/installation.md
-
