@@ -21,14 +21,24 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("claude-opus-4-8-thinking", CLAUDE_MODEL_FALLBACKS)
 
     def test_codex_discovery_reports_approval_config_key(self) -> None:
-        self.assertIn("approval_config_available", discover_codex()["capabilities"])
+        capabilities = discover_codex()["capabilities"]
+        self.assertIn("approval_config_available", capabilities)
+        self.assertIn("sandbox_available", capabilities)
+
+    def test_codex_command_omits_sandbox_when_flag_unavailable(self) -> None:
+        with patch("ai_remote_runner.providers._help_has", return_value=False):
+            command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
+        self.assertNotIn("--sandbox", command)
 
     def test_invoke_codex_timeout_releases_run(self) -> None:
         import tempfile
         import subprocess
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_remote_runner.providers.subprocess.run", side_effect=subprocess.TimeoutExpired(["codex"], 1)):
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.subprocess.run", side_effect=subprocess.TimeoutExpired(["codex"], 1)),
+            ):
                 result = invoke_codex("noop", Path(tmp), BudgetLedger(Path(tmp) / "ledger.json"), timeout_seconds=1, reserved_usd=0.01)
             self.assertIn(result.status, {"completed", "failed", "timeout"})
 

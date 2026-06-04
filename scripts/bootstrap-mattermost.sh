@@ -16,10 +16,21 @@ mmctl() {
   (cd "$INSTALL_DIR" && sudo docker compose exec -T mattermost mmctl --local "$@")
 }
 
+require_mmctl_match() {
+  local description="$1"
+  local pattern="$2"
+  shift 2
+  if ! mmctl "$@" | grep -q "$pattern"; then
+    log "missing Mattermost object after create attempt: $description"
+    exit 1
+  fi
+}
+
 ensure_team() {
   local name="$1"
   local display="$2"
   mmctl team list | grep -q " $name " || mmctl team create --name "$name" --display-name "$display"
+  require_mmctl_match "team:$name" " $name " team list
 }
 
 ensure_channel() {
@@ -27,6 +38,7 @@ ensure_channel() {
   local name="$2"
   local display="$3"
   mmctl channel list "$team" | grep -q " $name " || mmctl channel create --team "$team" --name "$name" --display-name "$display"
+  require_mmctl_match "channel:$team/$name" " $name " channel list "$team"
 }
 
 ensure_bot() {
@@ -35,6 +47,29 @@ ensure_bot() {
   if ! mmctl bot list | grep -q " $username "; then
     mmctl bot create "$username" --display-name "$display" --description "FFC-AI bot identity"
   fi
+  require_mmctl_match "bot:$username" " $username " bot list
+}
+
+rest_json() {
+  local method="$1"
+  local url="$2"
+  local data="${3:-}"
+  if [ -n "$data" ]; then
+    curl -fsS -X "$method" "$url" \
+      -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d "$data"
+  else
+    curl -fsS -X "$method" "$url" \
+      -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
+      -H 'Content-Type: application/json'
+  fi
+}
+
+require_rest_config() {
+  [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE_COMMAND_URL" ] && [ -n "$WEBHOOK_CHANNEL_ID" ] && return
+  log 'MATTERMOST_URL, MATTERMOST_ADMIN_TOKEN, BRIDGE_COMMAND_URL, and WEBHOOK_CHANNEL_ID are required to create /ai and the incoming webhook'
+  exit 1
 }
 
 log 'creating Mattermost team/channels/bot identities with mmctl --local'
@@ -52,31 +87,28 @@ done
 
 log 'slash command and incoming webhook require admin token on Mattermost editions without mmctl local integration support'
 log 'if REST fallback is used, create or log in as a Mattermost admin first and export MATTERMOST_ADMIN_TOKEN'
-if [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE_COMMAND_URL" ]; then
-  log 'creating /ai slash command through Mattermost REST API'
-  TEAM_ID="$(curl -fsS "$MATTERMOST_URL/api/v4/teams/name/ai-lab" \
-    -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-  curl -fsS -X POST "$MATTERMOST_URL/api/v4/commands" \
-    -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
+require_rest_config
+log 'creating /ai slash command through Mattermost REST API'
+TEAM_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/name/ai-lab" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+if ! rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)'; then
+  rest_json POST "$MATTERMOST_URL/api/v4/commands" "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
 fi
-if [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$WEBHOOK_CHANNEL_ID" ]; then
-  log 'creating incoming webhook through Mattermost REST API'
-  curl -fsS -X POST "$MATTERMOST_URL/api/v4/hooks/incoming" \
-    -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" >/dev/null
-fi
+rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)' || {
+  log '/ai slash command validation failed'
+  exit 1
+}
+
+log 'creating incoming webhook through Mattermost REST API'
+HOOK_ID="$(rest_json POST "$MATTERMOST_URL/api/v4/hooks/incoming" "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')"
+[ -n "$HOOK_ID" ] || { log 'incoming webhook creation did not return an id'; exit 1; }
 sudo tee "$MANIFEST" >/dev/null <<EOF
 {
   "team": "ai-lab",
   "channels": ["ai-ops", "ai-status", "ai-reviews", "ai-errors", "ai-archive"],
   "bots": ["ai-bridge", "master-writer-ai", "claude-code-ai", "codex-ai", "reviewer-ai-1", "reviewer-ai-2", "optional-specialist-ai"],
   "slash_command": "/ai",
-  "incoming_webhook": "required",
-  "status": "partial_until_slash_command_and_webhook_created"
+  "incoming_webhook_id": "$HOOK_ID",
+  "status": "ready"
 }
 EOF
 sudo chmod 0600 "$MANIFEST"

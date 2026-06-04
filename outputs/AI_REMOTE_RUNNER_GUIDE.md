@@ -588,6 +588,8 @@ Commands:
 /ai 压缩
 /ai compact
 /ai 整理上下文
+/ai 自动压缩 开启
+/ai 自动压缩 关闭
 ```
 
 Rules:
@@ -725,6 +727,8 @@ Required compound mappings:
   "/ai 工作区 创建": {"canonical_action": "workspace.create", "requires_confirmation": true},
   "/ai 提供商 列表": {"canonical_action": "provider.list"},
   "/ai 提供商 使用": {"canonical_action": "provider.select"},
+  "/ai 自动压缩 开启": {"canonical_action": "set_auto_compact_enabled"},
+  "/ai 自动压缩 关闭": {"canonical_action": "set_auto_compact_disabled"},
   "/ai 扩展 列表": {"canonical_action": "extension.list"},
   "/ai 工具 列表": {"canonical_action": "tool.list"},
   "/ai mcp 列表": {"canonical_action": "mcp.list"}

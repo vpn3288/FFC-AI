@@ -24,6 +24,24 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$PLATFORM_URL" ] && [ -n "$WEBHOOK_URL" ] && [ -n "$BOT_TOKEN" ] && [ -n "$BRIDGE_SECRET" ] || { usage; exit 2; }
+case "$BRIDGE_SECRET" in
+  *[!A-Za-z0-9_-]*)
+    printf '[pair-runner] bridge secret must be base64url characters only\n' >&2
+    exit 2
+    ;;
+esac
+python3 - "$BRIDGE_SECRET" <<'PY'
+import base64
+import sys
+
+secret = sys.argv[1]
+try:
+    raw = base64.urlsafe_b64decode((secret + "=" * (-len(secret) % 4)).encode("ascii"))
+except Exception:
+    raise SystemExit("invalid bridge secret encoding")
+if len(raw) < 32:
+    raise SystemExit("bridge secret must decode to at least 256 bits")
+PY
 
 sudo mkdir -p "$STATE_ROOT"
 sudo tee -a "$STATE_ROOT/config.env" >/dev/null <<EOF

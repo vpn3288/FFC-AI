@@ -53,9 +53,10 @@ class RunnerRuntime:
         return self.state / "conversation-policy.json"
 
     def load_policy(self) -> dict[str, Any]:
+        default = {"policy": "continue", "conversation_id": "default", "auto_compact_enabled": False}
         if self.policy_path.exists():
-            return json.loads(self.policy_path.read_text(encoding="utf-8"))
-        return {"policy": "continue", "conversation_id": "default"}
+            return default | json.loads(self.policy_path.read_text(encoding="utf-8"))
+        return default
 
     def save_policy(self, policy: dict[str, Any]) -> None:
         self.policy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,11 +71,42 @@ def _error(request_id: str, code: str, detail: str) -> dict[str, Any]:
     return {"request_id": request_id, "status": "error", "run_id": None, "message_zh": "执行失败", "data": {}, "error": {"code": code, "detail": detail}}
 
 
+def _json_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json_state(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _selected_workspace(rt: RunnerRuntime) -> str | None:
+    return _json_state(rt.state / "workspace-selection.json").get("workspace_id")
+
+
+def _selected_provider(rt: RunnerRuntime) -> str | None:
+    return _json_state(rt.state / "provider-selection.json").get("provider")
+
+
+def _provider_from_args(args: list[str]) -> str | None:
+    provider = args[0] if args else None
+    if provider == "claude":
+        provider = "claude-code"
+    if provider in {"claude-code", "codex"}:
+        return provider
+    return None
+
+
 def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
     return {
         "core_ready": False,
         "providers": provider_status(),
         "budget": runtime.ledger.load(),
+        "policy": runtime.load_policy(),
+        "default_provider": _selected_provider(runtime) or "claude-code",
+        "default_workspace": _selected_workspace(runtime) or "default",
         "state_root": str(runtime.state),
         "workspace_root": str(runtime.workspaces),
     }
@@ -97,7 +129,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
 
     action = parsed["canonical_action"]
     args = parsed.get("args", {}).get("tail", [])
-    workspace_id = envelope.get("workspace_id") or "default"
+    workspace_id = envelope.get("workspace_id") or _selected_workspace(rt) or "default"
     run_id = str(uuid.uuid4())
     rt.events.emit(status_event(run_id, "queued", "正在排队"))
 
@@ -117,10 +149,11 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "context_status":
         prompt_text = envelope.get("raw_text", "")
         used = estimate_tokens(prompt_text)
-        state = ContextState("unknown", envelope.get("provider", "runner"), 200000, used)
+        state = ContextState("unknown", envelope.get("provider") or _selected_provider(rt) or "runner", 200000, used)
         return _ok(request_id, run_id, "上下文状态已生成", state.__dict__ | {"context_used_percent": state.context_used_percent})
     if action == "task.run":
         prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
+        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
         instruction_prompt = build_instruction_prompt(rt.instructions, workspace_id)
         global_info = rt.instructions.show("global", workspace_id)
         project_info = rt.instructions.show("project", workspace_id)
@@ -131,20 +164,22 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             conversation_id = str(uuid.uuid4())
         else:
             conversation_id = policy.get("conversation_id") or "default"
-        existing = rt.contexts.load(conversation_id, envelope.get("provider", "claude-code"))
+        existing = rt.contexts.load(conversation_id, provider)
         used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, prompt)
-        context_state = ContextState(conversation_id, envelope.get("provider", "claude-code"), existing["context_limit_tokens"], used)
+        context_state = ContextState(conversation_id, provider, existing["context_limit_tokens"], used)
         if context_state.hard_stop:
             return _error(request_id, "context_hard_stop", "context_hard_stop")
         if context_state.needs_warning:
-            rt.events.emit(status_event(run_id, "warning", "上下文接近上限，请考虑压缩或新对话", envelope.get("provider", "claude-code")))
-            if str(envelope.get("auto_compact_enabled", "")).lower() in {"1", "true", "yes"}:
-                compacted = rt.contexts.compact(conversation_id, envelope.get("provider", "claude-code"))
+            rt.events.emit(status_event(run_id, "warning", "上下文接近上限，请考虑压缩或新对话", provider))
+            auto_compact_enabled = bool(policy.get("auto_compact_enabled")) or str(envelope.get("auto_compact_enabled", "")).lower() in {"1", "true", "yes"}
+            if auto_compact_enabled:
+                compacted = rt.contexts.compact(conversation_id, provider)
                 conversation_id = compacted["new_conversation_id"]
+                policy["conversation_id"] = conversation_id
+                rt.save_policy(policy)
                 instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(compacted['summary_artifact']).read_text(encoding='utf-8')}\n"
         workspace = rt.workspaces / workspace_id
         workspace.mkdir(parents=True, exist_ok=True)
-        provider = envelope.get("provider", "claude-code")
         emit = rt.events.emit
         if provider == "codex":
             result = invoke_codex(prompt, workspace, rt.ledger, run_id=run_id, emit=emit)
@@ -167,14 +202,33 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "compact_context":
         policy = rt.load_policy()
         conversation_id = envelope.get("conversation_id") or policy.get("conversation_id") or "default"
-        compacted = rt.contexts.compact(conversation_id, envelope.get("provider", "claude-code"))
+        compacted = rt.contexts.compact(conversation_id, envelope.get("provider") or _selected_provider(rt) or "claude-code")
         policy["conversation_id"] = compacted["new_conversation_id"]
         rt.save_policy(policy)
         return _ok(request_id, run_id, "上下文已压缩", compacted)
     if action == "provider.list":
         return _ok(request_id, run_id, "提供商列表已生成", {"providers": provider_status()})
+    if action == "provider.select":
+        provider = _provider_from_args(args)
+        if provider is None:
+            return _error(request_id, "invalid_provider", "provider must be claude-code or codex")
+        _write_json_state(rt.state / "provider-selection.json", {"provider": provider})
+        return _ok(request_id, run_id, "提供商已选择", {"provider": provider})
     if action == "credential.list":
         return _ok(request_id, run_id, "凭据列表已生成", {"credentials": rt.credentials.list_public()})
+    if action == "credential.add":
+        handle = args[0] if args else f"credential://pending/{uuid.uuid4()}"
+        return _ok(
+            request_id,
+            run_id,
+            "凭据添加流程已创建",
+            {
+                "handle": handle,
+                "secret_material": "never send secret material in chat",
+                "local_capture_command": f"python3 -m ai_remote_runner.cli credential-add-secret --metadata-json '{{\"handle\":\"{handle}\"}}'",
+                "status": "awaiting_local_secret_capture",
+            },
+        )
     if action == "credential.test":
         if not args:
             return _error(request_id, "missing_credential_handle", "missing_credential_handle")
@@ -198,6 +252,10 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             return _ok(request_id, run_id, "指令已回滚", rt.instructions.rollback(scope, args[0], workspace_id))
         except FileNotFoundError:
             return _error(request_id, "snapshot_not_found", args[0])
+    if action.endswith(".apply"):
+        scope = "global" if action.startswith("global_") else "project"
+        shown = rt.instructions.show(scope, workspace_id)
+        return _ok(request_id, run_id, "指令已应用", {"scope": scope, "workspace_id": workspace_id, "sha256": shown["sha256"], "provider": _selected_provider(rt) or "claude-code"})
     if action.endswith(".set"):
         scope = "global" if action.startswith("global_") else "project"
         text = " ".join(args)
@@ -213,6 +271,12 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         data["last_action"] = action
         rt.save_policy(data)
         return _ok(request_id, run_id, "会话策略已更新", data)
+    if action in {"set_auto_compact_enabled", "set_auto_compact_disabled"}:
+        data = rt.load_policy()
+        data["auto_compact_enabled"] = action == "set_auto_compact_enabled"
+        data["last_action"] = action
+        rt.save_policy(data)
+        return _ok(request_id, run_id, "自动压缩策略已更新", data)
     if action == "workspace.list":
         rt.workspaces.mkdir(parents=True, exist_ok=True)
         return _ok(request_id, run_id, "工作区列表已生成", {"workspaces": sorted(path.name for path in rt.workspaces.iterdir() if path.is_dir())})
@@ -225,8 +289,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "workspace.select":
         if not args:
             return _error(request_id, "missing_workspace_id", "missing_workspace_id")
-        state_path = rt.state / "workspace-selection.json"
-        state_path.write_text(json.dumps({"workspace_id": args[0]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_state(rt.state / "workspace-selection.json", {"workspace_id": args[0]})
         return _ok(request_id, run_id, "工作区已选择", {"workspace_id": args[0]})
     if action in {"extension.list", "tool.list", "mcp.list"}:
         return _ok(

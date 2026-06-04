@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,46 @@ class ExecutorTests(unittest.TestCase):
             context_file = runtime.state / "contexts" / "default.json"
             self.assertTrue(context_file.exists())
 
+    def test_provider_selection_persists_and_drives_task_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            selected = execute(parse_command("/ai 提供商 使用 codex"), {"request_id": "ps1", "raw_text": "/ai 提供商 使用 codex"}, runtime)
+            self.assertEqual(selected["status"], "accepted")
+
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "codex", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_codex", return_value=fake) as invoke:
+                response = execute(parsed, {"request_id": "ps2", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["data"]["provider"], "codex")
+            invoke.assert_called_once()
+
+    def test_workspace_selection_persists_and_drives_task_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 工作区 使用 demo"), {"request_id": "ws1", "raw_text": "/ai 工作区 使用 demo"}, runtime)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                response = execute(parsed, {"request_id": "ws2", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(invoke.call_args.args[1], runtime.workspaces / "demo")
+
+    def test_auto_compact_policy_persists_and_updates_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 自动压缩 开启"), {"request_id": "ac1", "raw_text": "/ai 自动压缩 开启"}, runtime)
+            old_state = runtime.contexts.load("default", "claude-code", limit=100)
+            old_state["context_used_tokens"] = 79
+            old_state["context_limit_tokens"] = 100
+            runtime.contexts.path("default").write_text(json.dumps(old_state), encoding="utf-8")
+
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "x"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake):
+                response = execute(parsed, {"request_id": "ac2", "raw_text": "x"}, runtime)
+            self.assertNotEqual(response["data"]["conversation_id"], "default")
+            self.assertEqual(runtime.load_policy()["conversation_id"], response["data"]["conversation_id"])
+
     def test_new_each_request_policy_changes_conversation_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -98,6 +139,21 @@ class ExecutorTests(unittest.TestCase):
             desc = execute(parse_command("/ai 说明 生成 filesystem"), {"request_id": "e2", "raw_text": "/ai 说明 生成 filesystem"}, runtime)
             self.assertEqual(desc["status"], "accepted")
             self.assertEqual(desc["data"]["id"], "filesystem")
+
+    def test_instruction_apply_and_credential_add_are_implemented(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            applied = execute(parse_command("/ai 全局 应用"), {"request_id": "ia1", "raw_text": "/ai 全局 应用"}, runtime)
+            self.assertEqual(applied["status"], "accepted")
+            self.assertEqual(applied["data"]["scope"], "global")
+
+            pending = execute(
+                parse_command("/ai 凭据 添加 credential://github/main"),
+                {"request_id": "ca1", "raw_text": "/ai 凭据 添加 credential://github/main", "confirmed": True},
+                runtime,
+            )
+            self.assertEqual(pending["status"], "accepted")
+            self.assertEqual(pending["data"]["secret_material"], "never send secret material in chat")
 
 
 if __name__ == "__main__":

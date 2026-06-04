@@ -10,6 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
 
+read_lock() {
+  grep "^$1=" "$REPO_ROOT/versions.lock" | cut -d= -f2-
+}
+
 usage() {
   printf 'usage: %s [--dry-run]\n' "$0"
 }
@@ -67,7 +71,8 @@ elif command -v apt-get >/dev/null 2>&1; then
   if [ "$DRY_RUN" = false ]; then
     command -v gpg >/dev/null 2>&1 || { log 'gpg required for Claude Code apt key verification'; exit 1; }
     ACTUAL_FINGERPRINT="$(gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc | awk -F: '/^fpr:/ {print $10; exit}')"
-    EXPECTED_FINGERPRINT="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
+    EXPECTED_FINGERPRINT="$(read_lock claude_code_apt_key_fingerprint)"
+    [ -n "$EXPECTED_FINGERPRINT" ] || { log 'versions.lock must pin claude_code_apt_key_fingerprint'; exit 1; }
     [ "$ACTUAL_FINGERPRINT" = "$EXPECTED_FINGERPRINT" ] || {
       log 'Claude Code apt signing key fingerprint mismatch'
       exit 1
@@ -104,17 +109,28 @@ else
 fi
 
 log 'stage 06: create runner configuration files'
+if [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ]; then
+  BRIDGE_SECRET="$AI_BRIDGE_SHARED_SECRET"
+else
+  BRIDGE_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+fi
+case "$BRIDGE_SECRET" in
+  *[!A-Za-z0-9_-]*|'')
+    log 'AI_BRIDGE_SHARED_SECRET must be a non-empty base64url secret'
+    exit 1
+    ;;
+esac
 if [ "$DRY_RUN" = false ]; then
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
 CLAUDE_MODEL=$CLAUDE_MODEL
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=\${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}
-AI_BRIDGE_SHARED_SECRET=\${AI_BRIDGE_SHARED_SECRET:-}
+AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 EOF
   sudo chmod 0600 "$STATE_ROOT/config.env"
 else
-  log "would write $STATE_ROOT/config.env"
+  log "would write $STATE_ROOT/config.env with a generated bridge secret"
 fi
 
 log 'stage 07: create credential broker storage backend'
@@ -141,14 +157,10 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable ai-remote-runner.service
-    if [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ]; then
-      sudo systemctl start ai-remote-runner.service
-    else
-      log 'AI_BRIDGE_SHARED_SECRET is empty; service installed/enabled but not started until pairing'
-    fi
+    sudo systemctl start ai-remote-runner.service
   else
     log 'would install /etc/systemd/system/ai-remote-runner.service'
-    log 'would enable/start ai-remote-runner.service after bridge secret is configured'
+    log 'would enable/start ai-remote-runner.service after bridge secret is generated'
   fi
 else
   if [ "$DRY_RUN" = false ]; then
@@ -170,8 +182,8 @@ log 'use scripts/pair-runner.sh with Mattermost URL, webhook URL, bot token, and
 log 'stage 10: run provider smoke tests'
 python3 -m ai_remote_runner.cli providers
 if [ "$DRY_RUN" = false ] && command -v claude >/dev/null 2>&1; then
-  claude auth status --json >/dev/null || log 'claude auth/API config pending'
-  claude -p --bare --output-format json --max-turns 1 --max-budget-usd 0.05 --tools "" --no-session-persistence -- 'Return OK only.' >/dev/null || log 'claude print-json smoke pending'
+  claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready'; exit 1; }
+  claude -p --bare --output-format json --max-turns 1 --max-budget-usd 0.05 --tools "" --no-session-persistence -- 'Return OK only.' >/dev/null || { log 'claude print-json smoke failed'; exit 1; }
 elif [ "$DRY_RUN" = true ]; then
   log 'would run claude auth status and print-json smoke test'
 fi
@@ -209,8 +221,8 @@ else
   log "would write $STATE_ROOT/install-manifest.json"
 fi
 log 'core_ready=false until bridge pairing, credential test, and phone loopback pass'
-if [ "$DRY_RUN" = false ] && [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ] && [ -n "${MATTERMOST_WEBHOOK_URL:-}" ]; then
-  "$SCRIPT_DIR/validate-core-ready.sh" || log 'core_ready validation failed'
+if [ "$DRY_RUN" = false ] && [ -n "${MATTERMOST_WEBHOOK_URL:-}" ]; then
+  "$SCRIPT_DIR/validate-core-ready.sh"
 else
   log 'skip core_ready validation until pairing supplies bridge secret and Mattermost webhook'
 fi

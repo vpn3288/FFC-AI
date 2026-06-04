@@ -47,8 +47,12 @@ class EventSink:
             headers={"Content-Type": "application/json; charset=utf-8"},
             method="POST",
         )
-        try:
-            urllib.request.urlopen(request, timeout=10).read()
-        except (urllib.error.URLError, TimeoutError):
-            with self.path.with_suffix(".post-failures.jsonl").open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        for attempt in range(3):
+            try:
+                urllib.request.urlopen(request, timeout=10).read()
+                return
+            except (urllib.error.URLError, TimeoutError):
+                if attempt < 2:
+                    time.sleep(2**attempt)
+        with self.path.with_suffix(".post-failures.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")

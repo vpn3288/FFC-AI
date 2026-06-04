@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import json
 import os
 import subprocess
@@ -88,6 +87,7 @@ def discover_codex() -> dict[str, Any]:
     base = _version("codex")
     exec_available = _returns_ok(["codex", "exec", "--help"])
     approval_config_available = _returns_ok(["codex", "exec", "-c", 'approval_policy="never"', "--help"])
+    sandbox_available = _help_has(["codex", "exec", "--help"], "--sandbox")
     base["provider"] = "codex"
     base["capabilities"] = {
         "new_conversation": True,
@@ -100,6 +100,7 @@ def discover_codex() -> dict[str, Any]:
         "shell_commands": False,
         "exec_available": exec_available,
         "approval_config_available": approval_config_available,
+        "sandbox_available": sandbox_available,
     }
     return base
 
@@ -214,7 +215,7 @@ def invoke_claude(
 
 
 def codex_command(prompt: str, workspace: Path, output_file: Path) -> list[str]:
-    return [
+    command = [
         *CODEX_EXEC_TEMPLATE,
         "--cd",
         str(workspace),
@@ -223,6 +224,10 @@ def codex_command(prompt: str, workspace: Path, output_file: Path) -> list[str]:
         "--",
         prompt,
     ]
+    if not _help_has(["codex", "exec", "--help"], "--sandbox"):
+        sandbox_index = command.index("--sandbox")
+        del command[sandbox_index : sandbox_index + 2]
+    return command
 
 
 def invoke_codex(

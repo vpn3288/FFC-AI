@@ -31,6 +31,10 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(result["canonical_action"], "global_instructions.append")
         self.assertEqual(result["args"]["tail"], ["hello", "world"])
 
+    def test_context_aliases_match_documented_commands(self) -> None:
+        self.assertEqual(parse_command("/ai context")["canonical_action"], "context_status")
+        self.assertEqual(parse_command("/ai 整理上下文")["canonical_action"], "compact_context")
+
     def test_index_has_chinese_descriptions(self) -> None:
         rows = command_index()
         self.assertGreater(len(rows), 10)

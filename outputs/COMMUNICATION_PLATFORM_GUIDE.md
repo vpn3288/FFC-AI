@@ -116,7 +116,7 @@ format: base64url
 entropy: >= 256 bits
 generation: cryptographically secure random generator
 storage: VPS bridge env + local runner env
-transport: shown once during pairing or transferred through credential broker
+transport: transferred through SSH, credential broker, or another encrypted channel; MUST NOT be printed in chat or logs
 rotation: supported by pairing command
 ```
 
@@ -144,6 +144,7 @@ Communication bridge integration MUST validate:
 /ai 新对话
 /ai 压缩
 /ai 上下文
+/ai 自动压缩 开启
 /ai 继续
 /ai 每次新对话
 /ai 全局 查看
@@ -151,6 +152,8 @@ Communication bridge integration MUST validate:
 /ai 项目 追加
 /ai 项目 替换
 /ai 凭据 添加
+/ai 工作区 使用
+/ai 提供商 使用
 /ai 扩展 列表
 ```
 
