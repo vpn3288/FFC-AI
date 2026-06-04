@@ -179,6 +179,9 @@ for command in commands:
     log '/ai slash command validation failed'
     exit 1
   }
+  COMMAND_ID="$(printf '%s' "$COMMAND_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')"
+  [ -n "$COMMAND_ID" ] || { log '/ai slash command id was not returned by Mattermost REST API'; exit 1; }
+  COMMAND_JSON="$(rest_json GET "$MATTERMOST_URL/api/v4/commands/$COMMAND_ID")"
   SLASH_TOKEN="$(printf '%s' "$COMMAND_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))')"
   [ -n "$SLASH_TOKEN" ] || { log '/ai slash command token was not returned by Mattermost REST API'; exit 1; }
   TMP_ENV="$(mktemp)"
