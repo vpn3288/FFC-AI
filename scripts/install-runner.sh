@@ -52,7 +52,7 @@ log "detected os=$OS_ID arch=$ARCH systemd=$SYSTEMD wsl=$WSL"
 log 'stage 02: install system packages required by runner'
 if command -v apt-get >/dev/null 2>&1; then
   run sudo apt-get update
-  run sudo apt-get install -y python3 ca-certificates curl git openssl
+  run sudo apt-get install -y python3 python3-pip ca-certificates curl git openssl
 else
   log 'apt-get unavailable; package installation skipped and must be handled externally'
 fi
@@ -60,8 +60,13 @@ fi
 log 'stage 03: install or verify Claude Code'
 if command -v claude >/dev/null 2>&1; then
   claude --version
+elif command -v apt-get >/dev/null 2>&1; then
+  run sudo apt-get install -y claude-code
+  command -v claude >/dev/null 2>&1 || { log 'claude install failed; see official Claude Code installation docs'; exit 1; }
+  claude --version
 else
-  log 'claude missing; install from official Claude Code docs before core_ready'
+  log 'claude missing and native installer unavailable; install from official Claude Code docs before core_ready'
+  exit 1
 fi
 
 log 'stage 04: install or verify Codex CLI'
@@ -73,6 +78,13 @@ fi
 
 log 'stage 05: create runner directories'
 run sudo mkdir -p "$STATE_ROOT"/{credentials,instructions/snapshots,budget} "$WORKSPACE_ROOT" "$INSTALL_ROOT"
+run sudo cp -R "$REPO_ROOT"/src "$INSTALL_ROOT"/
+run sudo cp "$REPO_ROOT"/pyproject.toml "$INSTALL_ROOT"/
+if [ "$DRY_RUN" = false ]; then
+  (cd "$INSTALL_ROOT" && sudo python3 -m pip install --break-system-packages -e .)
+else
+  log "would install Python package from $INSTALL_ROOT"
+fi
 
 log 'stage 06: create runner configuration files'
 if [ "$DRY_RUN" = false ]; then
@@ -129,10 +141,10 @@ EOF
 fi
 
 log 'stage 09: connect runner to communication platform'
-log 'requires Mattermost/Matrix endpoint, bot token, channel IDs, and bridge shared secret'
+log 'use scripts/pair-runner.sh with Mattermost URL, webhook URL, bot token, and bridge shared secret'
 
 log 'stage 10: run provider smoke tests'
-python3 -m ai_remote_runner.cli providers || true
+python3 -m ai_remote_runner.cli providers
 
 log 'stage 11: run phone command smoke tests'
 python3 -m ai_remote_runner.cli parse '/ai 状态'

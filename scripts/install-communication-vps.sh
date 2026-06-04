@@ -5,6 +5,7 @@ DRY_RUN=false
 DOMAIN="${MATTERMOST_DOMAIN:-}"
 LOCK_FILE="${LOCK_FILE:-versions.lock}"
 INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   printf 'usage: %s [--dry-run] --domain example.com\n' "$0"
@@ -69,8 +70,28 @@ log 'stage 03: configure domain and TLS'
 log "domain=$DOMAIN"
 
 log 'stage 04-07: create pinned Mattermost deployment'
-run sudo mkdir -p "$INSTALL_DIR"/{config,data,logs,plugins,client/plugins,db}
+secret_b64() {
+  python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+}
+
+run sudo mkdir -p "$INSTALL_DIR"/{config,data,logs,plugins,client/plugins,db,caddy}
 if [ "$DRY_RUN" = false ]; then
+  MM_DB_PASSWORD="$(secret_b64)"
+  AI_BRIDGE_SHARED_SECRET="$(secret_b64)"
+  sudo tee "$INSTALL_DIR/.env" >/dev/null <<EOF
+MM_DB_PASSWORD=$MM_DB_PASSWORD
+AI_BRIDGE_SHARED_SECRET=$AI_BRIDGE_SHARED_SECRET
+MATTERMOST_DOMAIN=$DOMAIN
+EOF
+  sudo chmod 0600 "$INSTALL_DIR/.env"
+  sudo tee "$INSTALL_DIR/caddy/Caddyfile" >/dev/null <<EOF
+$DOMAIN {
+  reverse_proxy mattermost:8065
+}
+EOF
   sudo tee "$INSTALL_DIR/docker-compose.yml" >/dev/null <<EOF
 services:
   db:
@@ -99,9 +120,21 @@ services:
       - ./logs:/mattermost/logs
       - ./plugins:/mattermost/plugins
       - ./client/plugins:/mattermost/client/plugins
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on:
+      - mattermost
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
 EOF
 else
-  log "would write $INSTALL_DIR/docker-compose.yml"
+  log "would generate MM_DB_PASSWORD, AI_BRIDGE_SHARED_SECRET, Caddyfile, and $INSTALL_DIR/docker-compose.yml"
 fi
 
 log 'stage 08-12: create team, channels, bots, /ai command, status endpoint, shared secret'
@@ -114,7 +147,7 @@ if [ "$DRY_RUN" = false ]; then
     fi
     sleep 5
   done
-  log 'bootstrap must create team ai-lab, channels, bot identities, /ai slash command, and incoming webhook through mmctl --local or REST fallback'
+  MATTERMOST_INSTALL_DIR="$INSTALL_DIR" "$SCRIPT_DIR/bootstrap-mattermost.sh"
 else
   log 'would run docker compose up -d and bootstrap Mattermost objects with mmctl --local'
 fi
@@ -130,6 +163,8 @@ if [ "$DRY_RUN" = false ]; then
   "mattermost_db_image": "$DB_IMAGE",
   "mattermost_docker_ref": "$DOCKER_REF",
   "created_files": [
+    "$INSTALL_DIR/.env",
+    "$INSTALL_DIR/caddy/Caddyfile",
     "$INSTALL_DIR/docker-compose.yml",
     "$INSTALL_DIR/install-manifest.json"
   ],
