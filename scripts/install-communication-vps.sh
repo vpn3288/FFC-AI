@@ -145,6 +145,8 @@ services:
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:\${MM_DB_PASSWORD:?set MM_DB_PASSWORD}@db:5432/mattermost?sslmode=disable
       MM_SERVICESETTINGS_SITEURL: https://$DOMAIN
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: /var/tmp/mattermost_local.socket
     volumes:
       - ./config:/mattermost/config
       - ./data:/mattermost/data
@@ -212,6 +214,8 @@ Type=simple
 WorkingDirectory=$INSTALL_DIR/mattermost
 Environment=MM_SERVICESETTINGS_SITEURL=https://$DOMAIN
 Environment=MM_SERVICESETTINGS_LISTENADDRESS=:8065
+Environment=MM_SERVICESETTINGS_ENABLELOCALMODE=true
+Environment=MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION=/var/tmp/mattermost_local.socket
 Environment=MM_SQLSETTINGS_DRIVERNAME=postgres
 Environment=MM_SQLSETTINGS_DATASOURCE=postgres://mmuser:$MM_DB_PASSWORD@127.0.0.1:5432/mattermost?sslmode=disable&connect_timeout=10
 Environment=MM_FILESETTINGS_DIRECTORY=$INSTALL_DIR/mattermost/data
@@ -246,16 +250,20 @@ if [ "$DRY_RUN" = false ]; then
     sleep 5
   done
   log 'waiting for Mattermost to expose mmctl'
+  MMCTL_READY=false
   for _ in $(seq 1 60); do
     if [ "$DEPLOY_MODE" = "native-arm64" ]; then
       if (cd "$INSTALL_DIR/mattermost" && bin/mmctl --local version >/dev/null 2>&1); then
+        MMCTL_READY=true
         break
       fi
     elif (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl version >/dev/null 2>&1); then
+      MMCTL_READY=true
       break
     fi
     sleep 5
   done
+  [ "$MMCTL_READY" = true ] || { log 'Mattermost mmctl local mode did not become ready'; exit 1; }
   MATTERMOST_INSTALL_DIR="$INSTALL_DIR" "$SCRIPT_DIR/bootstrap-mattermost.sh"
 else
   log 'would run docker compose up -d and bootstrap Mattermost objects with mmctl --local'
