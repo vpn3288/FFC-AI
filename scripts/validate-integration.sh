@@ -2,6 +2,7 @@
 set -euo pipefail
 
 STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
+MATTERMOST_INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
 BRIDGE_COMMAND_URL="${BRIDGE_COMMAND_URL:-http://127.0.0.1:8765/bridge/command}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -38,6 +39,25 @@ response = request.urlopen(request.Request(url, data=body, headers=headers, meth
 payload = json.loads(response.read().decode("utf-8"))
 if payload.get("status") != "accepted":
     raise SystemExit(f"bridge loopback failed: {payload}")
+PY
+
+python3 - "$STATE_ROOT/install-manifest.json" "$MATTERMOST_INSTALL_DIR/install-manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if "mattermost" in data.get("component", ""):
+        data["platform_ready"] = True
+        data["platform_ready_status"] = "validated"
+    else:
+        data["core_ready"] = True
+        data["core_ready_status"] = "validated"
+    data["integration_validated_at"] = "manual-smoke"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 PY
 
 printf '[validate-integration] bridge loopback passed\n'

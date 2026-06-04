@@ -142,6 +142,8 @@ class CredentialBroker:
     def ssh_exec(self, handle: str, command: str, timeout_seconds: int = 60) -> subprocess.CompletedProcess[str]:
         self.authorize(handle, "runner", "ssh.exec")
         record = self._load_index()[handle]
+        if record.get("type") == "ssh_password":
+            return self.ssh_exec_with_password(handle, command, timeout_seconds=timeout_seconds)
         if record.get("type") != "ssh_private_key":
             raise ValueError("credential_type_not_ssh_private_key")
         key = self._decrypt_file(Path(record["secret_path"]))
@@ -162,3 +164,24 @@ class CredentialBroker:
             )
         finally:
             key_path.unlink(missing_ok=True)
+
+    def ssh_exec_with_password(self, handle: str, command: str, timeout_seconds: int = 60) -> subprocess.CompletedProcess[str]:
+        self.authorize(handle, "runner", "ssh.exec")
+        if not shutil.which("sshpass"):
+            raise RuntimeError("sshpass_required_for_ssh_password")
+        record = self._load_index()[handle]
+        if record.get("type") != "ssh_password":
+            raise ValueError("credential_type_not_ssh_password")
+        password = self._decrypt_file(Path(record["secret_path"]))
+        host = record["host"]
+        username = record["username"]
+        port = str(record.get("port", 22))
+        env = {"SSHPASS": password, "PATH": os.environ.get("PATH", "")}
+        return subprocess.run(
+            ["sshpass", "-e", "ssh", "-p", port, "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new", f"{username}@{host}", command],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )

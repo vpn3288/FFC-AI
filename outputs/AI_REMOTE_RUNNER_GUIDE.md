@@ -809,9 +809,8 @@ Rules:
 - Plaintext MUST NOT appear in channel history.
 - Plaintext MUST NOT appear in logs.
 - For SSH private key execution, broker writes temporary `0600` key file, uses it, then deletes it.
-- `sshpass` MUST NOT be used.
 - SSH password execution MUST NOT pass password via process arguments.
-- Password-based SSH MAY use broker-controlled stdin/pty helper only after explicit approval.
+- Password-based SSH MAY use broker-controlled `sshpass -e` or stdin/pty helper only after explicit approval; the password MUST be supplied through broker-controlled environment or stdin, never through argv or chat.
 - API tokens are injected only into exact subprocess environment via `env -i`.
 
 Action request:
@@ -887,7 +886,7 @@ Budget enforcement:
 - runner MUST enforce output byte cap.
 - runner MUST update ledger after completion or failure.
 - if actual cost is unavailable, runner MUST commit conservative estimate.
-- Codex and non-Claude providers MUST have per-run reservation caps because they may lack native budget flags.
+- Codex and non-Claude providers MUST have per-run reservation caps because they may lack native budget flags. If a provider lacks a native money cap, the runner MUST enforce the reservation by preflight budget checks, timeout, output byte cap, and process termination on timeout.
 
 If exceeded:
 

@@ -39,6 +39,17 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn("summary_artifact", response["data"])
             self.assertIn("old prompt", Path(response["data"]["summary_artifact"]).read_text(encoding="utf-8"))
 
+    def test_compact_context_checks_provider_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.contexts.add_exchange("default", "claude-code", "old prompt", "old answer")
+            parsed = parse_command("/ai 压缩")
+            status = [{"provider": "claude-code", "capabilities": {"new_conversation": False, "continue_conversation": False}}]
+            with patch("ai_remote_runner.executor.provider_status", return_value=status):
+                response = execute(parsed, {"request_id": "r3b", "raw_text": "/ai 压缩"}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "provider_compaction_unsupported")
+
     def test_missing_snapshot_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -90,6 +101,16 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["status"], "error")
             self.assertEqual(response["error"]["code"], "secrets_in_instructions")
             invoke.assert_not_called()
+
+    def test_instruction_secret_scan_allows_handles_and_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.instructions.write("global", "Use {{credential://api/prod}} and AI_BRIDGE_SHARED_SECRET=<generated>")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake):
+                response = execute(parsed, {"request_id": "sec2", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["status"], "accepted")
 
     def test_budget_preflight_blocks_provider_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

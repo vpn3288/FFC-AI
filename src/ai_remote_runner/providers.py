@@ -27,6 +27,7 @@ SAFE_ENV_KEYS = [
 
 
 PROBE_TIMEOUT_SECONDS = 10
+AUTH_PROBE_TIMEOUT_SECONDS = 60
 
 
 def _run_probe(command: list[str], timeout_seconds: int = PROBE_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str] | None:
@@ -68,7 +69,7 @@ def _help_has(command: list[str], *needles: str) -> bool:
 def _claude_auth_ready() -> bool:
     if not shutil.which("claude"):
         return False
-    result = _run_probe(["claude", "auth", "status", "--json"])
+    result = _run_probe(["claude", "auth", "status", "--json"], timeout_seconds=AUTH_PROBE_TIMEOUT_SECONDS)
     if result is None:
         return False
     if result.returncode != 0:

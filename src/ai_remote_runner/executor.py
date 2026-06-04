@@ -23,7 +23,7 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("github_token", re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b")),
     ("anthropic_or_openai_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")),
-    ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*[A-Za-z0-9_-]{32,}\b")),
+    ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*(?!<|\\$|\\{)[A-Za-z0-9_-]{32,}\b")),
 )
 
 
@@ -109,7 +109,13 @@ def _provider_from_args(args: list[str]) -> str | None:
 
 
 def _secret_findings(text: str) -> list[str]:
-    return [name for name, pattern in SECRET_PATTERNS if pattern.search(text)]
+    scrubbed = re.sub(r"\{\{credential://[^}]+\}\}", "{{credential-handle}}", text)
+    return [name for name, pattern in SECRET_PATTERNS if pattern.search(scrubbed)]
+
+
+def _provider_capabilities(provider: str) -> dict[str, Any]:
+    status = next((item for item in provider_status() if item.get("provider") == provider), None)
+    return status.get("capabilities", {}) if status else {}
 
 
 def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
@@ -225,8 +231,12 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         )
     if action == "compact_context":
         policy = rt.load_policy()
+        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        capabilities = _provider_capabilities(provider)
+        if not (capabilities.get("new_conversation") or capabilities.get("continue_conversation")):
+            return _error(request_id, "provider_compaction_unsupported", f"{provider} does not report new or continued conversation support")
         conversation_id = envelope.get("conversation_id") or policy.get("conversation_id") or "default"
-        compacted = rt.contexts.compact(conversation_id, envelope.get("provider") or _selected_provider(rt) or "claude-code")
+        compacted = rt.contexts.compact(conversation_id, provider)
         policy["conversation_id"] = compacted["new_conversation_id"]
         rt.save_policy(policy)
         return _ok(request_id, run_id, "上下文已压缩", compacted)
