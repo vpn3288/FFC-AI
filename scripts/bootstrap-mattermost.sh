@@ -149,7 +149,7 @@ SLASH_COMMAND_URL=""
 if [ -n "$BRIDGE_COMMAND_URL" ]; then
   log 'creating /ai slash command through Mattermost REST API'
   EXISTING_COMMAND="$(
-    rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" |
+    rest_json GET "$MATTERMOST_URL/api/v4/commands?team_id=$TEAM_ID" |
       python3 -c 'import json,sys
 commands = json.load(sys.stdin)
 for command in commands:
@@ -167,7 +167,7 @@ for command in commands:
     fi
   fi
   COMMAND_JSON="$(
-    rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" |
+    rest_json GET "$MATTERMOST_URL/api/v4/commands?team_id=$TEAM_ID" |
       python3 -c 'import json,sys
 commands = json.load(sys.stdin)
 for command in commands:
