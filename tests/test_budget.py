@@ -16,6 +16,7 @@ class BudgetTests(unittest.TestCase):
             done = ledger.complete("run-1", 0.25)
             self.assertEqual(done["actual_usd"], 0.25)
             self.assertEqual(done["status"], "completed")
+            self.assertEqual(ledger.load()["daily_used_usd_estimate"], 0.25)
 
     def test_budget_exceeded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

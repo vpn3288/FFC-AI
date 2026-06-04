@@ -47,6 +47,7 @@ for bot in ai-bridge master-writer-ai claude-code-ai codex-ai reviewer-ai-1 revi
 done
 
 log 'slash command and incoming webhook require admin token on Mattermost editions without mmctl local integration support'
+log 'if REST fallback is used, create or log in as a Mattermost admin first and export MATTERMOST_ADMIN_TOKEN'
 if [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE_COMMAND_URL" ]; then
   log 'creating /ai slash command through Mattermost REST API'
   TEAM_ID="$(curl -fsS "$MATTERMOST_URL/api/v4/teams/name/ai-lab" \
@@ -55,14 +56,14 @@ if [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE
   curl -fsS -X POST "$MATTERMOST_URL/api/v4/commands" \
     -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
     -H 'Content-Type: application/json' \
-    -d "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null || true
+    -d "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
 fi
 if [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$WEBHOOK_CHANNEL_ID" ]; then
   log 'creating incoming webhook through Mattermost REST API'
   curl -fsS -X POST "$MATTERMOST_URL/api/v4/hooks/incoming" \
     -H "Authorization: Bearer $MATTERMOST_ADMIN_TOKEN" \
     -H 'Content-Type: application/json' \
-    -d "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" >/dev/null || true
+    -d "{\"channel_id\":\"$WEBHOOK_CHANNEL_ID\",\"display_name\":\"AI Status\",\"description\":\"AI runner status events\"}" >/dev/null
 fi
 sudo tee "$MANIFEST" >/dev/null <<EOF
 {

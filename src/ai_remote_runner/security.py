@@ -39,7 +39,8 @@ class NonceStore:
 
     def check_and_store(self, nonce: str, now: float | None = None) -> bool:
         current = now if now is not None else time.time()
-        data = {k: v for k, v in self._load().items() if current - float(v) <= self.ttl_seconds}
+        loaded = self._load()
+        data = {k: v for k, v in loaded.items() if current - float(v) <= self.ttl_seconds}
         if nonce in data:
             return False
         data[nonce] = current

@@ -38,6 +38,21 @@ class SecurityTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(reason, "bad_signature")
 
+    def test_body_tampering_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = b64url_encode(secrets.token_bytes(32))
+            original = b'{"raw_text":"/ai status"}'
+            tampered = b'{"raw_text":"/ai budget"}'
+            timestamp = str(time.time())
+            headers = {
+                "X-AI-Bridge-Timestamp": timestamp,
+                "X-AI-Bridge-Nonce": "nonce-3",
+                "X-AI-Bridge-Signature": sign_body(secret, timestamp, "nonce-3", original),
+            }
+            ok, reason = verify_headers(secret, headers, tampered, NonceStore(Path(tmp) / "nonces.json"))
+            self.assertFalse(ok)
+            self.assertEqual(reason, "bad_signature")
+
 
 if __name__ == "__main__":
     unittest.main()

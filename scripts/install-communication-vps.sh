@@ -187,8 +187,8 @@ if [ "$DRY_RUN" = false ]; then
 }
 EOF
   sudo chmod 0600 "$INSTALL_DIR/install-manifest.json"
-  log 'bridge shared secret was written to .env; copy it once into scripts/pair-runner.sh on the runner host'
-  sudo awk -F= '/^AI_BRIDGE_SHARED_SECRET=/ {print "AI_BRIDGE_SHARED_SECRET="$2}' "$INSTALL_DIR/.env"
+  log "bridge shared secret written to $INSTALL_DIR/.env with mode 0600"
+  log 'transfer the secret to the runner through SSH, the credential broker, or another encrypted channel; it is not printed to stdout'
 else
   log "would write $INSTALL_DIR/install-manifest.json"
 fi

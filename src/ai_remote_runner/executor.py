@@ -76,7 +76,13 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "status":
         return _ok(request_id, run_id, "状态已生成", current_status(rt))
     if action in {"command_index", "feature_index"}:
-        return _ok(request_id, run_id, "索引已生成", {"items": command_index(), "providers": provider_status()})
+        providers = provider_status()
+        feature_data: dict[str, Any] = {"items": command_index(), "providers": providers}
+        codex = next((item for item in providers if item["provider"] == "codex"), None)
+        if codex and not codex.get("available"):
+            feature_data["codex_remediation_zh"] = "Codex 当前需要手动安装。请查看官方安装说明后重新运行 /ai 提供商 列表。"
+            feature_data["codex_status"] = "external_prerequisite"
+        return _ok(request_id, run_id, "索引已生成", feature_data)
     if action == "budget_status":
         return _ok(request_id, run_id, "预算已生成", rt.ledger.load())
     if action == "context_status":

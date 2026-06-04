@@ -74,6 +74,10 @@ class BudgetLedger:
     def complete(self, run_id: str, actual_usd: float | None, status: str = "completed") -> dict[str, Any]:
         data = self.load()
         run = data["runs"][run_id]
+        if actual_usd is not None and run.get("actual_usd") is None:
+            delta = actual_usd - float(run["reserved_usd"])
+            data["daily_used_usd_estimate"] = max(0.0, data["daily_used_usd_estimate"] + delta)
+            data["monthly_used_usd_estimate"] = max(0.0, data["monthly_used_usd_estimate"] + delta)
         run["actual_usd"] = actual_usd
         run["status"] = status
         run["completed_at"] = int(time.time())

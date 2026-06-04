@@ -205,6 +205,8 @@ else
   log "would write $STATE_ROOT/install-manifest.json"
 fi
 log 'core_ready=false until bridge pairing, credential test, and phone loopback pass'
-if [ "$DRY_RUN" = false ]; then
+if [ "$DRY_RUN" = false ] && [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ] && [ -n "${MATTERMOST_WEBHOOK_URL:-}" ]; then
   "$SCRIPT_DIR/validate-core-ready.sh" || log 'core_ready validation failed'
+else
+  log 'skip core_ready validation until pairing supplies bridge secret and Mattermost webhook'
 fi
