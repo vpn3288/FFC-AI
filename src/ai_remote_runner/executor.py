@@ -108,6 +108,10 @@ def _provider_from_args(args: list[str]) -> str | None:
     return None
 
 
+def _valid_workspace_id(workspace_id: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+", workspace_id))
+
+
 def _secret_findings(text: str) -> list[str]:
     scrubbed = re.sub(r"\{\{credential://[^}]+\}\}", "{{credential-handle}}", text)
     return [name for name, pattern in SECRET_PATTERNS if pattern.search(scrubbed)]
@@ -116,6 +120,29 @@ def _secret_findings(text: str) -> list[str]:
 def _provider_capabilities(provider: str) -> dict[str, Any]:
     status = next((item for item in provider_status() if item.get("provider") == provider), None)
     return status.get("capabilities", {}) if status else {}
+
+
+def _install_manifest(rt: RunnerRuntime) -> dict[str, Any]:
+    path = rt.state / "install-manifest.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _command_index_with_availability(items: list[dict[str, Any]], providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    any_provider_available = any(item.get("available") for item in providers)
+    codex_available = any(item.get("provider") == "codex" and item.get("available") for item in providers)
+    updated = []
+    for item in items:
+        row = dict(item)
+        action = row.get("canonical_action", "")
+        if action in {"provider.select"} and not any_provider_available:
+            row["enabled"] = False
+            row["unsupported"] = True
+        if action == "provider.select" and "codex" in row.get("usage", "") and not codex_available:
+            row["enabled"] = False
+        updated.append(row)
+    return updated
 
 
 def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
@@ -149,6 +176,8 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     action = parsed["canonical_action"]
     args = parsed.get("args", {}).get("tail", [])
     workspace_id = envelope.get("workspace_id") or _selected_workspace(rt) or "default"
+    if not _valid_workspace_id(workspace_id):
+        return _error(request_id, "invalid_workspace_id", "workspace_id must contain only letters, numbers, dash, or underscore")
     run_id = str(uuid.uuid4())
     rt.events.emit(status_event(run_id, "queued", "正在排队"))
 
@@ -156,10 +185,14 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         return _ok(request_id, run_id, "状态已生成", current_status(rt))
     if action in {"command_index", "feature_index"}:
         providers = provider_status()
-        feature_data: dict[str, Any] = {"items": command_index(), "providers": providers}
+        manifest = _install_manifest(rt)
+        feature_data: dict[str, Any] = {"items": _command_index_with_availability(command_index(), providers), "providers": providers}
         codex = next((item for item in providers if item["provider"] == "codex"), None)
-        feature_data["codex_status"] = "external_prerequisite"
+        feature_data["codex_ready"] = manifest.get("codex_ready", bool(codex and codex.get("available")))
+        feature_data["codex_status"] = manifest.get("codex_status", "external_prerequisite")
         feature_data["codex_remediation_zh"] = "Codex 若不可用，需要按当前 Codex CLI 官方说明手动安装并重新运行 /ai 提供商 列表。"
+        if manifest.get("codex_remediation_zh"):
+            feature_data["codex_remediation_zh"] = manifest["codex_remediation_zh"]
         if codex and not codex.get("available"):
             feature_data["codex_remediation_zh"] = "Codex 当前需要手动安装。请查看官方安装说明后重新运行 /ai 提供商 列表。"
         return _ok(request_id, run_id, "索引已生成", feature_data)
@@ -184,6 +217,15 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         global_info = rt.instructions.show("global", workspace_id)
         project_info = rt.instructions.show("project", workspace_id)
         policy = rt.load_policy()
+        if policy.get("permission_scope") == "shell" and not envelope.get("confirmed"):
+            return {
+                "request_id": request_id,
+                "status": "needs_confirmation",
+                "run_id": run_id,
+                "message_zh": "Shell 模式任务需要逐次确认",
+                "data": {"canonical_action": "task.run", "permission_scope": "shell", "confirmation_token": str(uuid.uuid4())},
+                "error": None,
+            }
         if envelope.get("conversation_id"):
             conversation_id = envelope["conversation_id"]
         elif policy.get("policy") == "new_each_request":
@@ -325,12 +367,16 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "workspace.create":
         if not args:
             return _error(request_id, "missing_workspace_id", "missing_workspace_id")
+        if not _valid_workspace_id(args[0]):
+            return _error(request_id, "invalid_workspace_id", "workspace_id must contain only letters, numbers, dash, or underscore")
         target = rt.workspaces / args[0]
         target.mkdir(parents=True, exist_ok=True)
         return _ok(request_id, run_id, "工作区已创建", {"workspace_id": args[0], "path": str(target)})
     if action == "workspace.select":
         if not args:
             return _error(request_id, "missing_workspace_id", "missing_workspace_id")
+        if not _valid_workspace_id(args[0]):
+            return _error(request_id, "invalid_workspace_id", "workspace_id must contain only letters, numbers, dash, or underscore")
         _write_json_state(rt.state / "workspace-selection.json", {"workspace_id": args[0]})
         return _ok(request_id, run_id, "工作区已选择", {"workspace_id": args[0]})
     if action in {"extension.list", "tool.list", "mcp.list"}:

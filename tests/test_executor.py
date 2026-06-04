@@ -75,6 +75,14 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["status"], "accepted")
             self.assertTrue((runtime.workspaces / "demo").exists())
 
+    def test_invalid_workspace_id_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = parse_command("/ai 工作区 创建 ../../etc")
+            response = execute(parsed, {"request_id": "wbad", "raw_text": "/ai 工作区 创建 ../../etc", "confirmed": True}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "invalid_workspace_id")
+
     def test_task_run_invokes_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -224,6 +232,15 @@ class ExecutorTests(unittest.TestCase):
             with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
                 execute(parsed, {"request_id": "pm2", "raw_text": "edit work"}, runtime)
             self.assertEqual(invoke.call_args.kwargs["permission_scope"], "edit")
+
+    def test_shell_permission_scope_requires_per_task_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai shell模式 开启"), {"request_id": "sh1", "raw_text": "/ai shell模式 开启", "confirmed": True}, runtime)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "run shell"}, "requires_confirmation": False}
+            response = execute(parsed, {"request_id": "sh2", "raw_text": "run shell"}, runtime)
+            self.assertEqual(response["status"], "needs_confirmation")
+            self.assertEqual(response["data"]["permission_scope"], "shell")
 
 
 if __name__ == "__main__":

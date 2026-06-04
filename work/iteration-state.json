@@ -1,5 +1,5 @@
 {
-  "round": 15,
+  "round": 16,
   "mode": "infinite_convergence",
   "min_score": 90,
   "max_usd": 25.0,
@@ -124,16 +124,24 @@
       "open_p0": 0,
       "open_p1": 13,
       "open_p2": 5
+    },
+    {
+      "round": 16,
+      "reviewer": "claude-code",
+      "score": 68,
+      "open_p0": 0,
+      "open_p1": 7,
+      "open_p2": 6
     }
   ],
   "open_p0": 0,
-  "open_p1": 13,
-  "open_p2": 5,
+  "open_p1": 7,
+  "open_p2": 6,
   "missing_user_requirements": [
     "implementation scripts were absent before round 1 patch"
   ],
   "script_smoke_tests_passing": true,
-  "latest_patch_summary": "Round 15 added SSH password execution through broker-controlled sshpass environment, provider capability checks before compaction, instruction secret-pattern allowlisting for credential handles and placeholders, longer Claude auth probe timeout, integration validation manifest updates, and tests for these paths.",
-  "last_github_push": "0bf88d9 pushed; current optimization pending commit/push",
+  "latest_patch_summary": "Round 16 added Codex readiness fields to runner install manifests, config.env snapshots for rollback, automatic validation after pairing, dynamic feature-index Codex status/remediation, shell-mode per-task confirmation, safer Codex sandbox flag removal, workspace id validation, and budget overspend tracking.",
+  "last_github_push": "b9392c6 pushed; current optimization pending commit/push",
   "stop_reason": null
 }

@@ -300,6 +300,8 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
     ]
     if not _help_has(["codex", "exec", "--help"], "--sandbox"):
         sandbox_index = command.index("--sandbox")
+        if sandbox_index + 1 >= len(command) or not command[sandbox_index + 1].startswith("workspace-"):
+            raise RuntimeError("unexpected_codex_sandbox_template")
         del command[sandbox_index : sandbox_index + 2]
     return command
 

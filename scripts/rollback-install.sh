@@ -17,5 +17,11 @@ fi
 
 printf '[rollback] preserving workspaces and credentials by default\n'
 sudo rm -f "$INSTALL_ROOT/run-local.sh"
-sudo rm -f "$STATE_ROOT/config.env"
+if [ -f "$STATE_ROOT/install-snapshots/config.env.preinstall" ]; then
+  sudo cp "$STATE_ROOT/install-snapshots/config.env.preinstall" "$STATE_ROOT/config.env"
+  sudo chmod 0600 "$STATE_ROOT/config.env"
+  printf '[rollback] restored previous config.env snapshot\n'
+else
+  sudo rm -f "$STATE_ROOT/config.env"
+fi
 printf '[rollback] complete; credential store and workspaces were not deleted\n'

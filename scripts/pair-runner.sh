@@ -2,6 +2,7 @@
 set -euo pipefail
 
 STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLATFORM_URL=""
 WEBHOOK_URL=""
 BOT_TOKEN=""
@@ -75,4 +76,7 @@ AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 AI_BRIDGE_SECRET_TRANSFER_METHOD=$TRANSFER_METHOD
 EOF
 sudo chmod 0600 "$STATE_ROOT/config.env"
-printf '[pair-runner] pairing config written; run bridge loopback smoke test next\n'
+printf '[pair-runner] pairing config written; running bridge loopback validation\n'
+if [ "${PAIR_RUNNER_SKIP_VALIDATE:-false}" != true ]; then
+  AI_REMOTE_STATE="$STATE_ROOT" "$SCRIPT_DIR/validate-core-ready.sh"
+fi

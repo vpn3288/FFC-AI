@@ -14,6 +14,7 @@ DEFAULT_STATE = {
     "daily_period": "",
     "monthly_period": "",
     "freeze_on_exceed": True,
+    "overspend_usd": 0.0,
     "runs": {},
 }
 
@@ -91,6 +92,10 @@ class BudgetLedger:
             delta = actual_usd - float(run["reserved_usd"])
             data["daily_used_usd_estimate"] = max(0.0, data["daily_used_usd_estimate"] + delta)
             data["monthly_used_usd_estimate"] = max(0.0, data["monthly_used_usd_estimate"] + delta)
+            if delta > 0:
+                run["overspent"] = True
+                run["overspend_usd"] = delta
+                data["overspend_usd"] = float(data.get("overspend_usd", 0.0)) + delta
         run["actual_usd"] = actual_usd
         run["status"] = status
         run["completed_at"] = int(time.time())

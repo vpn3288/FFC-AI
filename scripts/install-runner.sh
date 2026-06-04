@@ -92,8 +92,14 @@ else
 fi
 
 log 'stage 04: install or verify Codex CLI'
+CODEX_READY=false
+CODEX_STATUS="external_prerequisite"
+CODEX_REMEDIATION_ZH="Codex CLI 未安装；请按当前 Codex 官方安装说明手动安装后重新运行 /ai 提供商 列表。"
 if command -v codex >/dev/null 2>&1; then
   codex --version
+  CODEX_READY=true
+  CODEX_STATUS="installed"
+  CODEX_REMEDIATION_ZH=""
 else
   log 'codex missing; codex_status=external_prerequisite'
 fi
@@ -109,6 +115,7 @@ else
 fi
 
 log 'stage 06: create runner configuration files'
+SNAPSHOT_DIR="$STATE_ROOT/install-snapshots"
 if [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ]; then
   BRIDGE_SECRET="$AI_BRIDGE_SHARED_SECRET"
 else
@@ -121,6 +128,11 @@ case "$BRIDGE_SECRET" in
     ;;
 esac
 if [ "$DRY_RUN" = false ]; then
+  sudo mkdir -p "$SNAPSHOT_DIR"
+  if [ -f "$STATE_ROOT/config.env" ]; then
+    sudo cp "$STATE_ROOT/config.env" "$SNAPSHOT_DIR/config.env.preinstall"
+    sudo chmod 0600 "$SNAPSHOT_DIR/config.env.preinstall"
+  fi
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
@@ -204,7 +216,13 @@ if [ "$DRY_RUN" = false ]; then
   "wsl": $WSL,
   "core_ready": false,
   "core_ready_status": "pending_pairing",
+  "codex_ready": $CODEX_READY,
+  "codex_status": "$CODEX_STATUS",
+  "codex_remediation_zh": "$CODEX_REMEDIATION_ZH",
   "claude_model": "$CLAUDE_MODEL",
+  "snapshots": {
+    "config_env": "$SNAPSHOT_DIR/config.env.preinstall"
+  },
   "created_files": [
     "$STATE_ROOT/config.env",
     "$STATE_ROOT/install-manifest.json"

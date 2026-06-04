@@ -18,6 +18,14 @@ class BudgetTests(unittest.TestCase):
             self.assertEqual(done["status"], "completed")
             self.assertEqual(ledger.load()["daily_used_usd_estimate"], 0.25)
 
+    def test_overspend_is_tracked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            ledger.reserve("run-1", "claude-code", 0.5)
+            done = ledger.complete("run-1", 0.75)
+            self.assertTrue(done["overspent"])
+            self.assertAlmostEqual(ledger.load()["overspend_usd"], 0.25)
+
     def test_budget_exceeded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
