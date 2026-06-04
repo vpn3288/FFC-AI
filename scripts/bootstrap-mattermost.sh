@@ -144,16 +144,54 @@ rest_json GET "$MATTERMOST_URL/api/v4/users/me" >/dev/null || {
 }
 TEAM_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/name/ai-lab" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 SLASH_STATUS="pending_bridge_command_url"
+SLASH_TOKEN_CONFIGURED=false
+SLASH_COMMAND_URL=""
 if [ -n "$BRIDGE_COMMAND_URL" ]; then
   log 'creating /ai slash command through Mattermost REST API'
-  if ! rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)'; then
+  EXISTING_COMMAND="$(
+    rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" |
+      python3 -c 'import json,sys
+commands = json.load(sys.stdin)
+for command in commands:
+    if command.get("trigger") == "ai":
+        print(json.dumps(command))
+        break'
+  )"
+  if [ -z "$EXISTING_COMMAND" ]; then
     rest_json POST "$MATTERMOST_URL/api/v4/commands" "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
+  else
+    COMMAND_ID="$(printf '%s' "$EXISTING_COMMAND" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')"
+    EXISTING_URL="$(printf '%s' "$EXISTING_COMMAND" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("url", ""))')"
+    if [ "$EXISTING_URL" != "$BRIDGE_COMMAND_URL" ]; then
+      rest_json PUT "$MATTERMOST_URL/api/v4/commands/$COMMAND_ID" "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
+    fi
   fi
-  rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)' || {
+  COMMAND_JSON="$(
+    rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" |
+      python3 -c 'import json,sys
+commands = json.load(sys.stdin)
+for command in commands:
+    if command.get("trigger") == "ai":
+        print(json.dumps(command))
+        break'
+  )"
+  [ -n "$COMMAND_JSON" ] || {
     log '/ai slash command validation failed'
     exit 1
   }
+  SLASH_TOKEN="$(printf '%s' "$COMMAND_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))')"
+  [ -n "$SLASH_TOKEN" ] || { log '/ai slash command token was not returned by Mattermost REST API'; exit 1; }
+  TMP_ENV="$(mktemp)"
+  if [ -f "$INSTALL_DIR/.env" ]; then
+    sudo awk -F= '$1 != "MATTERMOST_SLASH_TOKEN"' "$INSTALL_DIR/.env" > "$TMP_ENV"
+  fi
+  printf 'MATTERMOST_SLASH_TOKEN=%s\n' "$SLASH_TOKEN" >> "$TMP_ENV"
+  sudo cp "$TMP_ENV" "$INSTALL_DIR/.env"
+  rm -f "$TMP_ENV"
+  sudo chmod 0600 "$INSTALL_DIR/.env"
   SLASH_STATUS="ready"
+  SLASH_TOKEN_CONFIGURED=true
+  SLASH_COMMAND_URL="$BRIDGE_COMMAND_URL"
 else
   log 'BRIDGE_COMMAND_URL not set; deferring /ai slash command creation until runner pairing'
 fi
@@ -171,6 +209,8 @@ sudo tee "$MANIFEST" >/dev/null <<EOF
   "bots": ["ai-bridge", "master-writer-ai", "claude-code-ai", "codex-ai", "reviewer-ai-1", "reviewer-ai-2", "optional-specialist-ai"],
   "slash_command": "/ai",
   "slash_command_status": "$SLASH_STATUS",
+  "slash_command_url": "$SLASH_COMMAND_URL",
+  "slash_command_token_configured": $SLASH_TOKEN_CONFIGURED,
   "incoming_webhook_id": "$HOOK_ID",
   "status": "ready"
 }

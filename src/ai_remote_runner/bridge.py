@@ -6,7 +6,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .commands import parse_command
 from .executor import RunnerRuntime, execute
@@ -27,6 +27,7 @@ class BridgeState:
         self.confirmations_path = root / "bridge-confirmations.json"
         self.credential_uploads_path = root / "credential-upload-tokens.json"
         self.nonce_store = NonceStore(root / "bridge-nonces.json")
+        self.mattermost_slash_token = os.environ.get("MATTERMOST_SLASH_TOKEN", "")
         self.runtime = RunnerRuntime(root, Path(os.environ.get("AI_WORKSPACE_ROOT", "/srv/ai-workspaces")), os.environ.get("MATTERMOST_WEBHOOK_URL"))
         root.mkdir(parents=True, exist_ok=True)
 
@@ -120,6 +121,90 @@ class BridgeHandler(BaseHTTPRequestHandler):
         headers = {key: self.headers[key] for key in self.headers}
         return verify_header_preamble(headers)
 
+    def _mattermost_payload(self, body: bytes) -> tuple[bool, dict | str]:
+        form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+        token = form.get("token", [""])[0]
+        if not self.state.mattermost_slash_token:
+            return False, "mattermost_slash_token_not_configured"
+        if token != self.state.mattermost_slash_token:
+            return False, "bad_mattermost_slash_token"
+        command = form.get("command", ["/ai"])[0] or "/ai"
+        text = form.get("text", [""])[0]
+        raw_text = f"{command} {text}".strip()
+        request_id = form.get("trigger_id", [""])[0] or str(uuid.uuid4())
+        return True, {
+            "request_id": request_id,
+            "platform": "mattermost",
+            "team_id": form.get("team_id", [""])[0],
+            "channel_id": form.get("channel_id", [""])[0],
+            "sender_id": form.get("user_id", [""])[0],
+            "sender_name": form.get("user_name", [""])[0],
+            "raw_text": raw_text,
+        }
+
+    def _mattermost_response_text(self, response: dict) -> str:
+        if response.get("status") == "needs_confirmation":
+            token = response.get("data", {}).get("confirmation_token", "")
+            return f"{response.get('message_zh', '需要确认')} /ai 确认 {token}".strip()
+        if response.get("error"):
+            error = response["error"]
+            return f"{response.get('message_zh', '执行失败')}: {error.get('detail') or error.get('code')}"
+        return str(response.get("message_zh") or response.get("status") or "OK")
+
+    def _handle_command_payload(self, payload: dict) -> dict:
+        request_id = payload.get("request_id") or str(uuid.uuid4())
+        cached = self.state.responses().get(request_id)
+        if cached:
+            return cached
+        # Mattermost slash-command payloads can arrive without the /ai prefix after platform routing.
+        parsed = parse_command(payload.get("raw_text", ""), allow_bare=True)
+        raw_text = payload.get("raw_text", "")
+        if parsed.get("canonical_action") == "confirm":
+            token = " ".join(parsed.get("args", {}).get("tail", []))
+            pending = self.state.confirmations()
+            item = pending.pop(token, None)
+            self.state.save_confirmations(pending)
+            if not item:
+                return {"status": "rejected", "error": {"code": "confirmation_not_found", "detail": "confirmation_not_found"}}
+            item["envelope"]["confirmed"] = True
+            response = execute(item["parsed"], item["envelope"], self.state.runtime)
+            if item["parsed"].get("canonical_action") == "credential.add" and response.get("status") == "accepted":
+                token = uuid.uuid4().hex
+                metadata = {"handle": response.get("data", {}).get("handle"), "type": "custom"}
+                uploads = self.state.credential_uploads()
+                uploads[token] = {"metadata": metadata, "expires_at": int(time.time()) + 600}
+                self.state.save_credential_uploads(uploads)
+                response.setdefault("data", {})["upload_path"] = f"/bridge/credential-upload/{token}"
+                response["data"]["upload_method"] = "PUT"
+            self.state.save_response(item["envelope"]["request_id"], response)
+            return response
+        if parsed.get("status") == "rejected" and (
+            parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/")
+        ):
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": raw_text}, "requires_confirmation": False}
+        item = dict(payload)
+        item.pop("confirmed", None)
+        item.update(parsed)
+        item["request_id"] = request_id
+        self.state.append_jsonl(self.state.commands_path, item)
+        response = execute(parsed, item, self.state.runtime)
+        if response.get("status") == "needs_confirmation":
+            token = response.get("data", {}).get("confirmation_token")
+            if token:
+                pending = self.state.confirmations()
+                pending[token] = {"created_at": int(time.time()), "parsed": parsed, "envelope": item}
+                self.state.save_confirmations(pending)
+        if parsed.get("canonical_action") == "credential.add" and response.get("status") == "accepted":
+            token = uuid.uuid4().hex
+            metadata = {"handle": response.get("data", {}).get("handle"), "type": "custom"}
+            uploads = self.state.credential_uploads()
+            uploads[token] = {"metadata": metadata, "expires_at": int(time.time()) + 600}
+            self.state.save_credential_uploads(uploads)
+            response.setdefault("data", {})["upload_path"] = f"/bridge/credential-upload/{token}"
+            response["data"]["upload_method"] = "PUT"
+        self.state.save_response(request_id, response)
+        return response
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         ok, reason = self._auth(b"")
@@ -139,6 +224,28 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        content_type = self.headers.get("Content-Type", "")
+        if path == "/bridge/command" and content_type.startswith("application/x-www-form-urlencoded"):
+            try:
+                body = self._read_body()
+            except ValueError:
+                self._json(413, {"status": "rejected", "error": {"code": "request_too_large", "detail": "request_too_large"}})
+                return
+            ok, payload_or_reason = self._mattermost_payload(body)
+            if not ok:
+                self._json(401, {"status": "rejected", "error": {"code": payload_or_reason, "detail": payload_or_reason}})
+                return
+            response = self._handle_command_payload(payload_or_reason)  # type: ignore[arg-type]
+            self._json(
+                200,
+                {
+                    "response_type": "ephemeral",
+                    "text": self._mattermost_response_text(response),
+                    "props": {"ai_remote_response": response},
+                },
+            )
+            return
+
         ok, reason = self._preauth()
         if not ok:
             self._json(401, {"status": "rejected", "error": {"code": reason, "detail": reason}})
@@ -159,61 +266,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/bridge/command":
-            request_id = payload.get("request_id") or str(uuid.uuid4())
-            cached = self.state.responses().get(request_id)
-            if cached:
-                self._json(200, cached)
-                return
-            # Mattermost slash-command payloads can arrive without the /ai prefix after platform routing.
-            parsed = parse_command(payload.get("raw_text", ""), allow_bare=True)
-            raw_text = payload.get("raw_text", "")
-            if parsed.get("canonical_action") == "confirm":
-                token = " ".join(parsed.get("args", {}).get("tail", []))
-                pending = self.state.confirmations()
-                item = pending.pop(token, None)
-                self.state.save_confirmations(pending)
-                if not item:
-                    self._json(404, {"status": "rejected", "error": {"code": "confirmation_not_found", "detail": "confirmation_not_found"}})
-                    return
-                item["envelope"]["confirmed"] = True
-                response = execute(item["parsed"], item["envelope"], self.state.runtime)
-                if item["parsed"].get("canonical_action") == "credential.add" and response.get("status") == "accepted":
-                    token = uuid.uuid4().hex
-                    metadata = {"handle": response.get("data", {}).get("handle"), "type": "custom"}
-                    uploads = self.state.credential_uploads()
-                    uploads[token] = {"metadata": metadata, "expires_at": int(time.time()) + 600}
-                    self.state.save_credential_uploads(uploads)
-                    response.setdefault("data", {})["upload_path"] = f"/bridge/credential-upload/{token}"
-                    response["data"]["upload_method"] = "PUT"
-                self.state.save_response(item["envelope"]["request_id"], response)
-                self._json(200, response)
-                return
-            if parsed.get("status") == "rejected" and (
-                parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/")
-            ):
-                parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": raw_text}, "requires_confirmation": False}
-            item = dict(payload)
-            item.pop("confirmed", None)
-            item.update(parsed)
-            item["request_id"] = request_id
-            self.state.append_jsonl(self.state.commands_path, item)
-            response = execute(parsed, item, self.state.runtime)
-            if response.get("status") == "needs_confirmation":
-                token = response.get("data", {}).get("confirmation_token")
-                if token:
-                    pending = self.state.confirmations()
-                    pending[token] = {"created_at": int(time.time()), "parsed": parsed, "envelope": item}
-                    self.state.save_confirmations(pending)
-            if parsed.get("canonical_action") == "credential.add" and response.get("status") == "accepted":
-                token = uuid.uuid4().hex
-                metadata = {"handle": response.get("data", {}).get("handle"), "type": "custom"}
-                uploads = self.state.credential_uploads()
-                uploads[token] = {"metadata": metadata, "expires_at": int(time.time()) + 600}
-                self.state.save_credential_uploads(uploads)
-                response.setdefault("data", {})["upload_path"] = f"/bridge/credential-upload/{token}"
-                response["data"]["upload_method"] = "PUT"
-            self.state.save_response(request_id, response)
-            self._json(200, response)
+            self._json(200, self._handle_command_payload(payload))
             return
 
         if path == "/bridge/credential-upload-url":

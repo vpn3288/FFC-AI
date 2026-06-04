@@ -9,6 +9,7 @@ import unittest
 import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlencode
 from urllib import error, request
 from unittest.mock import patch
 
@@ -156,6 +157,56 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(payload["status"], "accepted")
                 self.assertIn("items", payload["data"])
                 invoke.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_mattermost_slash_command_uses_platform_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MATTERMOST_SLASH_TOKEN": "slash-secret"}):
+            server, _, url = self._server(tmp)
+            try:
+                body = urlencode(
+                    {
+                        "token": "slash-secret",
+                        "team_id": "team",
+                        "channel_id": "channel",
+                        "user_id": "user",
+                        "user_name": "alice",
+                        "command": "/ai",
+                        "text": "状态",
+                        "trigger_id": "trigger-1",
+                    }
+                ).encode("utf-8")
+                req = request.Request(
+                    f"{url}/bridge/command",
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                response = request.urlopen(req, timeout=10)
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["response_type"], "ephemeral")
+                self.assertEqual(payload["props"]["ai_remote_response"]["status"], "accepted")
+                self.assertEqual(payload["props"]["ai_remote_response"]["data"]["default_workspace"], "default")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_mattermost_slash_command_rejects_bad_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MATTERMOST_SLASH_TOKEN": "slash-secret"}):
+            server, _, url = self._server(tmp)
+            try:
+                body = urlencode({"token": "wrong", "command": "/ai", "text": "状态"}).encode("utf-8")
+                req = request.Request(
+                    f"{url}/bridge/command",
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                with self.assertRaises(error.HTTPError) as raised:
+                    request.urlopen(req, timeout=10)
+                self.assertEqual(raised.exception.code, 401)
             finally:
                 server.shutdown()
                 server.server_close()
