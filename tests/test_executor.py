@@ -34,6 +34,14 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["status"], "accepted")
             self.assertIn("summary_artifact", response["data"])
 
+    def test_missing_snapshot_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = parse_command("/ai 全局 回滚 missing")
+            response = execute(parsed, {"request_id": "r4", "raw_text": "/ai 全局 回滚 missing"}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "snapshot_not_found")
+
 
 if __name__ == "__main__":
     unittest.main()

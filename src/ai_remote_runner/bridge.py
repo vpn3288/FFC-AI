@@ -13,6 +13,9 @@ from .executor import RunnerRuntime, execute
 from .security import NonceStore, verify_headers
 
 
+MAX_BODY_BYTES = int(os.environ.get("AI_BRIDGE_MAX_BODY_BYTES", str(10 * 1024 * 1024)))
+
+
 class BridgeState:
     def __init__(self, root: Path, shared_secret: str) -> None:
         self.root = root
@@ -59,6 +62,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0"))
+        if length > MAX_BODY_BYTES:
+            raise ValueError("request_too_large")
         return self.rfile.read(length)
 
     def _auth(self, body: bytes) -> tuple[bool, str]:
@@ -84,7 +89,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        body = self._read_body()
+        try:
+            body = self._read_body()
+        except ValueError:
+            self._json(413, {"status": "rejected", "error": {"code": "request_too_large", "detail": "request_too_large"}})
+            return
         ok, reason = self._auth(body)
         if not ok:
             self._json(401, {"status": "rejected", "error": {"code": reason, "detail": reason}})

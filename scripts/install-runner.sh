@@ -188,6 +188,8 @@ if [ "$DRY_RUN" = false ]; then
   "install_root": "$INSTALL_ROOT",
   "systemd": $SYSTEMD,
   "wsl": $WSL,
+  "core_ready": false,
+  "core_ready_status": "pending_pairing",
   "claude_model": "$CLAUDE_MODEL",
   "created_files": [
     "$STATE_ROOT/config.env",

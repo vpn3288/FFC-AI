@@ -119,7 +119,10 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         scope = "global" if action.startswith("global_") else "project"
         if not args:
             return _error(request_id, "missing_snapshot", "missing_snapshot")
-        return _ok(request_id, run_id, "指令已回滚", rt.instructions.rollback(scope, args[0], workspace_id))
+        try:
+            return _ok(request_id, run_id, "指令已回滚", rt.instructions.rollback(scope, args[0], workspace_id))
+        except FileNotFoundError:
+            return _error(request_id, "snapshot_not_found", args[0])
     if action.endswith(".set"):
         scope = "global" if action.startswith("global_") else "project"
         text = " ".join(args)

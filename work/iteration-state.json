@@ -1,5 +1,5 @@
 {
-  "round": 6,
+  "round": 7,
   "mode": "infinite_convergence",
   "min_score": 90,
   "max_usd": 25.0,
@@ -52,6 +52,14 @@
       "open_p0": 1,
       "open_p1": 12,
       "open_p2": 4
+    },
+    {
+      "round": 7,
+      "reviewer": "claude-code",
+      "score": 66,
+      "open_p0": 1,
+      "open_p1": 12,
+      "open_p2": 4
     }
   ],
   "open_p0": 1,
@@ -61,7 +69,7 @@
     "implementation scripts were absent before round 1 patch"
   ],
   "script_smoke_tests_passing": true,
-  "latest_patch_summary": "Round 6 added mmctl availability preflight, Claude timeout budget cleanup, instruction rollback, credential test/delete, basic emulated context compaction, daily/monthly budget period reset, rollback/credential/compaction tests, and fixed budget period initialization. Fresh review is still required before lowering open issue counts.",
+  "latest_patch_summary": "Round 7 added bridge request size limits, Codex invocation wrapper with timeout budget cleanup, missing-snapshot error handling, pending_pairing core-ready manifest state, and tests for Codex timeout and rollback errors. Fresh review must send complete files because the prior review falsely flagged truncation from capped input.",
   "last_github_push": null,
   "stop_reason": null
 }
