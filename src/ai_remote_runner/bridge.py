@@ -139,6 +139,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "channel_id": form.get("channel_id", [""])[0],
             "sender_id": form.get("user_id", [""])[0],
             "sender_name": form.get("user_name", [""])[0],
+            "slash_text": text,
             "raw_text": raw_text,
         }
 
@@ -149,6 +150,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if response.get("error"):
             error = response["error"]
             return f"{response.get('message_zh', '执行失败')}: {error.get('detail') or error.get('code')}"
+        output = response.get("data", {}).get("output")
+        if output:
+            return str(output)[:3500]
         return str(response.get("message_zh") or response.get("status") or "OK")
 
     def _handle_command_payload(self, payload: dict) -> dict:
@@ -182,6 +186,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/")
         ):
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": raw_text}, "requires_confirmation": False}
+        elif parsed.get("status") == "rejected" and payload.get("platform") == "mattermost" and payload.get("slash_text"):
+            parsed = {
+                "status": "accepted",
+                "canonical_action": "task.run",
+                "args": {"prompt": payload["slash_text"]},
+                "requires_confirmation": False,
+            }
         item = dict(payload)
         item.pop("confirmed", None)
         item.update(parsed)

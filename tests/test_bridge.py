@@ -14,6 +14,7 @@ from urllib import error, request
 from unittest.mock import patch
 
 from ai_remote_runner.bridge import BridgeHandler, BridgeState
+from ai_remote_runner.providers import ProviderResult
 from ai_remote_runner.security import b64url_encode, sign_body
 
 
@@ -162,7 +163,9 @@ class BridgeHTTPTests(unittest.TestCase):
                 server.server_close()
 
     def test_mattermost_slash_command_uses_platform_token(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MATTERMOST_SLASH_TOKEN": "slash-secret"}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"MATTERMOST_SLASH_TOKEN": "slash-secret", "AI_WORKSPACE_ROOT": str(Path(tmp) / "workspaces")}
+        ):
             server, _, url = self._server(tmp)
             try:
                 body = urlencode(
@@ -207,6 +210,30 @@ class BridgeHTTPTests(unittest.TestCase):
                 with self.assertRaises(error.HTTPError) as raised:
                     request.urlopen(req, timeout=10)
                 self.assertEqual(raised.exception.code, 401)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_mattermost_unknown_slash_text_runs_as_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"MATTERMOST_SLASH_TOKEN": "slash-secret", "AI_WORKSPACE_ROOT": str(Path(tmp) / "workspaces")}
+        ):
+            server, _, url = self._server(tmp)
+            try:
+                body = urlencode({"token": "slash-secret", "command": "/ai", "text": "reply with hi", "trigger_id": "task-1"}).encode("utf-8")
+                req = request.Request(
+                    f"{url}/bridge/command",
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                fake = ProviderResult("run", "claude-code", "completed", "hi", None, 0)
+                with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                    response = request.urlopen(req, timeout=10)
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(payload["props"]["ai_remote_response"]["status"], "accepted")
+                self.assertEqual(payload["text"], "hi")
+                invoke.assert_called_once()
             finally:
                 server.shutdown()
                 server.server_close()
