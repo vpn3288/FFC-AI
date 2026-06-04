@@ -275,7 +275,7 @@ if [ "$DRY_RUN" = false ]; then
   done
   [ "$MMCTL_READY" = true ] || { log 'Mattermost mmctl local mode did not become ready'; exit 1; }
   MATTERMOST_INSTALL_DIR="$INSTALL_DIR" \
-    MATTERMOST_URL="https://$DOMAIN" \
+    MATTERMOST_URL="http://127.0.0.1:8065" \
     MATTERMOST_ADMIN_USERNAME="ai-admin" \
     MATTERMOST_ADMIN_EMAIL="admin@$DOMAIN" \
     MATTERMOST_ADMIN_PASSWORD="$MATTERMOST_ADMIN_PASSWORD" \
