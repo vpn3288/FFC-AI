@@ -5,6 +5,9 @@ INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
 MANIFEST="$INSTALL_DIR/mattermost-objects.json"
 MATTERMOST_URL="${MATTERMOST_URL:-}"
 MATTERMOST_ADMIN_TOKEN="${MATTERMOST_ADMIN_TOKEN:-}"
+MATTERMOST_ADMIN_USERNAME="${MATTERMOST_ADMIN_USERNAME:-ai-admin}"
+MATTERMOST_ADMIN_EMAIL="${MATTERMOST_ADMIN_EMAIL:-admin@example.invalid}"
+MATTERMOST_ADMIN_PASSWORD="${MATTERMOST_ADMIN_PASSWORD:-}"
 BRIDGE_COMMAND_URL="${BRIDGE_COMMAND_URL:-}"
 WEBHOOK_CHANNEL_ID="${WEBHOOK_CHANNEL_ID:-}"
 
@@ -56,10 +59,12 @@ ensure_channel() {
 ensure_bot() {
   local username="$1"
   local display="$2"
-  if ! mmctl bot list | grep -q "$username"; then
-    mmctl bot create "$username" --display-name "$display" --description "FFC-AI bot identity"
+  if ! rest_json GET "$MATTERMOST_URL/api/v4/bots?per_page=200" | python3 -c 'import json,sys
+target = sys.argv[1]
+sys.exit(0 if any(item.get("username") == target for item in json.load(sys.stdin)) else 1)' "$username"
+  then
+    rest_json POST "$MATTERMOST_URL/api/v4/bots" "{\"username\":\"$username\",\"display_name\":\"$display\",\"description\":\"FFC-AI bot identity\"}" >/dev/null
   fi
-  require_mmctl_match "bot:$username" "$username" bot list
 }
 
 rest_json() {
@@ -79,9 +84,35 @@ rest_json() {
 }
 
 require_rest_config() {
-  [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && [ -n "$BRIDGE_COMMAND_URL" ] && return
-  log 'MATTERMOST_URL, MATTERMOST_ADMIN_TOKEN, and BRIDGE_COMMAND_URL are required to create /ai and the incoming webhook'
+  [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_TOKEN" ] && return
+  log 'MATTERMOST_URL and MATTERMOST_ADMIN_TOKEN are required for REST object creation'
   exit 1
+}
+
+ensure_admin() {
+  if ! mmctl user search "$MATTERMOST_ADMIN_USERNAME" >/dev/null 2>&1; then
+    [ -n "$MATTERMOST_ADMIN_PASSWORD" ] || { log 'MATTERMOST_ADMIN_PASSWORD is required to create first admin'; exit 1; }
+    mmctl user create --email "$MATTERMOST_ADMIN_EMAIL" --username "$MATTERMOST_ADMIN_USERNAME" --password "$MATTERMOST_ADMIN_PASSWORD"
+  fi
+  mmctl user modify "$MATTERMOST_ADMIN_USERNAME" --system-admin true >/dev/null
+}
+
+login_admin_token() {
+  [ -n "$MATTERMOST_ADMIN_TOKEN" ] && return
+  [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_PASSWORD" ] || return
+  MATTERMOST_ADMIN_TOKEN="$(
+    curl -fsS -i -X POST "$MATTERMOST_URL/api/v4/users/login" \
+      -H 'Content-Type: application/json' \
+      -d "{\"login_id\":\"$MATTERMOST_ADMIN_USERNAME\",\"password\":\"$MATTERMOST_ADMIN_PASSWORD\"}" |
+      python3 -c 'import sys
+token = ""
+for line in sys.stdin:
+    if line.lower().startswith("token:"):
+        token = line.split(":", 1)[1].strip()
+        break
+print(token)'
+  )"
+  [ -n "$MATTERMOST_ADMIN_TOKEN" ] || { log 'admin REST login did not return a token'; exit 1; }
 }
 
 log 'creating Mattermost team/channels/bot identities with mmctl --local'
@@ -89,30 +120,36 @@ if ! mmctl version >/dev/null 2>&1; then
   log 'mmctl not available; bootstrap requires a healthy Mattermost service'
   exit 1
 fi
+ensure_admin
 ensure_team ai-lab "AI Lab"
 for channel in ai-ops ai-status ai-reviews ai-errors ai-archive; do
   ensure_channel ai-lab "$channel" "$channel"
 done
+login_admin_token
+require_rest_config
 for bot in ai-bridge master-writer-ai claude-code-ai codex-ai reviewer-ai-1 reviewer-ai-2 optional-specialist-ai; do
   ensure_bot "$bot" "$bot"
 done
 
-log 'slash command and incoming webhook require admin token on Mattermost editions without mmctl local integration support'
-log 'if REST fallback is used, create or log in as a Mattermost admin first and export MATTERMOST_ADMIN_TOKEN'
-require_rest_config
 rest_json GET "$MATTERMOST_URL/api/v4/users/me" >/dev/null || {
   log 'MATTERMOST_ADMIN_TOKEN validation failed'
   exit 1
 }
-log 'creating /ai slash command through Mattermost REST API'
 TEAM_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/name/ai-lab" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-if ! rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)'; then
-  rest_json POST "$MATTERMOST_URL/api/v4/commands" "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
+SLASH_STATUS="pending_bridge_command_url"
+if [ -n "$BRIDGE_COMMAND_URL" ]; then
+  log 'creating /ai slash command through Mattermost REST API'
+  if ! rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)'; then
+    rest_json POST "$MATTERMOST_URL/api/v4/commands" "{\"team_id\":\"$TEAM_ID\",\"trigger\":\"ai\",\"url\":\"$BRIDGE_COMMAND_URL\",\"method\":\"P\",\"display_name\":\"AI Bridge\",\"description\":\"Route /ai commands to AI remote runner\"}" >/dev/null
+  fi
+  rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)' || {
+    log '/ai slash command validation failed'
+    exit 1
+  }
+  SLASH_STATUS="ready"
+else
+  log 'BRIDGE_COMMAND_URL not set; deferring /ai slash command creation until runner pairing'
 fi
-rest_json GET "$MATTERMOST_URL/api/v4/commands/team/$TEAM_ID/custom" | python3 -c 'import json,sys; sys.exit(0 if any(c.get("trigger") == "ai" for c in json.load(sys.stdin)) else 1)' || {
-  log '/ai slash command validation failed'
-  exit 1
-}
 
 log 'creating incoming webhook through Mattermost REST API'
 if [ -z "$WEBHOOK_CHANNEL_ID" ]; then
@@ -126,6 +163,7 @@ sudo tee "$MANIFEST" >/dev/null <<EOF
   "channels": ["ai-ops", "ai-status", "ai-reviews", "ai-errors", "ai-archive"],
   "bots": ["ai-bridge", "master-writer-ai", "claude-code-ai", "codex-ai", "reviewer-ai-1", "reviewer-ai-2", "optional-specialist-ai"],
   "slash_command": "/ai",
+  "slash_command_status": "$SLASH_STATUS",
   "incoming_webhook_id": "$HOOK_ID",
   "status": "ready"
 }

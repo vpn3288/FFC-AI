@@ -110,11 +110,15 @@ run sudo mkdir -p "$INSTALL_DIR"/{config,data,logs,plugins,client/plugins,db,cad
 if [ "$DRY_RUN" = false ]; then
   MM_DB_PASSWORD="$(secret_b64)"
   AI_BRIDGE_SHARED_SECRET="$(secret_b64)"
+  MATTERMOST_ADMIN_PASSWORD="$(secret_b64)"
   sudo tee "$INSTALL_DIR/.env" >/dev/null <<EOF
 MM_DB_PASSWORD=$MM_DB_PASSWORD
 AI_BRIDGE_SHARED_SECRET=$AI_BRIDGE_SHARED_SECRET
 MATTERMOST_DOMAIN=$DOMAIN
 MATTERMOST_DEPLOY_MODE=$DEPLOY_MODE
+MATTERMOST_ADMIN_USERNAME=ai-admin
+MATTERMOST_ADMIN_EMAIL=admin@$DOMAIN
+MATTERMOST_ADMIN_PASSWORD=$MATTERMOST_ADMIN_PASSWORD
 EOF
   sudo chmod 0600 "$INSTALL_DIR/.env"
   if [ "$DEPLOY_MODE" = "docker" ]; then
@@ -147,6 +151,9 @@ services:
       MM_SERVICESETTINGS_SITEURL: https://$DOMAIN
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: /var/tmp/mattermost_local.socket
+      MM_SERVICESETTINGS_ENABLEBOTACCOUNTSCREATION: "true"
+      MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS: "true"
+      MM_SERVICESETTINGS_ENABLECOMMANDS: "true"
     volumes:
       - ./config:/mattermost/config
       - ./data:/mattermost/data
@@ -216,6 +223,9 @@ Environment=MM_SERVICESETTINGS_SITEURL=https://$DOMAIN
 Environment=MM_SERVICESETTINGS_LISTENADDRESS=:8065
 Environment=MM_SERVICESETTINGS_ENABLELOCALMODE=true
 Environment=MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION=/var/tmp/mattermost_local.socket
+Environment=MM_SERVICESETTINGS_ENABLEBOTACCOUNTSCREATION=true
+Environment=MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS=true
+Environment=MM_SERVICESETTINGS_ENABLECOMMANDS=true
 Environment=MM_SQLSETTINGS_DRIVERNAME=postgres
 Environment=MM_SQLSETTINGS_DATASOURCE=postgres://mmuser:$MM_DB_PASSWORD@127.0.0.1:5432/mattermost?sslmode=disable&connect_timeout=10
 Environment=MM_FILESETTINGS_DIRECTORY=$INSTALL_DIR/mattermost/data
@@ -264,7 +274,12 @@ if [ "$DRY_RUN" = false ]; then
     sleep 5
   done
   [ "$MMCTL_READY" = true ] || { log 'Mattermost mmctl local mode did not become ready'; exit 1; }
-  MATTERMOST_INSTALL_DIR="$INSTALL_DIR" "$SCRIPT_DIR/bootstrap-mattermost.sh"
+  MATTERMOST_INSTALL_DIR="$INSTALL_DIR" \
+    MATTERMOST_URL="https://$DOMAIN" \
+    MATTERMOST_ADMIN_USERNAME="ai-admin" \
+    MATTERMOST_ADMIN_EMAIL="admin@$DOMAIN" \
+    MATTERMOST_ADMIN_PASSWORD="$MATTERMOST_ADMIN_PASSWORD" \
+    "$SCRIPT_DIR/bootstrap-mattermost.sh"
 else
   log 'would run docker compose up -d and bootstrap Mattermost objects with mmctl --local'
 fi
