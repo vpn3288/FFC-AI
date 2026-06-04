@@ -1,5 +1,5 @@
 {
-  "round": 1,
+  "round": 2,
   "mode": "infinite_convergence",
   "min_score": 90,
   "max_usd": 25.0,
@@ -12,6 +12,14 @@
       "open_p0": 0,
       "open_p1": 12,
       "open_p2": 4
+    },
+    {
+      "round": 2,
+      "reviewer": "claude-code",
+      "score": 47,
+      "open_p0": 0,
+      "open_p1": 12,
+      "open_p2": 4
     }
   ],
   "open_p0": 0,
@@ -21,7 +29,7 @@
     "implementation scripts were absent before round 1 patch"
   ],
   "script_smoke_tests_passing": true,
-  "latest_patch_summary": "Round 1 added executable runner modules, installer entrypoints, command parser, HMAC bridge primitives, budget ledger, credential handles, instruction snapshots, provider discovery, and smoke tests. Fresh review is still required before lowering open issue counts.",
+  "latest_patch_summary": "Round 2 added command execution dispatcher, Mattermost webhook event sink, bridge request-id response cache, authenticated GET bridge endpoints, local encrypted credential files through openssl, Codex approval config correction, Claude model configurability and fallback documentation, install manifests, Docker startup path, and non-root local state fallback. Fresh review is still required before lowering open issue counts.",
   "last_github_push": null,
   "stop_reason": null
 }

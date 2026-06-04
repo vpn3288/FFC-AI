@@ -80,6 +80,7 @@ if [ "$DRY_RUN" = false ]; then
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
 CLAUDE_MODEL=$CLAUDE_MODEL
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=\${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}
 AI_BRIDGE_SHARED_SECRET=\${AI_BRIDGE_SHARED_SECRET:-}
 EOF
   sudo chmod 0600 "$STATE_ROOT/config.env"
@@ -138,4 +139,29 @@ python3 -m ai_remote_runner.cli parse '/ai 状态'
 python3 -m ai_remote_runner.cli index >/dev/null
 
 log 'stage 12: report core_ready or failed'
+if [ "$DRY_RUN" = false ]; then
+  sudo tee "$STATE_ROOT/install-manifest.json" >/dev/null <<EOF
+{
+  "component": "ai-remote-runner",
+  "state_root": "$STATE_ROOT",
+  "workspace_root": "$WORKSPACE_ROOT",
+  "install_root": "$INSTALL_ROOT",
+  "systemd": $SYSTEMD,
+  "wsl": $WSL,
+  "claude_model": "$CLAUDE_MODEL",
+  "created_files": [
+    "$STATE_ROOT/config.env",
+    "$STATE_ROOT/install-manifest.json"
+  ],
+  "created_dirs": [
+    "$STATE_ROOT",
+    "$WORKSPACE_ROOT",
+    "$INSTALL_ROOT"
+  ]
+}
+EOF
+  sudo chmod 0600 "$STATE_ROOT/install-manifest.json"
+else
+  log "would write $STATE_ROOT/install-manifest.json"
+fi
 log 'core_ready=false until bridge pairing, credential test, and phone loopback pass'

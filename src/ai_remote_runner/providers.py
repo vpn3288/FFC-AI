@@ -2,7 +2,29 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from typing import Any
+import json
+import os
+import subprocess
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from .budget import BudgetLedger
+from .instructions import InstructionStore
+
+
+SAFE_ENV_KEYS = [
+    "PATH",
+    "HOME",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+]
 
 
 def _version(command: str) -> dict[str, Any]:
@@ -53,8 +75,6 @@ CLAUDE_CHAT_ONLY_TEMPLATE = [
     "claude",
     "-p",
     "--bare",
-    "--model",
-    "claude-opus-4-6-20260130",
     "--output-format",
     "json",
     "--permission-mode",
@@ -68,11 +88,92 @@ CLAUDE_CHAT_ONLY_TEMPLATE = [
 CODEX_EXEC_TEMPLATE = [
     "codex",
     "exec",
+    "-c",
+    'approval_policy="never"',
     "--json",
     "--ephemeral",
     "--ignore-user-config",
     "--sandbox",
     "workspace-write",
-    "--ask-for-approval",
-    "never",
 ]
+
+
+CLAUDE_DEFAULT_MODEL = "claude-opus-4-6-20260130"
+CLAUDE_MODEL_FALLBACKS = [
+    "claude-opus-4-6-thinking",
+    "claude-opus-4-6",
+    "claude-opus-4-7-thinking",
+    "claude-opus-4-7",
+    "claude-opus-4-8-thinking",
+    "claude-opus-4-8",
+]
+
+
+@dataclass
+class ProviderResult:
+    run_id: str
+    provider: str
+    status: str
+    output_text: str
+    raw: dict[str, Any] | None
+    returncode: int
+
+
+def build_instruction_prompt(store: InstructionStore, workspace_id: str) -> str:
+    global_doc = store.show("global")["preview"]
+    project_doc = store.show("project", workspace_id)["preview"]
+    return f"# Global Instructions\n{global_doc}\n\n# Project Instructions\n{project_doc}\n"
+
+
+def invoke_claude(
+    prompt: str,
+    workspace: Path,
+    instruction_prompt: str,
+    ledger: BudgetLedger,
+    run_id: str | None = None,
+    reserved_usd: float = 1.0,
+    timeout_seconds: int = 1800,
+    emit: Callable[[dict[str, Any]], None] | None = None,
+) -> ProviderResult:
+    actual_run_id = run_id or str(uuid.uuid4())
+    ledger.reserve(actual_run_id, "claude-code", reserved_usd, timeout_seconds=timeout_seconds)
+    command = [
+        *CLAUDE_CHAT_ONLY_TEMPLATE,
+        "--model",
+        os.environ.get("CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL),
+        "--max-turns",
+        os.environ.get("CLAUDE_MAX_TURNS", "12"),
+        "--max-budget-usd",
+        str(reserved_usd),
+        "--append-system-prompt",
+        instruction_prompt,
+        "--",
+        prompt,
+    ]
+    if emit:
+        emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "calling_model"})
+    env = {key: value for key in SAFE_ENV_KEYS if (value := os.environ.get(key))}
+    result = subprocess.run(command, cwd=workspace, env=env, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    raw: dict[str, Any] | None = None
+    output_text = result.stdout
+    try:
+        raw = json.loads(result.stdout)
+        output_text = str(raw.get("result") or raw.get("message") or result.stdout)
+    except json.JSONDecodeError:
+        pass
+    ledger.complete(actual_run_id, None, status="completed" if result.returncode == 0 else "failed")
+    if emit:
+        emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "done" if result.returncode == 0 else "error"})
+    return ProviderResult(actual_run_id, "claude-code", "completed" if result.returncode == 0 else "failed", output_text, raw, result.returncode)
+
+
+def codex_command(prompt: str, workspace: Path, output_file: Path) -> list[str]:
+    return [
+        *CODEX_EXEC_TEMPLATE,
+        "--cd",
+        str(workspace),
+        "--output-last-message",
+        str(output_file),
+        "--",
+        prompt,
+    ]

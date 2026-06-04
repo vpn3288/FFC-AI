@@ -34,6 +34,9 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(record["secret_material"], "never returned")
             self.assertNotIn("secret_path", record)
             self.assertNotIn("secret-value", str(record))
+            secret_files = list(Path(tmp).glob("*.secret.enc"))
+            self.assertEqual(len(secret_files), 1)
+            self.assertNotIn(b"secret-value", secret_files[0].read_bytes())
 
     def test_context_thresholds(self) -> None:
         used = estimate_tokens("x" * 320)

@@ -56,7 +56,13 @@ log "os=$(uname -s) arch=$(uname -m)"
 
 log 'stage 02: install Docker Engine and Docker Compose plugin'
 if ! command -v docker >/dev/null 2>&1; then
-  log 'docker missing; install Docker Engine before platform_ready'
+  if command -v apt-get >/dev/null 2>&1; then
+    run sudo apt-get update
+    run sudo apt-get install -y docker.io docker-compose-plugin
+    run sudo systemctl enable --now docker
+  else
+    log 'docker missing and apt-get unavailable; install Docker Engine before platform_ready'
+  fi
 fi
 
 log 'stage 03: configure domain and TLS'
@@ -99,7 +105,48 @@ else
 fi
 
 log 'stage 08-12: create team, channels, bots, /ai command, status endpoint, shared secret'
-log 'bootstrap uses mmctl --local when container is running; REST fallback is required by spec'
+if [ "$DRY_RUN" = false ]; then
+  (cd "$INSTALL_DIR" && sudo docker compose up -d)
+  log 'waiting for Mattermost container to expose mmctl'
+  for _ in $(seq 1 60); do
+    if (cd "$INSTALL_DIR" && sudo docker compose exec -T mattermost mmctl version >/dev/null 2>&1); then
+      break
+    fi
+    sleep 5
+  done
+  log 'bootstrap must create team ai-lab, channels, bot identities, /ai slash command, and incoming webhook through mmctl --local or REST fallback'
+else
+  log 'would run docker compose up -d and bootstrap Mattermost objects with mmctl --local'
+fi
 
 log 'stage 13-15: connect runner, run phone smoke tests, run backup smoke test'
+if [ "$DRY_RUN" = false ]; then
+  sudo tee "$INSTALL_DIR/install-manifest.json" >/dev/null <<EOF
+{
+  "component": "mattermost-communication-platform",
+  "domain": "$DOMAIN",
+  "install_dir": "$INSTALL_DIR",
+  "mattermost_app_image": "$MATTERMOST_IMAGE",
+  "mattermost_db_image": "$DB_IMAGE",
+  "mattermost_docker_ref": "$DOCKER_REF",
+  "created_files": [
+    "$INSTALL_DIR/docker-compose.yml",
+    "$INSTALL_DIR/install-manifest.json"
+  ],
+  "required_objects": [
+    "team:ai-lab",
+    "channel:ai-ops",
+    "channel:ai-status",
+    "channel:ai-reviews",
+    "channel:ai-errors",
+    "channel:ai-archive",
+    "slash-command:/ai",
+    "bot:ai-bridge"
+  ]
+}
+EOF
+  sudo chmod 0600 "$INSTALL_DIR/install-manifest.json"
+else
+  log "would write $INSTALL_DIR/install-manifest.json"
+fi
 log 'platform_ready=false until Mattermost stack is running and /ai loopback reaches runner'

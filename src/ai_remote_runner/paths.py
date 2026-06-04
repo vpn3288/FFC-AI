@@ -5,11 +5,19 @@ from pathlib import Path
 
 
 def state_root() -> Path:
-    return Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))
+    if "AI_REMOTE_STATE" in os.environ:
+        return Path(os.environ["AI_REMOTE_STATE"])
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        return Path.cwd() / "work" / "local-state"
+    return Path("/var/lib/ai-remote-runner")
 
 
 def workspace_root() -> Path:
-    return Path(os.environ.get("AI_WORKSPACE_ROOT", "/srv/ai-workspaces"))
+    if "AI_WORKSPACE_ROOT" in os.environ:
+        return Path(os.environ["AI_WORKSPACE_ROOT"])
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        return Path.cwd() / "work" / "local-workspaces"
+    return Path("/srv/ai-workspaces")
 
 
 def ensure_runtime_dirs() -> None:

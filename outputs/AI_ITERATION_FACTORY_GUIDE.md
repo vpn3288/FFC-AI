@@ -81,6 +81,21 @@ The master-writer AI MUST:
 
 Claude Code reviewer MUST run in a fresh Claude Code conversation per review.
 
+Claude Code reviewer MUST NOT use `--continue`, `--resume`, or any persisted previous review context.
+
+If the selected Claude Code model hangs or produces unusable review output, the master-writer MAY start a new fresh review conversation with one of these models:
+
+```text
+claude-opus-4-6-thinking
+claude-opus-4-6
+claude-opus-4-7-thinking
+claude-opus-4-7
+claude-opus-4-8-thinking
+claude-opus-4-8
+```
+
+Model switching MUST preserve fresh-conversation isolation and MUST NOT use previous failed review context except the current repository files and review instructions.
+
 It MUST inspect all three files.
 
 It MUST focus on:
@@ -294,13 +309,13 @@ P3:
 Claude Code reviewer prompt MUST include:
 
 ```text
-Review all three files. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Verify that Telegram is prohibited, Mattermost is primary, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, optional tools do not block core-ready, and command index shows Chinese descriptions.
+Review all guidance files and implementation scripts in a fresh conversation with no resume/continue context. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Verify that Telegram is prohibited, Mattermost is primary, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, optional tools do not block core-ready, command index shows Chinese descriptions, and scripts implement the guidance rather than logging placeholder stages.
 ```
 
 GPT-5.5 reviewer prompt MUST include:
 
 ```text
-Review all three files in a fresh conversation. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Check mobile UX completeness, AI compatibility, communication platform choice, credential handle workflow, context compaction, command index, Chinese descriptions, and optional post-install tooling.
+Review all guidance files and implementation scripts in a fresh conversation. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Check mobile UX completeness, AI compatibility, communication platform choice, credential handle workflow, context compaction, command index, Chinese descriptions, optional post-install tooling, and whether scripts fully implement the guidance without placeholder-only stages.
 ```
 
 ## 10. Source Anchors

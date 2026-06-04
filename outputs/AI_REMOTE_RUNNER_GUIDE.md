@@ -276,11 +276,12 @@ env -i \
   ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL" \
   ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN" \
   ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}" \
   HTTP_PROXY="$CLAUDE_HTTP_PROXY" \
   HTTPS_PROXY="$CLAUDE_HTTPS_PROXY" \
   NO_PROXY="$NO_PROXY" \
   claude -p --bare \
-    --model "claude-opus-4-6-20260130" \
+    --model "$CLAUDE_MODEL" \
     --output-format json \
     --max-turns "$CLAUDE_MAX_TURNS" \
     --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" \
@@ -295,19 +296,19 @@ env -i \
 `edit_approved` MUST require explicit preview/approval:
 
 ```bash
-claude -p --model "claude-opus-4-6-20260130" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write" --disallowedTools "Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+claude -p --model "$CLAUDE_MODEL" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write" --disallowedTools "Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
 ```
 
 `shell_approved` MUST require explicit preview/approval:
 
 ```bash
-claude -p --model "claude-opus-4-6-20260130" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write,Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+claude -p --model "$CLAUDE_MODEL" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write,Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
 ```
 
 `continue_mode` MUST NOT use `--no-session-persistence`:
 
 ```bash
-claude -p --model "claude-opus-4-6-20260130" --output-format json --continue --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "$CLAUDE_TOOLS_FOR_CONTINUE" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
+claude -p --model "$CLAUDE_MODEL" --output-format json --continue --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "$CLAUDE_TOOLS_FOR_CONTINUE" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
 ```
 
 Command construction rules:
@@ -350,11 +351,11 @@ env -i \
   CODEX_HOME="$CODEX_HOME" \
   PATH="$SAFE_PATH" \
   codex exec \
+    -c 'approval_policy="never"' \
     --json \
     --ephemeral \
     --ignore-user-config \
     --sandbox workspace-write \
-    --ask-for-approval never \
     --cd "$RUNNER_WORKSPACE" \
     --output-last-message "$RUN_OUTPUT_FILE" \
     -- \

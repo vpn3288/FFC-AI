@@ -21,6 +21,11 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(result["canonical_action"], "global_instructions.set")
         self.assertTrue(result["requires_confirmation"])
 
+    def test_compound_command_preserves_tail_args(self) -> None:
+        result = parse_command("/ai 全局 追加 hello world")
+        self.assertEqual(result["canonical_action"], "global_instructions.append")
+        self.assertEqual(result["args"]["tail"], ["hello", "world"])
+
     def test_index_has_chinese_descriptions(self) -> None:
         rows = command_index()
         self.assertGreater(len(rows), 10)

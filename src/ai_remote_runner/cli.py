@@ -8,6 +8,7 @@ from .budget import BudgetLedger
 from .commands import command_index, parse_command
 from .context import estimate_tokens
 from .credentials import CredentialBroker
+from .executor import RunnerRuntime, current_status, execute
 from .instructions import InstructionStore
 from .paths import ensure_runtime_dirs, state_root, workspace_root
 from .providers import provider_status
@@ -23,6 +24,8 @@ def main() -> int:
     sub.add_parser("status")
     parse_p = sub.add_parser("parse")
     parse_p.add_argument("raw_text")
+    exec_p = sub.add_parser("execute")
+    exec_p.add_argument("raw_text")
     sub.add_parser("index")
     sub.add_parser("providers")
     budget_p = sub.add_parser("budget")
@@ -45,9 +48,12 @@ def main() -> int:
 
     ensure_runtime_dirs()
     if args.cmd == "status":
-        print_json({"core_ready": False, "providers": provider_status(), "state_root": str(state_root())})
+        print_json(current_status(RunnerRuntime.default()))
     elif args.cmd == "parse":
         print_json(parse_command(args.raw_text, allow_bare=False))
+    elif args.cmd == "execute":
+        parsed = parse_command(args.raw_text, allow_bare=False)
+        print_json(execute(parsed, {"raw_text": args.raw_text}))
     elif args.cmd == "index":
         print_json(command_index())
     elif args.cmd == "providers":

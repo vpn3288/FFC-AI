@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,60 @@ class CredentialBroker:
         self.root.mkdir(parents=True, exist_ok=True)
         os.chmod(self.root, 0o700)
         self.index_path = self.root / "index.json"
+        self.key_path = self.root / "local.key"
+
+    def _require_openssl(self) -> None:
+        if not shutil.which("openssl"):
+            raise RuntimeError("openssl_required_for_local_encrypted_file")
+
+    def _ensure_key(self) -> None:
+        if not self.key_path.exists():
+            self.key_path.write_text(secrets.token_urlsafe(48), encoding="utf-8")
+            os.chmod(self.key_path, 0o600)
+
+    def _encrypt_to_file(self, secret_value: str, secret_path: Path) -> None:
+        self._require_openssl()
+        self._ensure_key()
+        result = subprocess.run(
+            [
+                "openssl",
+                "enc",
+                "-aes-256-cbc",
+                "-pbkdf2",
+                "-salt",
+                "-out",
+                str(secret_path),
+                "-pass",
+                f"file:{self.key_path}",
+            ],
+            input=secret_value.encode("utf-8"),
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+        os.chmod(secret_path, 0o600)
+
+    def _decrypt_file(self, secret_path: Path) -> str:
+        self._require_openssl()
+        result = subprocess.run(
+            [
+                "openssl",
+                "enc",
+                "-d",
+                "-aes-256-cbc",
+                "-pbkdf2",
+                "-in",
+                str(secret_path),
+                "-pass",
+                f"file:{self.key_path}",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+        return result.stdout.decode("utf-8")
 
     def _load_index(self) -> dict[str, Any]:
         if not self.index_path.exists():
@@ -26,11 +82,10 @@ class CredentialBroker:
     def add_local_secret(self, metadata: dict[str, Any], secret_value: str) -> dict[str, Any]:
         handle = metadata["handle"]
         safe_name = handle.replace("://", "_").replace("/", "_")
-        secret_path = self.root / f"{safe_name}.secret"
-        secret_path.write_text(secret_value, encoding="utf-8")
-        os.chmod(secret_path, 0o600)
+        secret_path = self.root / f"{safe_name}.secret.enc"
+        self._encrypt_to_file(secret_value, secret_path)
         record = dict(metadata)
-        record["storage"] = "local-0600-file"
+        record["storage"] = "local-openssl-file"
         record["secret_path"] = str(secret_path)
         record["secret_material"] = "never returned"
         data = self._load_index()
@@ -49,6 +104,6 @@ class CredentialBroker:
 
     def with_secret_env(self, handle: str, env_name: str, command: list[str]) -> subprocess.CompletedProcess[str]:
         record = self._load_index()[handle]
-        secret = Path(record["secret_path"]).read_text(encoding="utf-8")
+        secret = self._decrypt_file(Path(record["secret_path"]))
         env = {env_name: secret, "PATH": os.environ.get("PATH", "")}
         return subprocess.run(command, env=env, text=True, capture_output=True, check=False)

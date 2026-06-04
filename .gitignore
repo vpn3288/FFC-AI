@@ -6,3 +6,5 @@ work/test-state*/
 work/test-workspaces*/
 work/dry-state*/
 work/dry-workspaces*/
+work/local-state/
+work/local-workspaces/

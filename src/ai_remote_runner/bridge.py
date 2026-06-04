@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .commands import parse_command
+from .executor import RunnerRuntime, execute
 from .security import NonceStore, verify_headers
 
 
@@ -18,12 +19,27 @@ class BridgeState:
         self.shared_secret = shared_secret
         self.commands_path = root / "bridge-commands.jsonl"
         self.events_path = root / "bridge-events.jsonl"
+        self.responses_path = root / "bridge-responses.json"
         self.nonce_store = NonceStore(root / "bridge-nonces.json")
+        self.runtime = RunnerRuntime(root, Path(os.environ.get("AI_WORKSPACE_ROOT", "/srv/ai-workspaces")), os.environ.get("MATTERMOST_WEBHOOK_URL"))
         root.mkdir(parents=True, exist_ok=True)
 
     def append_jsonl(self, path: Path, item: dict) -> None:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def responses(self) -> dict[str, dict]:
+        if not self.responses_path.exists():
+            return {}
+        try:
+            return json.loads(self.responses_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+
+    def save_response(self, request_id: str, response: dict) -> None:
+        data = self.responses()
+        data[request_id] = response
+        self.responses_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -51,11 +67,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        ok, reason = self._auth(b"")
+        if not ok:
+            self._json(401, {"status": "rejected", "error": {"code": reason, "detail": reason}})
+            return
         if path == "/bridge/health":
             self._json(200, {"status": "ok", "time": int(time.time())})
             return
         if path == "/bridge/poll":
-            self._json(200, {"commands": []})
+            commands = []
+            if self.state.commands_path.exists():
+                commands = [json.loads(line) for line in self.state.commands_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self._json(200, {"commands": commands})
             return
         self._json(404, {"error": "not_found"})
 
@@ -73,22 +96,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/bridge/command":
-            parsed = parse_command(payload.get("raw_text", ""))
             request_id = payload.get("request_id") or str(uuid.uuid4())
+            cached = self.state.responses().get(request_id)
+            if cached:
+                self._json(200, cached)
+                return
+            parsed = parse_command(payload.get("raw_text", ""))
             item = dict(payload)
             item.update(parsed)
             item["request_id"] = request_id
             self.state.append_jsonl(self.state.commands_path, item)
-            self._json(
-                200,
-                {
-                    "request_id": request_id,
-                    "status": parsed["status"],
-                    "run_id": str(uuid.uuid4()) if parsed["status"] == "accepted" else None,
-                    "message_zh": "已接受" if parsed["status"] == "accepted" else "命令被拒绝",
-                    "error": None if parsed["status"] == "accepted" else {"code": parsed["error"], "detail": parsed["error"]},
-                },
-            )
+            response = execute(parsed, item, self.state.runtime)
+            self.state.save_response(request_id, response)
+            self._json(200, response)
             return
 
         if path == "/bridge/event":
