@@ -23,7 +23,15 @@ done
 [ -n "$ADMIN_PASSWORD" ] || { usage; exit 2; }
 
 mmctl() {
-  (cd "$INSTALL_DIR" && sudo docker compose exec -T mattermost mmctl --local "$@")
+  (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl --local "$@")
+}
+
+compose() {
+  if sudo docker compose version >/dev/null 2>&1; then
+    sudo docker compose "$@"
+  else
+    sudo docker-compose "$@"
+  fi
 }
 
 if ! mmctl user search "$ADMIN_USERNAME" >/dev/null 2>&1; then

@@ -13,7 +13,15 @@ log() {
 }
 
 mmctl() {
-  (cd "$INSTALL_DIR" && sudo docker compose exec -T mattermost mmctl --local "$@")
+  (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl --local "$@")
+}
+
+compose() {
+  if sudo docker compose version >/dev/null 2>&1; then
+    sudo docker compose "$@"
+  else
+    sudo docker-compose "$@"
+  fi
 }
 
 require_mmctl_match() {
@@ -73,7 +81,7 @@ require_rest_config() {
 }
 
 log 'creating Mattermost team/channels/bot identities with mmctl --local'
-if ! (cd "$INSTALL_DIR" && sudo docker compose exec -T mattermost mmctl version >/dev/null 2>&1); then
+if ! (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl version >/dev/null 2>&1); then
   log 'mmctl not available in Mattermost container; bootstrap requires a healthy Mattermost container'
   exit 1
 fi

@@ -23,6 +23,14 @@ run() {
   fi
 }
 
+compose() {
+  if sudo docker compose version >/dev/null 2>&1; then
+    sudo docker compose "$@"
+  else
+    sudo docker-compose "$@"
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
@@ -66,7 +74,12 @@ log 'stage 02: install Docker Engine and Docker Compose plugin'
 if ! command -v docker >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
     run sudo apt-get update
-    run sudo apt-get install -y docker.io docker-compose-plugin
+    if [ "$DRY_RUN" = true ]; then
+      run sudo apt-get install -y docker.io docker-compose-plugin
+    elif ! sudo apt-get install -y docker.io docker-compose-plugin; then
+      log 'docker-compose-plugin unavailable; falling back to docker-compose package'
+      sudo apt-get install -y docker.io docker-compose
+    fi
     run sudo systemctl enable --now docker
   else
     log 'docker missing and apt-get unavailable; install Docker Engine before platform_ready'
@@ -146,7 +159,7 @@ fi
 
 log 'stage 08-12: create team, channels, bots, /ai command, status endpoint, shared secret'
 if [ "$DRY_RUN" = false ]; then
-  (cd "$INSTALL_DIR" && sudo docker compose up -d)
+  (cd "$INSTALL_DIR" && compose up -d)
   for _ in $(seq 1 60); do
     if curl -fsS http://localhost:8065/api/v4/system/ping >/dev/null 2>&1; then
       break
@@ -155,7 +168,7 @@ if [ "$DRY_RUN" = false ]; then
   done
   log 'waiting for Mattermost container to expose mmctl'
   for _ in $(seq 1 60); do
-    if (cd "$INSTALL_DIR" && sudo docker compose exec -T mattermost mmctl version >/dev/null 2>&1); then
+    if (cd "$INSTALL_DIR" && compose exec -T mattermost mmctl version >/dev/null 2>&1); then
       break
     fi
     sleep 5

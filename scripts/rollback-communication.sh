@@ -4,6 +4,14 @@ set -euo pipefail
 INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
 DESTRUCTIVE=false
 
+compose() {
+  if sudo docker compose version >/dev/null 2>&1; then
+    sudo docker compose "$@"
+  else
+    sudo docker-compose "$@"
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --delete-volumes) DESTRUCTIVE=true ;;
@@ -14,7 +22,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
-  (cd "$INSTALL_DIR" && sudo docker compose down)
+  (cd "$INSTALL_DIR" && compose down)
 fi
 
 if [ "$DESTRUCTIVE" = true ]; then
