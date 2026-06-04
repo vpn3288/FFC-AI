@@ -61,6 +61,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 data["core_ready"] = True
+data["core_ready_status"] = "validated"
 data["core_ready_validated_at"] = "manual-smoke"
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 PY
