@@ -64,12 +64,13 @@ elif command -v apt-get >/dev/null 2>&1; then
   run sudo install -d -m 0755 /etc/apt/keyrings
   run sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc
   if [ "$DRY_RUN" = false ]; then
-    if command -v gpg >/dev/null 2>&1; then
-      gpg --show-keys /etc/apt/keyrings/claude-code.asc | grep -q '31DD DE24 DDFA B679 F42D  7BD2 BAA9 29FF 1A7E CACE' || {
-        log 'Claude Code apt signing key fingerprint mismatch'
-        exit 1
-      }
-    fi
+    command -v gpg >/dev/null 2>&1 || { log 'gpg required for Claude Code apt key verification'; exit 1; }
+    ACTUAL_FINGERPRINT="$(gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc | awk -F: '/^fpr:/ {print $10; exit}')"
+    EXPECTED_FINGERPRINT="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
+    [ "$ACTUAL_FINGERPRINT" = "$EXPECTED_FINGERPRINT" ] || {
+      log 'Claude Code apt signing key fingerprint mismatch'
+      exit 1
+    }
     echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
       | sudo tee /etc/apt/sources.list.d/claude-code.list >/dev/null
   else

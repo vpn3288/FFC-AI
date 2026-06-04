@@ -38,9 +38,26 @@ class ExecutorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
             parsed = parse_command("/ai 全局 回滚 missing")
-            response = execute(parsed, {"request_id": "r4", "raw_text": "/ai 全局 回滚 missing"}, runtime)
+            response = execute(parsed, {"request_id": "r4", "raw_text": "/ai 全局 回滚 missing", "confirmed": True}, runtime)
             self.assertEqual(response["status"], "error")
             self.assertEqual(response["error"]["code"], "snapshot_not_found")
+
+    def test_confirmation_required_blocks_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = parse_command("/ai 全局 替换 hello")
+            response = execute(parsed, {"request_id": "r5", "raw_text": "/ai 全局 替换 hello"}, runtime)
+            self.assertEqual(response["status"], "needs_confirmation")
+
+    def test_workspace_create_requires_confirmation_then_executes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = parse_command("/ai 工作区 创建 demo")
+            blocked = execute(parsed, {"request_id": "r6", "raw_text": "/ai 工作区 创建 demo"}, runtime)
+            self.assertEqual(blocked["status"], "needs_confirmation")
+            response = execute(parsed, {"request_id": "r7", "raw_text": "/ai 工作区 创建 demo", "confirmed": True}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertTrue((runtime.workspaces / "demo").exists())
 
 
 if __name__ == "__main__":

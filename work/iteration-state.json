@@ -1,5 +1,5 @@
 {
-  "round": 7,
+  "round": 8,
   "mode": "infinite_convergence",
   "min_score": 90,
   "max_usd": 25.0,
@@ -60,16 +60,24 @@
       "open_p0": 1,
       "open_p1": 12,
       "open_p2": 4
+    },
+    {
+      "round": 8,
+      "reviewer": "claude-code",
+      "score": 68,
+      "open_p0": 1,
+      "open_p1": 13,
+      "open_p2": 5
     }
   ],
   "open_p0": 1,
-  "open_p1": 12,
-  "open_p2": 4,
+  "open_p1": 13,
+  "open_p2": 5,
   "missing_user_requirements": [
     "implementation scripts were absent before round 1 patch"
   ],
   "script_smoke_tests_passing": true,
-  "latest_patch_summary": "Round 7 added bridge request size limits, Codex invocation wrapper with timeout budget cleanup, missing-snapshot error handling, pending_pairing core-ready manifest state, and tests for Codex timeout and rollback errors. Fresh review must send complete files because the prior review falsely flagged truncation from capped input.",
+  "latest_patch_summary": "Round 8 made Claude Code GPG verification a hard exact-fingerprint check, parsed Claude auth JSON for readiness, enforced confirmation before dangerous commands, implemented workspace create/select/list paths, and added confirmation/workspace tests. Fresh review is still required before lowering open issue counts.",
   "last_github_push": null,
   "stop_reason": null
 }

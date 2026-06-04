@@ -66,6 +66,15 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     request_id = envelope.get("request_id") or str(uuid.uuid4())
     if parsed.get("status") != "accepted":
         return _error(request_id, parsed.get("error", "rejected"), parsed.get("error", "rejected"))
+    if parsed.get("requires_confirmation") and not envelope.get("confirmed"):
+        return {
+            "request_id": request_id,
+            "status": "needs_confirmation",
+            "run_id": None,
+            "message_zh": "此操作需要确认",
+            "data": {"canonical_action": parsed.get("canonical_action"), "confirmation_token": str(uuid.uuid4())},
+            "error": None,
+        }
 
     action = parsed["canonical_action"]
     args = parsed.get("args", {}).get("tail", [])
@@ -133,4 +142,19 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         data = {"last_action": action, "conversation_id": str(uuid.uuid4()) if action == "new_conversation" else envelope.get("conversation_id")}
         state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return _ok(request_id, run_id, "会话策略已更新", data)
+    if action == "workspace.list":
+        rt.workspaces.mkdir(parents=True, exist_ok=True)
+        return _ok(request_id, run_id, "工作区列表已生成", {"workspaces": sorted(path.name for path in rt.workspaces.iterdir() if path.is_dir())})
+    if action == "workspace.create":
+        if not args:
+            return _error(request_id, "missing_workspace_id", "missing_workspace_id")
+        target = rt.workspaces / args[0]
+        target.mkdir(parents=True, exist_ok=True)
+        return _ok(request_id, run_id, "工作区已创建", {"workspace_id": args[0], "path": str(target)})
+    if action == "workspace.select":
+        if not args:
+            return _error(request_id, "missing_workspace_id", "missing_workspace_id")
+        state_path = rt.state / "workspace-selection.json"
+        state_path.write_text(json.dumps({"workspace_id": args[0]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return _ok(request_id, run_id, "工作区已选择", {"workspace_id": args[0]})
     return _error(request_id, "unsupported_action", action)

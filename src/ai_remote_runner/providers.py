@@ -42,9 +42,22 @@ def _returns_ok(command: list[str]) -> bool:
     return result.returncode == 0
 
 
+def _claude_auth_ready() -> bool:
+    if not shutil.which("claude"):
+        return False
+    result = subprocess.run(["claude", "auth", "status", "--json"], text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    return bool(data.get("loggedIn") or data.get("apiProvider"))
+
+
 def discover_claude() -> dict[str, Any]:
     base = _version("claude")
-    auth_check = _returns_ok(["claude", "auth", "status", "--json"])
+    auth_check = _claude_auth_ready()
     base["provider"] = "claude-code"
     base["capabilities"] = {
         "new_conversation": True,
