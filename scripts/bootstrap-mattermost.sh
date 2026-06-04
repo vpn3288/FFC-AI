@@ -94,7 +94,7 @@ ensure_admin() {
     [ -n "$MATTERMOST_ADMIN_PASSWORD" ] || { log 'MATTERMOST_ADMIN_PASSWORD is required to create first admin'; exit 1; }
     mmctl user create --email "$MATTERMOST_ADMIN_EMAIL" --username "$MATTERMOST_ADMIN_USERNAME" --password "$MATTERMOST_ADMIN_PASSWORD"
   fi
-  mmctl user modify "$MATTERMOST_ADMIN_USERNAME" --system-admin true >/dev/null
+  mmctl roles system-admin "$MATTERMOST_ADMIN_USERNAME" >/dev/null
 }
 
 login_admin_token() {

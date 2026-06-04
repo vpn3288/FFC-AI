@@ -41,7 +41,7 @@ compose() {
 if ! mmctl user search "$ADMIN_USERNAME" >/dev/null 2>&1; then
   mmctl user create --email "$ADMIN_EMAIL" --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD"
 fi
-mmctl user modify "$ADMIN_USERNAME" --system-admin true >/dev/null
+mmctl roles system-admin "$ADMIN_USERNAME" >/dev/null
 
 cat <<EOF
 [mattermost-first-admin] system admin ready: $ADMIN_USERNAME
