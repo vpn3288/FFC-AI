@@ -26,6 +26,14 @@ class ExecutorTests(unittest.TestCase):
             shown = runtime.instructions.show("global")
             self.assertEqual(shown["preview"], "hello")
 
+    def test_compact_context_executes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = parse_command("/ai 压缩")
+            response = execute(parsed, {"request_id": "r3", "raw_text": "/ai 压缩"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertIn("summary_artifact", response["data"])
+
 
 if __name__ == "__main__":
     unittest.main()

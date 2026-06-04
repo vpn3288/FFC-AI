@@ -102,6 +102,20 @@ class CredentialBroker:
     def list_public(self) -> list[dict[str, Any]]:
         return [self.public_record(handle) for handle in sorted(self._load_index())]
 
+    def delete(self, handle: str) -> dict[str, Any]:
+        data = self._load_index()
+        record = data.pop(handle)
+        secret_path = Path(record["secret_path"])
+        if secret_path.exists():
+            secret_path.unlink()
+        self._save_index(data)
+        return {"handle": handle, "deleted": True}
+
+    def test(self, handle: str) -> dict[str, Any]:
+        record = self._load_index()[handle]
+        secret = self._decrypt_file(Path(record["secret_path"]))
+        return {"handle": handle, "ok": bool(secret), "type": record.get("type")}
+
     def with_secret_env(self, handle: str, env_name: str, command: list[str]) -> subprocess.CompletedProcess[str]:
         record = self._load_index()[handle]
         secret = self._decrypt_file(Path(record["secret_path"]))

@@ -165,7 +165,13 @@ def invoke_claude(
     if emit:
         emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "calling_model"})
     env = {key: value for key in SAFE_ENV_KEYS if (value := os.environ.get(key))}
-    result = subprocess.run(command, cwd=workspace, env=env, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    try:
+        result = subprocess.run(command, cwd=workspace, env=env, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    except subprocess.TimeoutExpired:
+        ledger.complete(actual_run_id, None, status="timeout")
+        if emit:
+            emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout"})
+        return ProviderResult(actual_run_id, "claude-code", "timeout", "", None, -1)
     raw: dict[str, Any] | None = None
     output_text = result.stdout
     try:

@@ -18,6 +18,10 @@ class StoreTests(unittest.TestCase):
             self.assertIn("snapshot", result)
             shown = store.show("global")
             self.assertEqual(shown["preview"], "hello")
+            store.write("global", "changed")
+            restored = store.rollback("global", result["snapshot"])
+            self.assertEqual(restored["restored_snapshot"], result["snapshot"])
+            self.assertEqual(store.show("global")["preview"], "")
 
     def test_credential_public_record_hides_secret_path_and_value(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -37,6 +41,9 @@ class StoreTests(unittest.TestCase):
             secret_files = list(Path(tmp).glob("*.secret.enc"))
             self.assertEqual(len(secret_files), 1)
             self.assertNotIn(b"secret-value", secret_files[0].read_bytes())
+            self.assertTrue(broker.test("api://test")["ok"])
+            self.assertTrue(broker.delete("api://test")["deleted"])
+            self.assertEqual(broker.list_public(), [])
 
     def test_context_thresholds(self) -> None:
         used = estimate_tokens("x" * 320)

@@ -38,6 +38,10 @@ ensure_bot() {
 }
 
 log 'creating Mattermost team/channels/bot identities with mmctl --local'
+if ! (cd "$INSTALL_DIR" && sudo docker compose exec -T mattermost mmctl version >/dev/null 2>&1); then
+  log 'mmctl not available in Mattermost container; bootstrap requires a healthy Mattermost container'
+  exit 1
+fi
 ensure_team ai-lab "AI Lab"
 for channel in ai-ops ai-status ai-reviews ai-errors ai-archive; do
   ensure_channel ai-lab "$channel" "$channel"

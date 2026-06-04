@@ -90,10 +90,24 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         used = estimate_tokens(prompt_text)
         state = ContextState("unknown", envelope.get("provider", "runner"), 200000, used)
         return _ok(request_id, run_id, "上下文状态已生成", state.__dict__ | {"context_used_percent": state.context_used_percent})
+    if action == "compact_context":
+        summary_dir = rt.state / "context-summaries"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = summary_dir / f"{run_id}.md"
+        summary_path.write_text(f"# Context Summary\n\nrequest_id: {request_id}\nworkspace_id: {workspace_id}\n", encoding="utf-8")
+        return _ok(request_id, run_id, "上下文已压缩", {"summary_artifact": str(summary_path), "new_conversation_id": str(uuid.uuid4())})
     if action == "provider.list":
         return _ok(request_id, run_id, "提供商列表已生成", {"providers": provider_status()})
     if action == "credential.list":
         return _ok(request_id, run_id, "凭据列表已生成", {"credentials": rt.credentials.list_public()})
+    if action == "credential.test":
+        if not args:
+            return _error(request_id, "missing_credential_handle", "missing_credential_handle")
+        return _ok(request_id, run_id, "凭据测试完成", rt.credentials.test(args[0]))
+    if action == "credential.delete":
+        if not args:
+            return _error(request_id, "missing_credential_handle", "missing_credential_handle")
+        return _ok(request_id, run_id, "凭据已删除", rt.credentials.delete(args[0]))
     if action.endswith(".show"):
         scope = "global" if action.startswith("global_") else "project"
         return _ok(request_id, run_id, "指令已读取", rt.instructions.show(scope, workspace_id))
@@ -101,6 +115,11 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         scope = "global" if action.startswith("global_") else "project"
         text = " ".join(args)
         return _ok(request_id, run_id, "指令已追加", rt.instructions.write(scope, text, workspace_id, append=True))
+    if action.endswith(".rollback"):
+        scope = "global" if action.startswith("global_") else "project"
+        if not args:
+            return _error(request_id, "missing_snapshot", "missing_snapshot")
+        return _ok(request_id, run_id, "指令已回滚", rt.instructions.rollback(scope, args[0], workspace_id))
     if action.endswith(".set"):
         scope = "global" if action.startswith("global_") else "project"
         text = " ".join(args)

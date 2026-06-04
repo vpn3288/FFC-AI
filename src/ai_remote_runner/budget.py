@@ -11,6 +11,8 @@ DEFAULT_STATE = {
     "monthly_usd_limit": 100.0,
     "daily_used_usd_estimate": 0.0,
     "monthly_used_usd_estimate": 0.0,
+    "daily_period": "",
+    "monthly_period": "",
     "freeze_on_exceed": True,
     "runs": {},
 }
@@ -22,12 +24,23 @@ class BudgetLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return dict(DEFAULT_STATE)
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
         merged = dict(DEFAULT_STATE)
         merged.update(data)
         merged.setdefault("runs", {})
+        current_daily = time.strftime("%Y-%m-%d")
+        current_monthly = time.strftime("%Y-%m")
+        changed = False
+        if merged.get("daily_period") != current_daily:
+            merged["daily_period"] = current_daily
+            merged["daily_used_usd_estimate"] = 0.0
+            changed = True
+        if merged.get("monthly_period") != current_monthly:
+            merged["monthly_period"] = current_monthly
+            merged["monthly_used_usd_estimate"] = 0.0
+            changed = True
+        if changed and self.path.exists():
+            self.save(merged)
         return merged
 
     def save(self, data: dict[str, Any]) -> None:
