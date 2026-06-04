@@ -97,6 +97,12 @@ ensure_admin() {
   mmctl roles system-admin "$MATTERMOST_ADMIN_USERNAME" >/dev/null
 }
 
+ensure_integration_config() {
+  mmctl config set ServiceSettings.EnableBotAccountCreation true >/dev/null
+  mmctl config set ServiceSettings.EnableIncomingWebhooks true >/dev/null
+  mmctl config set ServiceSettings.EnableCommands true >/dev/null
+}
+
 login_admin_token() {
   [ -n "$MATTERMOST_ADMIN_TOKEN" ] && return
   [ -n "$MATTERMOST_URL" ] && [ -n "$MATTERMOST_ADMIN_PASSWORD" ] || return
@@ -121,6 +127,7 @@ if ! mmctl version >/dev/null 2>&1; then
   exit 1
 fi
 ensure_admin
+ensure_integration_config
 ensure_team ai-lab "AI Lab"
 for channel in ai-ops ai-status ai-reviews ai-errors ai-archive; do
   ensure_channel ai-lab "$channel" "$channel"
