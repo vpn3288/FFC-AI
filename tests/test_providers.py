@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ai_remote_runner.providers import CLAUDE_MODEL_FALLBACKS, codex_command, invoke_codex
+from ai_remote_runner.providers import discover_codex
 from ai_remote_runner.budget import BudgetLedger
 
 
@@ -18,6 +19,9 @@ class ProviderTests(unittest.TestCase):
     def test_claude_model_fallbacks_are_configured(self) -> None:
         self.assertIn("claude-opus-4-7", CLAUDE_MODEL_FALLBACKS)
         self.assertIn("claude-opus-4-8-thinking", CLAUDE_MODEL_FALLBACKS)
+
+    def test_codex_discovery_reports_approval_config_key(self) -> None:
+        self.assertIn("approval_config_available", discover_codex()["capabilities"])
 
     def test_invoke_codex_timeout_releases_run(self) -> None:
         import tempfile

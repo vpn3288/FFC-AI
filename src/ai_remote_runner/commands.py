@@ -92,6 +92,11 @@ def command_index() -> list[dict[str, Any]]:
             "requires_confirmation": spec.requires_confirmation,
             "implemented_by": spec.native,
             "enabled": True,
+            "provider": "runner",
+            "native": spec.native == "native",
+            "emulated": spec.native == "runner",
+            "unsupported": False,
+            "installed": True,
         }
         for parts, spec in sorted(COMMANDS.items())
     ]

@@ -42,6 +42,14 @@ def _returns_ok(command: list[str]) -> bool:
     return result.returncode == 0
 
 
+def _help_has(command: list[str], *needles: str) -> bool:
+    if not shutil.which(command[0]):
+        return False
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    haystack = result.stdout + result.stderr
+    return result.returncode == 0 and all(needle in haystack for needle in needles)
+
+
 def _claude_auth_ready() -> bool:
     if not shutil.which("claude"):
         return False
@@ -70,6 +78,8 @@ def discover_claude() -> dict[str, Any]:
         "shell_commands": False,
         "auth_check_available": auth_check,
         "print_json_available": base["available"],
+        "bare_flag_available": _help_has(["claude", "-p", "--help"], "--bare"),
+        "append_system_prompt_available": _help_has(["claude", "-p", "--help"], "--append-system-prompt"),
     }
     return base
 
@@ -77,6 +87,7 @@ def discover_claude() -> dict[str, Any]:
 def discover_codex() -> dict[str, Any]:
     base = _version("codex")
     exec_available = _returns_ok(["codex", "exec", "--help"])
+    approval_config_available = _returns_ok(["codex", "exec", "-c", 'approval_policy="never"', "--help"])
     base["provider"] = "codex"
     base["capabilities"] = {
         "new_conversation": True,
@@ -88,6 +99,7 @@ def discover_codex() -> dict[str, Any]:
         "file_edits": True,
         "shell_commands": False,
         "exec_available": exec_available,
+        "approval_config_available": approval_config_available,
     }
     return base
 

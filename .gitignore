@@ -15,3 +15,7 @@ work/pre-review-state/
 work/pre-review-workspaces/
 work/post-clean-state/
 work/post-clean-workspaces/
+work/cont-state/
+work/cont-workspaces/
+work/round*-state/
+work/round*-workspaces/

@@ -31,10 +31,12 @@ class ExecutorTests(unittest.TestCase):
     def test_compact_context_executes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.contexts.add_exchange("default", "claude-code", "old prompt", "old answer")
             parsed = parse_command("/ai 压缩")
             response = execute(parsed, {"request_id": "r3", "raw_text": "/ai 压缩"}, runtime)
             self.assertEqual(response["status"], "accepted")
             self.assertIn("summary_artifact", response["data"])
+            self.assertIn("old prompt", Path(response["data"]["summary_artifact"]).read_text(encoding="utf-8"))
 
     def test_missing_snapshot_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

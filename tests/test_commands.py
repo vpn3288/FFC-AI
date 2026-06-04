@@ -35,6 +35,7 @@ class CommandTests(unittest.TestCase):
         rows = command_index()
         self.assertGreater(len(rows), 10)
         self.assertTrue(all(row["description_zh"] for row in rows))
+        self.assertTrue(all("enabled" in row and "provider" in row for row in rows))
 
 
 if __name__ == "__main__":

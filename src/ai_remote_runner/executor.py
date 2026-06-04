@@ -138,6 +138,10 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             return _error(request_id, "context_hard_stop", "context_hard_stop")
         if context_state.needs_warning:
             rt.events.emit(status_event(run_id, "warning", "上下文接近上限，请考虑压缩或新对话", envelope.get("provider", "claude-code")))
+            if str(envelope.get("auto_compact_enabled", "")).lower() in {"1", "true", "yes"}:
+                compacted = rt.contexts.compact(conversation_id, envelope.get("provider", "claude-code"))
+                conversation_id = compacted["new_conversation_id"]
+                instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(compacted['summary_artifact']).read_text(encoding='utf-8')}\n"
         workspace = rt.workspaces / workspace_id
         workspace.mkdir(parents=True, exist_ok=True)
         provider = envelope.get("provider", "claude-code")
@@ -161,11 +165,12 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             },
         )
     if action == "compact_context":
-        summary_dir = rt.state / "context-summaries"
-        summary_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = summary_dir / f"{run_id}.md"
-        summary_path.write_text(f"# Context Summary\n\nrequest_id: {request_id}\nworkspace_id: {workspace_id}\n", encoding="utf-8")
-        return _ok(request_id, run_id, "上下文已压缩", {"summary_artifact": str(summary_path), "new_conversation_id": str(uuid.uuid4())})
+        policy = rt.load_policy()
+        conversation_id = envelope.get("conversation_id") or policy.get("conversation_id") or "default"
+        compacted = rt.contexts.compact(conversation_id, envelope.get("provider", "claude-code"))
+        policy["conversation_id"] = compacted["new_conversation_id"]
+        rt.save_policy(policy)
+        return _ok(request_id, run_id, "上下文已压缩", compacted)
     if action == "provider.list":
         return _ok(request_id, run_id, "提供商列表已生成", {"providers": provider_status()})
     if action == "credential.list":
