@@ -105,6 +105,7 @@ Runner service installation requirement:
 Bridge connection requirement:
 
 - installer MUST accept communication platform endpoint, bot token, team/room/channel identifiers, and bridge shared secret;
+- bridge shared secret input MUST use a root-readable file, stdin, or a brokered secure channel; installer and pairing commands MUST NOT accept raw bridge-secret argv values;
 - installer MUST test posting status event to communication platform;
 - installer MUST test receiving a command from communication platform or run an equivalent loopback test.
 - default bridge topology MUST be runner-initiated outbound WebSocket or runner-initiated long-poll queue.
@@ -604,6 +605,7 @@ Rules:
 - If native context usage is unavailable, estimate as `ceil((utf8_bytes(messages + injected_instructions + attached_text_artifacts) / 4) * 1.20)` and mark `estimated`.
 - At auto threshold, post phone warning.
 - If `auto_compact_enabled=true`, runner MUST compact before accepting the next long task after threshold.
+- If conversation policy is `new_each_request`, runner MUST NOT auto-compact; it MUST create a fresh provider conversation for each task instead.
 - If a task is running when threshold is crossed, runner MUST finish the current provider call, compact, then continue only if conversation policy permits.
 - If compaction requires approval, runner MUST enter `compaction_pending_approval` and reject new long tasks until approved or skipped.
 - At hard threshold, reject long tasks until compact or new conversation.
@@ -812,6 +814,7 @@ Rules:
 - Plaintext MUST NOT appear in logs.
 - For SSH private key execution, broker writes temporary `0600` key file, uses it, then deletes it.
 - SSH password execution MUST NOT pass password via process arguments.
+- SSH password credentials MUST authorize `ssh.exec.password`; generic `ssh.exec` authorization alone MUST NOT permit password-based SSH.
 - Password-based SSH MAY use broker-controlled `sshpass -e` or stdin/pty helper only after explicit approval; the password MUST be supplied through broker-controlled environment or stdin, never through argv or chat.
 - API tokens are injected only into exact subprocess environment via `env -i`.
 

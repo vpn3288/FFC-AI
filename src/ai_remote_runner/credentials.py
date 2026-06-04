@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .storage import atomic_write_json
+
 
 class CredentialBroker:
     def __init__(self, root: Path) -> None:
@@ -81,7 +83,7 @@ class CredentialBroker:
         return json.loads(self.index_path.read_text(encoding="utf-8"))
 
     def _save_index(self, data: dict[str, Any]) -> None:
-        self.index_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_json(self.index_path, data, ensure_ascii=True)
         os.chmod(self.index_path, 0o600)
 
     def add_local_secret(self, metadata: dict[str, Any], secret_value: str) -> dict[str, Any]:
@@ -140,10 +142,10 @@ class CredentialBroker:
         return subprocess.run(command, env=env, text=True, capture_output=True, check=False)
 
     def ssh_exec(self, handle: str, command: str, timeout_seconds: int = 60) -> subprocess.CompletedProcess[str]:
-        self.authorize(handle, "runner", "ssh.exec")
         record = self._load_index()[handle]
         if record.get("type") == "ssh_password":
             return self.ssh_exec_with_password(handle, command, timeout_seconds=timeout_seconds)
+        self.authorize(handle, "runner", "ssh.exec")
         if record.get("type") != "ssh_private_key":
             raise ValueError("credential_type_not_ssh_private_key")
         key = self._decrypt_file(Path(record["secret_path"]))
@@ -166,7 +168,7 @@ class CredentialBroker:
             key_path.unlink(missing_ok=True)
 
     def ssh_exec_with_password(self, handle: str, command: str, timeout_seconds: int = 60) -> subprocess.CompletedProcess[str]:
-        self.authorize(handle, "runner", "ssh.exec")
+        self.authorize(handle, "runner", "ssh.exec.password")
         if not shutil.which("sshpass"):
             raise RuntimeError("sshpass_required_for_ssh_password")
         record = self._load_index()[handle]

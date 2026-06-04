@@ -10,10 +10,9 @@ BRIDGE_SECRET=""
 BRIDGE_SECRET_FILE=""
 BRIDGE_SECRET_STDIN=false
 TRANSFER_METHOD=""
-UNDERSTAND_RISK=false
 
 usage() {
-  printf 'usage: %s --platform-url URL --webhook-url URL --bot-token TOKEN --transfer-method ssh|broker|manual-secure [--bridge-secret-file PATH|--bridge-secret-stdin|--bridge-secret SECRET --i-understand-risk]\n' "$0"
+  printf 'usage: %s --platform-url URL --webhook-url URL --bot-token TOKEN --transfer-method ssh|broker|manual-secure [--bridge-secret-file PATH|--bridge-secret-stdin]\n' "$0"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -21,11 +20,9 @@ while [ "$#" -gt 0 ]; do
     --platform-url) PLATFORM_URL="$2"; shift ;;
     --webhook-url) WEBHOOK_URL="$2"; shift ;;
     --bot-token) BOT_TOKEN="$2"; shift ;;
-    --bridge-secret) BRIDGE_SECRET="$2"; shift ;;
     --bridge-secret-file) BRIDGE_SECRET_FILE="$2"; shift ;;
     --bridge-secret-stdin) BRIDGE_SECRET_STDIN=true ;;
     --transfer-method) TRANSFER_METHOD="$2"; shift ;;
-    --i-understand-risk) UNDERSTAND_RISK=true ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
@@ -41,11 +38,6 @@ if [ -n "$BRIDGE_SECRET_FILE" ]; then
   BRIDGE_SECRET="$(tr -d '\r\n' < "$BRIDGE_SECRET_FILE")"
 elif [ "$BRIDGE_SECRET_STDIN" = true ]; then
   BRIDGE_SECRET="$(tr -d '\r\n')"
-elif [ -n "$BRIDGE_SECRET" ]; then
-  [ "$TRANSFER_METHOD" = "manual-secure" ] && [ "$UNDERSTAND_RISK" = true ] || {
-    printf '[pair-runner] raw --bridge-secret arguments may enter shell history; use --bridge-secret-file/--bridge-secret-stdin or acknowledge --transfer-method manual-secure --i-understand-risk\n' >&2
-    exit 2
-  }
 fi
 [ -n "$BRIDGE_SECRET" ] || { usage; exit 2; }
 case "$BRIDGE_SECRET" in
@@ -54,18 +46,18 @@ case "$BRIDGE_SECRET" in
     exit 2
     ;;
 esac
-python3 - "$BRIDGE_SECRET" <<'PY'
+printf '%s' "$BRIDGE_SECRET" | python3 -c '
 import base64
 import sys
 
-secret = sys.argv[1]
+secret = sys.stdin.read()
 try:
     raw = base64.urlsafe_b64decode((secret + "=" * (-len(secret) % 4)).encode("ascii"))
 except Exception:
     raise SystemExit("invalid bridge secret encoding")
 if len(raw) < 32:
     raise SystemExit("bridge secret must decode to at least 256 bits")
-PY
+'
 
 sudo mkdir -p "$STATE_ROOT"
 if [ -f "$STATE_ROOT/config.env" ]; then

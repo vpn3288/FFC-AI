@@ -17,6 +17,7 @@ from .instructions import InstructionStore
 from .paths import state_root, workspace_root
 from .providers import provider_status
 from .providers import build_instruction_prompt, invoke_claude, invoke_codex
+from .storage import atomic_write_json
 
 
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -68,8 +69,7 @@ class RunnerRuntime:
         return default
 
     def save_policy(self, policy: dict[str, Any]) -> None:
-        self.policy_path.parent.mkdir(parents=True, exist_ok=True)
-        self.policy_path.write_text(json.dumps(policy, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self.policy_path, policy)
 
 
 def _ok(request_id: str, run_id: str | None, message_zh: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -87,8 +87,7 @@ def _json_state(path: Path) -> dict[str, Any]:
 
 
 def _write_json_state(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_json(path, data)
 
 
 def _selected_workspace(rt: RunnerRuntime) -> str | None:
@@ -151,6 +150,7 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "providers": provider_status(),
         "budget": runtime.ledger.load(),
         "policy": runtime.load_policy(),
+        "current_workspace": _selected_workspace(runtime) or "default",
         "default_provider": _selected_provider(runtime) or "claude-code",
         "default_workspace": _selected_workspace(runtime) or "default",
         "state_root": str(runtime.state),
@@ -245,7 +245,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             )
         if context_state.needs_warning:
             rt.events.emit(status_event(run_id, "warning", "上下文接近上限，请考虑压缩或新对话", provider))
-            auto_compact_enabled = bool(policy.get("auto_compact_enabled")) or str(envelope.get("auto_compact_enabled", "")).lower() in {"1", "true", "yes"}
+            auto_compact_enabled = (policy.get("policy") != "new_each_request") and (bool(policy.get("auto_compact_enabled")) or str(envelope.get("auto_compact_enabled", "")).lower() in {"1", "true", "yes"})
             if auto_compact_enabled:
                 compacted = rt.contexts.compact(conversation_id, provider)
                 conversation_id = compacted["new_conversation_id"]

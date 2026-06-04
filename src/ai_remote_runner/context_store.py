@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .context import estimate_tokens
+from .storage import atomic_write_json
 
 
 class ContextStore:
@@ -39,7 +40,7 @@ class ContextStore:
         state["context_used_percent"] = int((state["context_used_tokens"] / limit) * 100)
         state.setdefault("exchanges", []).append({"time": int(time.time()), "texts": list(texts)})
         state["exchanges"] = state["exchanges"][-20:]
-        self.path(conversation_id).write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_json(self.path(conversation_id), state)
         return state
 
     def compact(self, conversation_id: str, provider: str = "claude-code") -> dict[str, Any]:
@@ -69,5 +70,5 @@ class ContextStore:
         new_state["context_used_tokens"] = estimate_tokens(summary_text)
         new_state["context_used_percent"] = int((new_state["context_used_tokens"] / max(1, int(new_state["context_limit_tokens"]))) * 100)
         new_state["summary_artifact"] = str(summary_path)
-        self.path(new_id).write_text(json.dumps(new_state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_json(self.path(new_id), new_state)
         return {"old_conversation_id": conversation_id, "new_conversation_id": new_id, "summary_artifact": str(summary_path)}

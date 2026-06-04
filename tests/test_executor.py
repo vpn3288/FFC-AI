@@ -20,6 +20,13 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["status"], "accepted")
             self.assertIn("providers", response["data"])
 
+    def test_status_includes_current_workspace_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 工作区 使用 demo"), {"request_id": "sw1", "raw_text": "/ai 工作区 使用 demo"}, runtime)
+            response = execute(parse_command("/ai 状态"), {"request_id": "sw2", "raw_text": "/ai 状态"}, runtime)
+            self.assertEqual(response["data"]["current_workspace"], "demo")
+
     def test_instruction_append_executes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -197,6 +204,25 @@ class ExecutorTests(unittest.TestCase):
                 first = execute(parsed, {"request_id": "p2", "raw_text": "do work"}, runtime)
                 second = execute(parsed, {"request_id": "p3", "raw_text": "do work"}, runtime)
             self.assertNotEqual(first["data"]["conversation_id"], second["data"]["conversation_id"])
+
+    def test_new_each_request_policy_skips_auto_compact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.save_policy({"policy": "new_each_request", "conversation_id": "default", "auto_compact_enabled": True, "permission_scope": "chat"})
+            old_state = runtime.contexts.load("default", "claude-code", limit=100)
+            old_state["context_used_tokens"] = 79
+            old_state["context_limit_tokens"] = 100
+            runtime.contexts.path("default").write_text(json.dumps(old_state), encoding="utf-8")
+
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "x"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with (
+                patch("ai_remote_runner.executor.invoke_claude", return_value=fake),
+                patch("ai_remote_runner.context_store.ContextStore.compact") as compact,
+            ):
+                response = execute(parsed, {"request_id": "neac1", "raw_text": "x", "conversation_id": "default"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            compact.assert_not_called()
 
     def test_compacted_summary_is_injected_into_next_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

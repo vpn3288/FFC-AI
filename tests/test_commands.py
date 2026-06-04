@@ -44,10 +44,10 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(shell["requires_confirmation"])
         self.assertFalse(chat["requires_confirmation"])
 
-    def test_bare_slash_is_not_a_command(self) -> None:
+    def test_bare_slash_returns_command_index_when_enabled(self) -> None:
         result = parse_command("/", allow_bare=True)
-        self.assertEqual(result["status"], "rejected")
-        self.assertEqual(result["error"], "bare_slash_not_command")
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["canonical_action"], "command_index")
 
     def test_index_has_chinese_descriptions(self) -> None:
         rows = command_index()

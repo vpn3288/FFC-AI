@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from .commands import parse_command
 from .executor import RunnerRuntime, execute
 from .security import NonceStore, verify_header_preamble, verify_headers
+from .storage import atomic_write_json
 
 
 MAX_BODY_BYTES = int(os.environ.get("AI_BRIDGE_MAX_BODY_BYTES", str(10 * 1024 * 1024)))
@@ -59,7 +60,7 @@ class BridgeState:
             if isinstance(value, dict) and now - int(value.get("cached_at", now)) <= 86400
         }
         data[request_id] = {"cached_at": now, "response": response}
-        self.responses_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_json(self.responses_path, data)
 
     def confirmations(self) -> dict[str, dict]:
         if not self.confirmations_path.exists():
@@ -72,7 +73,7 @@ class BridgeState:
         return {token: item for token, item in raw.items() if now - int(item.get("created_at", 0)) <= 600}
 
     def save_confirmations(self, data: dict[str, dict]) -> None:
-        self.confirmations_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_json(self.confirmations_path, data)
 
     def credential_uploads(self) -> dict[str, dict]:
         if not self.credential_uploads_path.exists():
@@ -83,7 +84,7 @@ class BridgeState:
             return {}
 
     def save_credential_uploads(self, data: dict[str, dict]) -> None:
-        self.credential_uploads_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_json(self.credential_uploads_path, data)
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -187,8 +188,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._json(200, response)
                 return
             if parsed.get("status") == "rejected" and (
-                (parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/"))
-                or parsed.get("error") == "bare_slash_not_command"
+                parsed.get("error") == "command_must_start_with_/ai" and not raw_text.strip().startswith("/")
             ):
                 parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": raw_text}, "requires_confirmation": False}
             item = dict(payload)

@@ -122,6 +122,8 @@ transport: transferred through SSH, credential broker, or another encrypted chan
 rotation: supported by pairing command
 ```
 
+Pairing commands MUST accept bridge shared secrets only through a protected file, stdin, or brokered secure transfer. They MUST NOT accept raw bridge-secret argv values because command-line arguments can be captured by shell history or process listings.
+
 Mattermost server install MUST produce:
 
 ```text

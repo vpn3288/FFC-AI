@@ -69,7 +69,7 @@ def parse_command(raw_text: str, allow_bare: bool = False) -> dict[str, Any]:
     if text.startswith("/ai"):
         rest = text[3:].strip()
     elif allow_bare and text == "/":
-        return {"status": "rejected", "error": "bare_slash_not_command"}
+        rest = "帮助"
     elif allow_bare and text.startswith("/"):
         rest = text[1:].strip()
     else:

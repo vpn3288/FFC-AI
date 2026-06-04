@@ -73,7 +73,7 @@ class StoreTests(unittest.TestCase):
                     "host": "example.invalid",
                     "username": "deploy",
                     "allowed_agents": ["runner"],
-                    "allowed_actions": ["ssh.exec"],
+                    "allowed_actions": ["ssh.exec.password"],
                 },
                 "secret-password",
             )
@@ -89,6 +89,27 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(command[0:3], ["sshpass", "-e", "ssh"])
             self.assertNotIn("secret-password", command)
             self.assertEqual(env["SSHPASS"], "secret-password")
+
+    def test_ssh_password_rejects_generic_ssh_exec_action_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = CredentialBroker(Path(tmp))
+            broker.add_local_secret(
+                {
+                    "handle": "ssh://generic-password",
+                    "type": "ssh_password",
+                    "host": "example.invalid",
+                    "username": "deploy",
+                    "allowed_agents": ["runner"],
+                    "allowed_actions": ["ssh.exec"],
+                },
+                "secret-password",
+            )
+            with (
+                patch("ai_remote_runner.credentials.shutil.which", return_value="/usr/bin/sshpass"),
+                patch.object(broker, "_decrypt_file", return_value="secret-password"),
+            ):
+                with self.assertRaises(PermissionError):
+                    broker.ssh_exec("ssh://generic-password", "true")
 
     def test_context_thresholds(self) -> None:
         used = estimate_tokens("x" * 320)

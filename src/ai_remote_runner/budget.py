@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .storage import atomic_write_json
+
 
 DEFAULT_STATE = {
     "daily_usd_limit": 10.0,
@@ -45,9 +47,7 @@ class BudgetLedger:
         return merged
 
     def save(self, data: dict[str, Any]) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        atomic_write_json(self.path, data, ensure_ascii=True)
 
     def can_reserve(self, amount: float) -> tuple[bool, str]:
         data = self.load()

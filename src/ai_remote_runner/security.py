@@ -7,6 +7,8 @@ import json
 import time
 from pathlib import Path
 
+from .storage import atomic_write_json
+
 MAX_STORED_NONCES = 10000
 ROTATED_NONCES = 5000
 
@@ -50,7 +52,7 @@ class NonceStore:
         if len(data) > MAX_STORED_NONCES:
             newest = sorted(data.items(), key=lambda item: float(item[1]), reverse=True)[:ROTATED_NONCES]
             data = dict(newest)
-        self.path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        atomic_write_json(self.path, data, ensure_ascii=True)
         return True
 
 
