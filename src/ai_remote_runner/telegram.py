@@ -22,7 +22,6 @@ MAX_TELEGRAM_MESSAGE_CHARS = 3900
 class TelegramConfig:
     token: str
     allowed_chat_ids: set[str]
-    allow_all_chats: bool = False
     api_base: str = "https://api.telegram.org"
     poll_timeout_seconds: int = 30
     reserved_usd: float = 1.0
@@ -37,7 +36,6 @@ class TelegramConfig:
         return cls(
             token=token,
             allowed_chat_ids=allowed,
-            allow_all_chats=os.environ.get("TELEGRAM_ALLOW_ALL_CHATS", "").lower() in {"1", "true", "yes"},
             api_base=os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
             poll_timeout_seconds=int(os.environ.get("TELEGRAM_POLL_TIMEOUT_SECONDS", "30")),
             reserved_usd=float(os.environ.get("TELEGRAM_RESERVED_USD", "1.0")),
@@ -120,7 +118,7 @@ class TelegramBot:
         atomic_write_json(self.confirmations_path, data)
 
     def chat_allowed(self, chat_id: str) -> bool:
-        return self.config.allow_all_chats or chat_id in self.config.allowed_chat_ids
+        return chat_id in self.config.allowed_chat_ids
 
     def pairing_hint(self, chat_id: str) -> str:
         return (

@@ -19,6 +19,7 @@ The stack SHALL support:
 - Codex;
 - other future AI adapters;
 - self-hosted communication platform, default Mattermost, fallback Matrix/Synapse;
+- optional Telegram bot channel after explicit pairing;
 - mobile command/control UX;
 - mobile status/progress display;
 - context usage display;
@@ -30,7 +31,7 @@ The stack SHALL support:
 - command, skill, MCP, CLI, and feature index with Chinese descriptions;
 - optional post-install extension/tool bundle.
 
-Telegram MUST NOT be used.
+Telegram MAY be used only as an optional runner-side bot channel. It MUST NOT replace Mattermost as the default platform, MUST NOT block core-ready, and MUST require explicit BotFather token plus Telegram ID pairing before executing AI commands.
 
 Privacy/stealth MUST NOT be optimized beyond minimum credential safety, remote-execution safety, budget control, and recoverability.
 
@@ -72,7 +73,7 @@ The master-writer AI MUST:
 - keep scope centered on core working functionality;
 - merge reviewer output only after independent reviews finish;
 - maintain version hashes and review state;
-- reject recommendations that reintroduce Telegram;
+- reject recommendations that make Telegram mandatory, unauthenticated, or a replacement for default Mattermost;
 - reject privacy/stealth expansion unless required for credential or remote-execution safety.
 - engage reviewer AIs adversarially instead of using them only as defect detectors;
 - maintain a separate creative-proposal track for strong non-blocking ideas.
@@ -170,7 +171,7 @@ Rules:
 - Creative proposals MUST NOT be treated as blockers unless they expose P0/P1 risk.
 - Master-writer MUST mark each creative proposal as `adopted`, `deferred`, or `rejected`.
 - Master-writer MAY relax non-safety constraints when a proposal improves core functionality, mobile UX, extensibility, or implementation quality.
-- Master-writer MUST NOT relax: no Telegram, no secrets in AI prompts, no uncontrolled remote execution, no unlimited spend.
+- Master-writer MUST NOT relax: Telegram optional-only, no secrets in AI prompts, no uncontrolled remote execution, no unlimited spend.
 - Reviewer AIs SHOULD actively disagree with weak assumptions.
 - Reviewer AIs SHOULD propose at least three non-obvious improvements per round unless none are useful.
 - Reviewer AIs MUST explicitly state whether the master-writer over-compressed necessary implementation detail.
@@ -240,7 +241,7 @@ Pass requires:
 - implementation scripts exist for runner install, communication install, rollback, bridge, providers, commands, credentials, budget, context, instruction files, and smoke tests;
 - implementation smoke tests pass locally;
 - latest optimization commit has been pushed to GitHub;
-- Telegram absent except as explicit prohibition;
+- Telegram optional service present only when explicitly enabled and paired;
 - Mattermost selected as primary platform;
 - Matrix/Synapse selected as fallback platform;
 - AI runner core install not blocked by optional skills/CLI/MCP tools;
@@ -309,7 +310,7 @@ P3:
 Claude Code reviewer prompt MUST include:
 
 ```text
-Review all guidance files and implementation scripts in a fresh conversation with no resume/continue context. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Verify that Telegram is prohibited, Mattermost is primary, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, optional tools do not block core-ready, command index shows Chinese descriptions, and scripts implement the guidance rather than logging placeholder stages.
+Review all guidance files and implementation scripts in a fresh conversation with no resume/continue context. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Verify that Telegram is optional-only and requires explicit pairing, Mattermost is primary, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, optional tools do not block core-ready, command index shows Chinese descriptions, and scripts implement the guidance rather than logging placeholder stages.
 ```
 
 GPT-5.5 reviewer prompt MUST include:

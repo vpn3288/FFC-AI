@@ -133,9 +133,48 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertIn("discovery mode enabled", result.stdout)
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=\n", config)
-            self.assertIn("TELEGRAM_ALLOW_ALL_CHATS=false\n", config)
+            self.assertNotIn("TELEGRAM_ALLOW_ALL_CHATS", config)
 
-    def test_direct_bot_token_and_telegram_id_pair_successfully(self) -> None:
+    def test_interactive_bot_token_and_telegram_id_pair_successfully(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            service = root / "ai-telegram-bot.service"
+            state.mkdir()
+            service.write_text("[Service]\n", encoding="utf-8")
+            fakebin, calls = self.make_fakebin(root)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(service),
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--telegram-id",
+                    "123",
+                ],
+                input="test-token:ABC_def\n",
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("test-token:ABC_def", result.stdout + result.stderr)
+            config = (state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("TELEGRAM_BOT_TOKEN=test-token:ABC_def\n", config)
+            self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=123\n", config)
+            self.assertIn("systemctl restart ai-telegram-bot.service", calls.read_text(encoding="utf-8"))
+
+    def test_direct_bot_token_remains_available_for_automation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state = root / "state"
@@ -159,8 +198,8 @@ class PairTelegramScriptTests(unittest.TestCase):
                     str(ROOT / "scripts" / "pair-telegram.sh"),
                     "--bot-token",
                     "test-token:ABC_def",
-                    "--telegram-id",
-                    "123",
+                    "--chat-id",
+                    "123,-456",
                 ],
                 text=True,
                 capture_output=True,
@@ -170,9 +209,45 @@ class PairTelegramScriptTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             config = (state / "config.env").read_text(encoding="utf-8")
-            self.assertIn("TELEGRAM_BOT_TOKEN=test-token:ABC_def\n", config)
-            self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=123\n", config)
+            self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=123,-456\n", config)
             self.assertIn("systemctl restart ai-telegram-bot.service", calls.read_text(encoding="utf-8"))
+
+    def test_rejects_invalid_chat_id_before_writing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            state.mkdir()
+            token_file = root / "telegram-token"
+            token_file.write_text("test-token:ABC_def\n", encoding="utf-8")
+            fakebin, calls = self.make_fakebin(root)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(root / "missing.service"),
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--bot-token-file",
+                    str(token_file),
+                    "--telegram-id",
+                    "123\nTELEGRAM_RESERVED_USD=999",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("must be a comma-separated list", result.stderr)
+            self.assertFalse((state / "config.env").exists())
 
 
 if __name__ == "__main__":

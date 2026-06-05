@@ -145,8 +145,13 @@ def _command_index_with_availability(items: list[dict[str, Any]], providers: lis
 
 
 def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
+    manifest = _install_manifest(runtime)
     return {
-        "core_ready": False,
+        "core_ready": bool(manifest.get("core_ready", False)),
+        "core_ready_status": manifest.get("core_ready_status", "unknown"),
+        "bridge_loopback_validated": bool(manifest.get("bridge_loopback_validated", False)),
+        "mattermost_command_validated": bool(manifest.get("mattermost_command_validated", False)),
+        "integration_ready_status": manifest.get("integration_ready_status", "unknown"),
         "providers": provider_status(),
         "budget": runtime.ledger.load(),
         "policy": runtime.load_policy(),

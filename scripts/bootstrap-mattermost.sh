@@ -105,6 +105,29 @@ require_rest_config() {
   exit 1
 }
 
+manifest_value() {
+  local key="$1"
+  [ -f "$MANIFEST" ] || return 0
+  python3 - "$MANIFEST" "$key" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+try:
+    value = json.loads(path.read_text(encoding="utf-8")).get(key, "")
+except json.JSONDecodeError:
+    value = ""
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, str):
+    print(value)
+else:
+    print("")
+PY
+}
+
 ensure_admin() {
   if ! mmctl user search "$MATTERMOST_ADMIN_USERNAME" >/dev/null 2>&1; then
     [ -n "$MATTERMOST_ADMIN_PASSWORD" ] || { log 'MATTERMOST_ADMIN_PASSWORD is required to create first admin'; exit 1; }
@@ -193,8 +216,8 @@ wait_mattermost_ready() {
 }
 
 restart_mattermost_if_needed() {
-  [ "$MATTERMOST_RESTART_REQUIRED" = true ] || return
-  [ "$MATTERMOST_RESTART_AFTER_INTERNAL_ALLOW" != false ] || return
+  [ "$MATTERMOST_RESTART_REQUIRED" = true ] || return 0
+  [ "$MATTERMOST_RESTART_AFTER_INTERNAL_ALLOW" != false ] || return 0
   if command -v systemctl >/dev/null 2>&1 && sudo test -f /etc/systemd/system/ffc-ai-mattermost.service; then
     log 'restarting native Mattermost so AllowedUntrustedInternalConnections takes effect'
     sudo systemctl restart ffc-ai-mattermost.service
@@ -268,9 +291,14 @@ rest_json GET "$MATTERMOST_URL/api/v4/users/me" >/dev/null || {
   exit 1
 }
 TEAM_ID="$(rest_json GET "$MATTERMOST_URL/api/v4/teams/name/ai-lab" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-SLASH_STATUS="pending_bridge_command_url"
-SLASH_TOKEN_CONFIGURED=false
-SLASH_COMMAND_URL=""
+SLASH_STATUS="$(manifest_value slash_command_status)"
+SLASH_TOKEN_CONFIGURED="$(manifest_value slash_command_token_configured)"
+SLASH_COMMAND_URL="$(manifest_value slash_command_url)"
+SLASH_STATUS="${SLASH_STATUS:-pending_bridge_command_url}"
+case "$SLASH_TOKEN_CONFIGURED" in
+  true|false) ;;
+  *) SLASH_TOKEN_CONFIGURED=false ;;
+esac
 if [ -n "$BRIDGE_COMMAND_URL" ]; then
   log 'creating /ai slash command through Mattermost REST API'
   ensure_allowed_internal_connection "$BRIDGE_COMMAND_URL"
@@ -323,7 +351,14 @@ for command in commands:
   SLASH_TOKEN_CONFIGURED=true
   SLASH_COMMAND_URL="$BRIDGE_COMMAND_URL"
 else
-  log 'BRIDGE_COMMAND_URL not set; deferring /ai slash command creation until runner pairing'
+  if [ "$SLASH_TOKEN_CONFIGURED" = true ] && [ -n "$SLASH_COMMAND_URL" ]; then
+    log 'BRIDGE_COMMAND_URL not set; preserving existing /ai slash command metadata'
+  else
+    SLASH_STATUS="pending_bridge_command_url"
+    SLASH_TOKEN_CONFIGURED=false
+    SLASH_COMMAND_URL=""
+    log 'BRIDGE_COMMAND_URL not set; deferring /ai slash command creation until runner pairing'
+  fi
 fi
 
 log 'creating incoming webhook through Mattermost REST API'

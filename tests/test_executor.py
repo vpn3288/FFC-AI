@@ -27,6 +27,29 @@ class ExecutorTests(unittest.TestCase):
             response = execute(parse_command("/ai 状态"), {"request_id": "sw2", "raw_text": "/ai 状态"}, runtime)
             self.assertEqual(response["data"]["current_workspace"], "demo")
 
+    def test_status_reads_core_ready_from_install_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.state.mkdir(parents=True)
+            (runtime.state / "install-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "core_ready": True,
+                        "core_ready_status": "validated",
+                        "bridge_loopback_validated": True,
+                        "integration_ready_status": "validated",
+                        "mattermost_command_validated": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            response = execute(parse_command("/ai 状态"), {"request_id": "sw3", "raw_text": "/ai 状态"}, runtime)
+            self.assertTrue(response["data"]["core_ready"])
+            self.assertEqual(response["data"]["core_ready_status"], "validated")
+            self.assertTrue(response["data"]["bridge_loopback_validated"])
+            self.assertEqual(response["data"]["integration_ready_status"], "validated")
+            self.assertTrue(response["data"]["mattermost_command_validated"])
+
     def test_instruction_append_executes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")

@@ -9,9 +9,9 @@ Style: AI-only executable specification. Human readability is not a goal.
 
 The runner MUST provide the core mobile-controlled AI execution layer.
 
-Core install MUST NOT depend on optional skills, MCP extensions, or CLI tools.
+Core install MUST NOT depend on optional skills, MCP extensions, CLI tools, or Telegram.
 
-Telegram MUST NOT be used.
+Telegram MAY be installed as an optional runner-side bot channel. It MUST be disabled until paired with a BotFather token and explicit Telegram ID, and it MUST NOT block core-ready or Mattermost operation.
 
 The runner MUST support:
 
@@ -19,6 +19,7 @@ The runner MUST support:
 - Codex adapter;
 - future AI adapters;
 - Mattermost/Matrix communication bridge;
+- optional Telegram bot service;
 - Chinese command aliases;
 - canonical English internal actions;
 - status/progress event stream;
@@ -69,10 +70,11 @@ stage 05: create runner directories
 stage 06: create runner configuration files
 stage 07: create credential broker storage backend
 stage 08: install runner bridge service
-stage 09: connect runner to communication platform
-stage 10: run provider smoke tests
-stage 11: run phone command smoke tests
-stage 12: report core_ready or failed
+stage 09: optionally install Telegram bot service when explicitly requested
+stage 10: connect runner to communication platform
+stage 11: run provider smoke tests
+stage 12: run phone command smoke tests
+stage 13: report core_ready or failed
 ```
 
 Claude Code installation requirement:

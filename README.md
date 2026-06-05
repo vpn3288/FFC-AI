@@ -410,13 +410,12 @@ Telegram 不需要再部署聊天服务器，只需要一个 Telegram BotFather 
 ```bash
 cd FFC-AI
 sudo scripts/pair-telegram.sh \
-  --bot-token "BotFather给你的机器人密钥" \
   --telegram-id 你的TelegramID
 ```
 
-这样会直接写入配置并启动 `ai-telegram-bot.service`。
+脚本会提示输入 BotFather 给你的机器人密钥，输入时不会回显。这样会直接写入配置并启动 `ai-telegram-bot.service`。
 
-如果你不想把 token 放在命令行里，也可以把 token 放到 runner 机器的 root 只读文件里：
+如果你要自动化部署，也可以把 token 放到 runner 机器的 root 只读文件里：
 
 ```bash
 sudo install -m 600 /dev/null /root/ffc-ai-telegram-token
@@ -434,16 +433,7 @@ sudo scripts/pair-telegram.sh \
 
 然后给 bot 发送 `/ai 状态`，它会回复未配对提示，里面包含 `chat_id`。这个模式不会执行 AI 命令。
 
-如果只是临时测试，也可以先允许所有 chat：
-
-```bash
-cd FFC-AI
-sudo scripts/pair-telegram.sh \
-  --bot-token-file /root/ffc-ai-telegram-token \
-  --allow-all-chats
-```
-
-临时测试完成后，建议重新配对成只允许你的 chat：
+拿到 `chat_id` 后，重新配对成只允许你的 chat：
 
 ```bash
 sudo scripts/pair-telegram.sh \
@@ -507,23 +497,25 @@ sudo scripts/validate-integration.sh
 
 ```text
 [validate-integration] bridge loopback passed
-[validate-integration] Mattermost /ai command passed
+[validate-integration] Mattermost /ai commands and credential confirmation passed
 ```
 
-如果当前机器只能访问 bridge，不能登录 Mattermost REST API，可以临时跳过 slash command 层测试：
+如果当前机器只能访问 bridge，不能登录 Mattermost REST API，可以临时跳过 slash command 层测试做诊断：
 
 ```bash
 sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 ```
 
-这个脚本会把：
+注意：跳过 slash command 时只会验证 runner bridge，不会把 Mattermost 的 `platform_ready` 标记为 validated。
+
+完整验证通过后，脚本会把：
 
 ```text
 /var/lib/ai-remote-runner/install-manifest.json
 /opt/ffc-ai-mattermost/install-manifest.json
 ```
 
-里的 ready 状态更新为 validated。
+里的集成状态更新为 validated。runner 的 `core_ready` 仍由 `scripts/validate-core-ready.sh` 负责验证和更新。
 
 ### 手机上验证
 
@@ -709,14 +701,14 @@ sudo journalctl -u ai-remote-runner -n 100 --no-pager
 
 ### 6. `/ai 状态` 里 core_ready 还是 false
 
-当前 `current_status()` 代码里 `core_ready` 是固定的 `False`，没有读取 install manifest。是否真的 ready，请以：
+`/ai 状态` 会读取 runner 的 install manifest。如果它仍然是 false，通常表示 core 验证或 Mattermost 集成验证还没跑完，重新执行：
 
 ```bash
 sudo scripts/validate-core-ready.sh
 sudo scripts/validate-integration.sh
 ```
 
-以及 manifest 文件为准。
+然后再在手机里发送 `/ai 状态`。
 
 ## 13. 回滚和卸载
 
@@ -797,7 +789,6 @@ scripts/smoke-test.sh
 - Docker Mattermost 到本机 runner 的网络地址需要你确认。
 - `pair-runner.sh` 写配置后需要手动重启 runner 服务。
 - `/ai 停止`、`/ai 取消` 当前还没有完整执行逻辑。
-- `/ai 状态` 的 `core_ready` 字段当前不会读取 manifest。
 - 扩展、工具、MCP 目前主要是列表占位，还没有完整安装流程。
 
 如果你按这份 README 部署，最重要的验收标准是：

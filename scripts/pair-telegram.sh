@@ -7,13 +7,38 @@ BOT_TOKEN=""
 BOT_TOKEN_FILE=""
 BOT_TOKEN_STDIN=false
 CHAT_IDS=""
-ALLOW_ALL_CHATS=false
 DISCOVER_CHAT_ID=false
 API_BASE=""
 RESERVED_USD=""
 
 usage() {
-  printf 'usage: %s [--bot-token TOKEN|--bot-token-file PATH|--bot-token-stdin] [--telegram-id ID|--chat-id ID[,ID...]|--allow-all-chats|--discover-chat-id] [--api-base URL] [--reserved-usd USD]\n' "$0"
+  printf 'usage: %s [--bot-token TOKEN|--bot-token-file PATH|--bot-token-stdin] [--telegram-id ID|--chat-id ID[,ID...]|--discover-chat-id] [--api-base URL] [--reserved-usd USD]\n' "$0"
+}
+
+validate_chat_ids() {
+  python3 - "$CHAT_IDS" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1]
+items = raw.split(",") if raw else []
+if not items or any(not item for item in items):
+    raise SystemExit(1)
+pattern = re.compile(r"^-?[0-9]{1,32}$")
+if any(not pattern.fullmatch(item) for item in items):
+    raise SystemExit(1)
+PY
+}
+
+validate_optional_value() {
+  local label="$1"
+  local value="$2"
+  case "$value" in
+    *$'\n'*|*$'\r'*)
+      printf '[pair-telegram] %s must be a single-line value\n' "$label" >&2
+      exit 2
+      ;;
+  esac
 }
 
 while [ "$#" -gt 0 ]; do
@@ -23,7 +48,6 @@ while [ "$#" -gt 0 ]; do
     --bot-token-stdin) BOT_TOKEN_STDIN=true ;;
     --telegram-id) CHAT_IDS="${CHAT_IDS:+$CHAT_IDS,}$2"; shift ;;
     --chat-id) CHAT_IDS="${CHAT_IDS:+$CHAT_IDS,}$2"; shift ;;
-    --allow-all-chats) ALLOW_ALL_CHATS=true ;;
     --discover-chat-id) DISCOVER_CHAT_ID=true ;;
     --api-base) API_BASE="$2"; shift ;;
     --reserved-usd) RESERVED_USD="$2"; shift ;;
@@ -39,9 +63,26 @@ elif [ "$BOT_TOKEN_STDIN" = true ]; then
   BOT_TOKEN="$(tr -d '\r\n')"
 fi
 
-[ -n "$BOT_TOKEN" ] || { printf '[pair-telegram] Telegram bot token is required; use --bot-token-file or --bot-token-stdin\n' >&2; exit 2; }
-if [ "$ALLOW_ALL_CHATS" != true ] && [ "$DISCOVER_CHAT_ID" != true ] && [ -z "$CHAT_IDS" ]; then
-  printf '[pair-telegram] --chat-id is required unless --allow-all-chats or --discover-chat-id is set\n' >&2
+if [ -z "$BOT_TOKEN" ]; then
+  if [ -t 0 ] || [ -n "$CHAT_IDS" ] || [ "$DISCOVER_CHAT_ID" = true ]; then
+    printf '[pair-telegram] Telegram bot token: ' >&2
+    stty_state="$(stty -g 2>/dev/null || true)"
+    stty -echo 2>/dev/null || true
+    if ! IFS= read -r BOT_TOKEN; then
+      BOT_TOKEN=""
+    fi
+    if [ -n "$stty_state" ]; then
+      stty "$stty_state" 2>/dev/null || true
+    else
+      stty echo 2>/dev/null || true
+    fi
+    printf '\n' >&2
+    BOT_TOKEN="$(printf '%s' "$BOT_TOKEN" | tr -d '\r\n')"
+  fi
+fi
+[ -n "$BOT_TOKEN" ] || { printf '[pair-telegram] Telegram bot token is required; enter it when prompted or use --bot-token-file/--bot-token-stdin\n' >&2; exit 2; }
+if [ "$DISCOVER_CHAT_ID" != true ] && [ -z "$CHAT_IDS" ]; then
+  printf '[pair-telegram] --telegram-id or --chat-id is required unless --discover-chat-id is set\n' >&2
   exit 2
 fi
 case "$BOT_TOKEN" in
@@ -50,10 +91,39 @@ case "$BOT_TOKEN" in
     exit 2
     ;;
 esac
+if [ -n "$CHAT_IDS" ] && ! validate_chat_ids; then
+  printf '[pair-telegram] Telegram ID/chat_id must be a comma-separated list of numeric chat IDs\n' >&2
+  exit 2
+fi
+if [ -n "$API_BASE" ]; then
+  validate_optional_value "--api-base" "$API_BASE"
+  case "$API_BASE" in
+    http://*|https://*) ;;
+    *) printf '[pair-telegram] --api-base must start with http:// or https://\n' >&2; exit 2 ;;
+  esac
+fi
+if [ -n "$RESERVED_USD" ]; then
+  validate_optional_value "--reserved-usd" "$RESERVED_USD"
+  if ! python3 - "$RESERVED_USD" <<'PY'
+import sys
+
+try:
+    value = float(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+if value < 0:
+    raise SystemExit(1)
+PY
+  then
+    printf '[pair-telegram] --reserved-usd must be a non-negative number\n' >&2
+    exit 2
+  fi
+fi
 
 sudo mkdir -p "$STATE_ROOT"
 if [ -f "$STATE_ROOT/config.env" ]; then
   TMP_CONFIG="$(mktemp)"
+  # Remove stale all-chat config from older installs; execution always requires explicit chat IDs.
   sudo awk -F= '
     $1 != "TELEGRAM_BOT_TOKEN" &&
     $1 != "TELEGRAM_ALLOWED_CHAT_IDS" &&
@@ -67,7 +137,6 @@ fi
 sudo tee -a "$STATE_ROOT/config.env" >/dev/null <<EOF
 TELEGRAM_BOT_TOKEN=$BOT_TOKEN
 TELEGRAM_ALLOWED_CHAT_IDS=$CHAT_IDS
-TELEGRAM_ALLOW_ALL_CHATS=$ALLOW_ALL_CHATS
 EOF
 if [ -n "$API_BASE" ]; then
   printf 'TELEGRAM_API_BASE=%s\n' "$API_BASE" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null

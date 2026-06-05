@@ -11,16 +11,15 @@ Primary platform: Mattermost.
 
 Fallback platform: Matrix/Synapse.
 
-Secondary alternatives: Zulip, Rocket.Chat.
+Optional direct bot channel: Telegram.
 
-Telegram MUST NOT be used.
+Telegram MAY be enabled as an optional runner-side bot after core install. It MUST NOT replace the default Mattermost communication platform, MUST NOT be required for core-ready, and MUST require explicit BotFather token plus Telegram ID pairing before executing AI commands.
 
 Rationale:
 
 - Mattermost best matches mobile command UX, internal channels, bot/webhook/API support, slash-command-style control, and reproducible VPS deployment.
 - Matrix/Synapse is fallback for open protocol, bridges, and multi-client ecosystem.
-- Zulip is reserved for topic-threaded AI review discussions.
-- Rocket.Chat is reserved for future integration-specific preference.
+- Telegram is useful as a lightweight optional direct mobile channel when the user supplies a bot token and Telegram ID.
 
 Example weighted score:
 
@@ -29,6 +28,7 @@ Mattermost: 88
 Matrix/Synapse: 80
 Zulip: 74
 Rocket.Chat: 70
+Telegram direct bot: optional
 ```
 
 ## 2. Platform Selection Criteria
@@ -47,6 +47,8 @@ GitHub-reproducible docs: 10
 ```
 
 The implementation MUST use Mattermost unless a future review produces a P1 blocker.
+
+The runner implementation MAY additionally support Telegram long polling as an optional service installed by `scripts/install-runner.sh --enable-telegram` and paired by `scripts/pair-telegram.sh`.
 
 ## 3. VPS Baseline
 
