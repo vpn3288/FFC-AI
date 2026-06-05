@@ -8,6 +8,10 @@ export AI_WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-$ROOT/work/smoke-workspaces}"
 
 for script in "$ROOT"/scripts/*.sh; do
   bash -n "$script"
+  if [ ! -x "$script" ]; then
+    printf 'script is not executable: %s\n' "$script" >&2
+    exit 1
+  fi
 done
 
 python3 -m unittest discover -s "$ROOT/tests" -v

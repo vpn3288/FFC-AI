@@ -97,6 +97,11 @@ AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 AI_BRIDGE_SECRET_TRANSFER_METHOD=$TRANSFER_METHOD
 EOF
 sudo chmod 0600 "$STATE_ROOT/config.env"
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ai-remote-runner.service >/dev/null 2>&1; then
+  sudo systemctl daemon-reload
+  sudo systemctl restart ai-remote-runner.service
+  printf '[pair-runner] ai-remote-runner.service restarted\n'
+fi
 printf '[pair-runner] pairing config written; running bridge loopback validation\n'
 if [ "${PAIR_RUNNER_SKIP_VALIDATE:-false}" != true ]; then
   AI_REMOTE_STATE="$STATE_ROOT" bash "$SCRIPT_DIR/validate-core-ready.sh"

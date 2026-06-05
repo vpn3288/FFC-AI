@@ -409,7 +409,7 @@ if [ "$DRY_RUN" = false ]; then
     MATTERMOST_ADMIN_USERNAME="ai-admin" \
     MATTERMOST_ADMIN_EMAIL="admin@$DOMAIN" \
     MATTERMOST_ADMIN_PASSWORD="$MATTERMOST_ADMIN_PASSWORD" \
-    "$BOOTSTRAP_MATTERMOST_SCRIPT"
+    bash "$BOOTSTRAP_MATTERMOST_SCRIPT"
 else
   log 'would run docker compose up -d and bootstrap Mattermost objects with mmctl --local'
 fi
