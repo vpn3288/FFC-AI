@@ -40,12 +40,18 @@ flowchart LR
 
 脚本自带的通信服务器安装器会安装：
 
-- Mattermost Team Edition `10.5.3`
+- Mattermost Team Edition 最新官方 release，且不低于 `10.11.0`
 - PostgreSQL `15.10-alpine`
 - Caddy `2.8.4-alpine`
 - Docker / Docker Compose
 
-这些版本来自 `versions.lock`，并且 Docker 镜像都锁了 digest。
+Mattermost 版本默认来自官方 GitHub latest release。这样手机 App 要求新服务端时，新安装会自动跟上。你也可以手动固定版本：
+
+```bash
+sudo env MATTERMOST_VERSION=11.7.2 scripts/install-communication-vps.sh --domain ai.example.com
+```
+
+脚本会拒绝安装低于 `10.11.0` 的 Mattermost 版本。PostgreSQL 和 Caddy 版本来自 `versions.lock`，并且仍然锁了 digest。
 
 ### AI runner 机器
 

@@ -175,16 +175,17 @@ Mattermost source:
 https://github.com/mattermost/docker
 ```
 
-Implementation MUST pin Docker image tags and Mattermost Docker deployment reference in project lock file before public release.
+Implementation MUST keep database/Caddy image refs pinned and MUST select a Mattermost version compatible with current mobile clients.
 
 Mattermost release pinning:
 
 ```text
-versions.lock MUST contain mattermost_app_image, mattermost_db_image, and mattermost_docker_ref.
-mattermost_app_image MUST be an explicit Docker image tag, not `latest`.
-mattermost_db_image MUST be an explicit Docker image tag, not `latest`.
+versions.lock MUST contain mattermost_image_repository, mattermost_version, mattermost_min_version, mattermost_db_image, mattermost_caddy_image, and mattermost_docker_ref.
+mattermost_version SHOULD default to `latest`; installer resolves it from the official Mattermost GitHub latest release.
+mattermost_min_version MUST be 10.11.0 or newer so mobile clients do not reject the server.
+mattermost_db_image and mattermost_caddy_image MUST be explicit digest-pinned image refs, not `latest`.
 mattermost_docker_ref MUST be a commit or release reference from https://github.com/mattermost/docker.
-Installer MUST fail before public release if any pin is absent.
+Installer MUST fail if database/Caddy pins are absent or the resolved Mattermost version is below mattermost_min_version.
 ```
 
 Mattermost setup MUST create:

@@ -3,9 +3,10 @@ set -euo pipefail
 
 DRY_RUN=false
 DOMAIN="${MATTERMOST_DOMAIN:-}"
-LOCK_FILE="${LOCK_FILE:-versions.lock}"
 INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOCK_FILE="${LOCK_FILE:-$REPO_ROOT/versions.lock}"
 
 usage() {
   printf 'usage: %s [--dry-run] --domain example.com\n' "$0"
@@ -48,11 +49,73 @@ if [ -z "$DOMAIN" ]; then
 fi
 
 read_lock() {
-  grep "^$1=" "$LOCK_FILE" | cut -d= -f2-
+  grep "^$1=" "$LOCK_FILE" 2>/dev/null | cut -d= -f2- || true
 }
 
-MATTERMOST_IMAGE="$(read_lock mattermost_app_image)"
-MATTERMOST_VERSION="$(read_lock mattermost_version || true)"
+strip_v_prefix() {
+  printf '%s' "$1" | sed 's/^v//'
+}
+
+latest_mattermost_version() {
+  curl -fsSL "${MATTERMOST_LATEST_RELEASE_URL:-https://api.github.com/repos/mattermost/mattermost/releases/latest}" |
+    python3 -c 'import json,sys
+tag = json.load(sys.stdin).get("tag_name", "")
+tag = tag[1:] if tag.startswith("v") else tag
+if not tag:
+    raise SystemExit("Mattermost latest release did not include tag_name")
+print(tag)'
+}
+
+version_ge() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+
+def parts(value: str) -> tuple[int, int, int]:
+    raw = value.lstrip("v").split("-", 1)[0].split(".")
+    nums = [int(part) for part in raw[:3]]
+    while len(nums) < 3:
+        nums.append(0)
+    return tuple(nums)
+
+raise SystemExit(0 if parts(sys.argv[1]) >= parts(sys.argv[2]) else 1)
+PY
+}
+
+mattermost_download_url() {
+  local version="$1"
+  local arch="$2"
+  local team_url="https://releases.mattermost.com/$version/mattermost-team-$version-linux-$arch.tar.gz"
+  local fallback_url="https://releases.mattermost.com/$version/mattermost-$version-linux-$arch.tar.gz"
+  if curl -fsI "$team_url" >/dev/null 2>&1; then
+    printf '%s\n' "$team_url"
+    return
+  fi
+  if curl -fsI "$fallback_url" >/dev/null 2>&1; then
+    printf '%s\n' "$fallback_url"
+    return
+  fi
+  log "unable to find Mattermost linux-$arch tarball for version $version"
+  exit 1
+}
+
+MATTERMOST_MIN_VERSION="${MATTERMOST_MIN_VERSION:-$(read_lock mattermost_min_version)}"
+MATTERMOST_MIN_VERSION="${MATTERMOST_MIN_VERSION:-10.11.0}"
+MATTERMOST_VERSION_REQUEST="${MATTERMOST_VERSION:-$(read_lock mattermost_version)}"
+MATTERMOST_VERSION_REQUEST="${MATTERMOST_VERSION_REQUEST:-latest}"
+if [ "$MATTERMOST_VERSION_REQUEST" = latest ] || [ "$MATTERMOST_VERSION_REQUEST" = auto ]; then
+  MATTERMOST_VERSION="$(latest_mattermost_version)"
+  MATTERMOST_VERSION_SOURCE="${MATTERMOST_VERSION_SOURCE:-github_latest}"
+else
+  MATTERMOST_VERSION="$(strip_v_prefix "$MATTERMOST_VERSION_REQUEST")"
+  MATTERMOST_VERSION_SOURCE="${MATTERMOST_VERSION_SOURCE:-explicit}"
+fi
+if ! version_ge "$MATTERMOST_VERSION" "$MATTERMOST_MIN_VERSION"; then
+  log "Mattermost $MATTERMOST_VERSION is below required minimum $MATTERMOST_MIN_VERSION for current mobile clients"
+  exit 1
+fi
+MATTERMOST_IMAGE_REPOSITORY="${MATTERMOST_IMAGE_REPOSITORY:-$(read_lock mattermost_image_repository)}"
+MATTERMOST_IMAGE_REPOSITORY="${MATTERMOST_IMAGE_REPOSITORY:-mattermost/mattermost-team-edition}"
+MATTERMOST_IMAGE="${MATTERMOST_IMAGE:-$MATTERMOST_IMAGE_REPOSITORY:$MATTERMOST_VERSION}"
 DB_IMAGE="$(read_lock mattermost_db_image)"
 CADDY_IMAGE="$(read_lock mattermost_caddy_image)"
 DOCKER_REF="$(read_lock mattermost_docker_ref)"
@@ -63,21 +126,21 @@ if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
   DEPLOY_MODE="native-arm64"
   MATTERMOST_TARBALL_ARCH="arm64"
 fi
-MATTERMOST_VERSION="${MATTERMOST_VERSION:-10.5.3}"
 
 if [ -z "$MATTERMOST_IMAGE" ] || [ -z "$DB_IMAGE" ] || [ -z "$CADDY_IMAGE" ] || [ -z "$DOCKER_REF" ]; then
-  log 'versions.lock must pin mattermost_app_image, mattermost_db_image, mattermost_caddy_image, mattermost_docker_ref'
+  log 'versions.lock must define mattermost_db_image, mattermost_caddy_image, and mattermost_docker_ref'
   exit 1
 fi
-for image_ref in "$MATTERMOST_IMAGE" "$DB_IMAGE" "$CADDY_IMAGE"; do
+for image_ref in "$DB_IMAGE" "$CADDY_IMAGE"; do
   case "$image_ref" in
     *@sha256:*) ;;
-    *) log 'Mattermost, database, and Caddy image refs must include @sha256 digests'; exit 1 ;;
+    *) log 'database and Caddy image refs must include @sha256 digests'; exit 1 ;;
   esac
 done
 
 log 'stage 01: detect VPS OS, CPU, memory, disk, public IP'
 log "os=$(uname -s) arch=$ARCH deployment=$DEPLOY_MODE"
+log "mattermost_version=$MATTERMOST_VERSION source=$MATTERMOST_VERSION_SOURCE minimum=$MATTERMOST_MIN_VERSION image=$MATTERMOST_IMAGE"
 
 log 'stage 02: install Docker Engine and Docker Compose plugin'
 if ! command -v docker >/dev/null 2>&1; then
@@ -205,8 +268,9 @@ services:
       - ./caddy/data:/data
       - ./caddy/config:/config
 EOF
-    MATTERMOST_URL="https://releases.mattermost.com/$MATTERMOST_VERSION/mattermost-$MATTERMOST_VERSION-linux-$MATTERMOST_TARBALL_ARCH.tar.gz"
-    curl -fsSL "$MATTERMOST_URL" -o "$INSTALL_DIR/mattermost.tar.gz"
+    MATTERMOST_DOWNLOAD_URL="${MATTERMOST_DOWNLOAD_URL:-$(mattermost_download_url "$MATTERMOST_VERSION" "$MATTERMOST_TARBALL_ARCH")}"
+    log "downloading Mattermost from $MATTERMOST_DOWNLOAD_URL"
+    curl -fsSL "$MATTERMOST_DOWNLOAD_URL" -o "$INSTALL_DIR/mattermost.tar.gz"
     sudo rm -rf "$INSTALL_DIR/mattermost"
     sudo tar xzf "$INSTALL_DIR/mattermost.tar.gz" -C "$INSTALL_DIR"
     sudo mkdir -p "$INSTALL_DIR/mattermost/data" "$INSTALL_DIR/mattermost/logs" "$INSTALL_DIR/mattermost/plugins" "$INSTALL_DIR/mattermost/client/plugins"
@@ -293,6 +357,8 @@ if [ "$DRY_RUN" = false ]; then
   "install_dir": "$INSTALL_DIR",
   "mattermost_app_image": "$MATTERMOST_IMAGE",
   "mattermost_version": "$MATTERMOST_VERSION",
+  "mattermost_version_source": "$MATTERMOST_VERSION_SOURCE",
+  "mattermost_min_version": "$MATTERMOST_MIN_VERSION",
   "mattermost_deploy_mode": "$DEPLOY_MODE",
   "mattermost_db_image": "$DB_IMAGE",
   "mattermost_caddy_image": "$CADDY_IMAGE",

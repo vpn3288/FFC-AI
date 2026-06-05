@@ -18,6 +18,65 @@ def write_executable(path: Path, content: str) -> None:
 
 
 class MattermostScriptTests(unittest.TestCase):
+    def test_install_communication_uses_latest_mattermost_release(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            write_executable(
+                fakebin / "curl",
+                """
+                #!/usr/bin/env bash
+                if [ "${@: -1}" = "https://api.github.com/repos/mattermost/mattermost/releases/latest" ]; then
+                  printf '{"tag_name":"v11.7.2"}\\n'
+                  exit 0
+                fi
+                exit 0
+                """,
+            )
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  while [ "$#" -gt 0 ] && [[ "$1" == *=* ]]; do shift; done
+                  exec "$@"
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(fakebin / "docker", "#!/usr/bin/env bash\nexit 0\n")
+            env = os.environ.copy()
+            env.update({"PATH": f"{fakebin}:{env['PATH']}"})
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-communication-vps.sh"), "--dry-run", "--domain", "mattermost.example.test"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("mattermost_version=11.7.2 source=github_latest minimum=10.11.0", result.stdout)
+            self.assertIn("image=mattermost/mattermost-team-edition:11.7.2", result.stdout)
+
+    def test_install_communication_rejects_old_mattermost_version(self) -> None:
+        env = os.environ.copy()
+        env.update({"MATTERMOST_VERSION": "10.5.3"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-communication-vps.sh"), "--dry-run", "--domain", "mattermost.example.test"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("below required minimum 10.11.0", result.stdout + result.stderr)
+
     def test_bootstrap_allows_internal_bridge_and_syncs_admin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
