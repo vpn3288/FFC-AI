@@ -47,6 +47,7 @@ def main() -> int:
     bridge_p = sub.add_parser("bridge")
     bridge_p.add_argument("--host", default="127.0.0.1")
     bridge_p.add_argument("--port", type=int, default=8765)
+    sub.add_parser("telegram")
     args = parser.parse_args()
 
     ensure_runtime_dirs()
@@ -88,6 +89,10 @@ def main() -> int:
         from .bridge import serve
 
         serve(args.host, args.port)
+    elif args.cmd == "telegram":
+        from .telegram import serve
+
+        serve()
     return 0
 
 

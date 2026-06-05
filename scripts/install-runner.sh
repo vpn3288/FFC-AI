@@ -2,6 +2,7 @@
 set -euo pipefail
 
 DRY_RUN=false
+ENABLE_TELEGRAM="${ENABLE_TELEGRAM:-false}"
 STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
 WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-/srv/ai-workspaces}"
 INSTALL_ROOT="${AI_REMOTE_INSTALL_ROOT:-/opt/ai-remote-runner}"
@@ -17,7 +18,7 @@ read_lock() {
 }
 
 usage() {
-  printf 'usage: %s [--dry-run]\n' "$0"
+  printf 'usage: %s [--dry-run] [--enable-telegram]\n' "$0"
 }
 
 log() {
@@ -58,6 +59,7 @@ config_value() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
+    --enable-telegram) ENABLE_TELEGRAM=true ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
@@ -280,6 +282,11 @@ if [ "$DRY_RUN" = false ]; then
   PREVIOUS_MATTERMOST_BOT_TOKEN="$(config_value MATTERMOST_BOT_TOKEN)"
   PREVIOUS_MATTERMOST_SLASH_TOKEN="$(config_value MATTERMOST_SLASH_TOKEN)"
   PREVIOUS_AI_BRIDGE_SECRET_TRANSFER_METHOD="$(config_value AI_BRIDGE_SECRET_TRANSFER_METHOD)"
+  PREVIOUS_TELEGRAM_BOT_TOKEN="$(config_value TELEGRAM_BOT_TOKEN)"
+  PREVIOUS_TELEGRAM_ALLOWED_CHAT_IDS="$(config_value TELEGRAM_ALLOWED_CHAT_IDS)"
+  PREVIOUS_TELEGRAM_ALLOW_ALL_CHATS="$(config_value TELEGRAM_ALLOW_ALL_CHATS)"
+  PREVIOUS_TELEGRAM_API_BASE="$(config_value TELEGRAM_API_BASE)"
+  PREVIOUS_TELEGRAM_RESERVED_USD="$(config_value TELEGRAM_RESERVED_USD)"
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
@@ -300,7 +307,7 @@ EOF
   if [ -n "${CODEX_BASE_URL:-}" ]; then
     printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
-  for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD; do
+  for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_CHAT_IDS TELEGRAM_ALLOW_ALL_CHATS TELEGRAM_API_BASE TELEGRAM_RESERVED_USD; do
     value="$(printenv "$key" || true)"
     if [ -z "$value" ]; then
       case "$key" in
@@ -309,6 +316,11 @@ EOF
         MATTERMOST_BOT_TOKEN) value="$PREVIOUS_MATTERMOST_BOT_TOKEN" ;;
         MATTERMOST_SLASH_TOKEN) value="$PREVIOUS_MATTERMOST_SLASH_TOKEN" ;;
         AI_BRIDGE_SECRET_TRANSFER_METHOD) value="$PREVIOUS_AI_BRIDGE_SECRET_TRANSFER_METHOD" ;;
+        TELEGRAM_BOT_TOKEN) value="$PREVIOUS_TELEGRAM_BOT_TOKEN" ;;
+        TELEGRAM_ALLOWED_CHAT_IDS) value="$PREVIOUS_TELEGRAM_ALLOWED_CHAT_IDS" ;;
+        TELEGRAM_ALLOW_ALL_CHATS) value="$PREVIOUS_TELEGRAM_ALLOW_ALL_CHATS" ;;
+        TELEGRAM_API_BASE) value="$PREVIOUS_TELEGRAM_API_BASE" ;;
+        TELEGRAM_RESERVED_USD) value="$PREVIOUS_TELEGRAM_RESERVED_USD" ;;
       esac
     fi
     if [ -n "$value" ]; then
@@ -357,9 +369,37 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable ai-remote-runner.service
     sudo systemctl start ai-remote-runner.service
+    if [ "$ENABLE_TELEGRAM" = true ]; then
+      sudo tee /etc/systemd/system/ai-telegram-bot.service >/dev/null <<EOF
+[Unit]
+Description=AI Remote Runner Telegram Bot
+After=network-online.target ai-remote-runner.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$STATE_ROOT/config.env
+WorkingDirectory=$INSTALL_ROOT
+ExecStart=/usr/bin/python3 -m ai_remote_runner.cli telegram
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      sudo systemctl daemon-reload
+      if [ -n "$(config_value TELEGRAM_BOT_TOKEN)" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+        sudo systemctl enable --now ai-telegram-bot.service
+      else
+        log 'Telegram service installed but not started; run scripts/pair-telegram.sh after creating a BotFather token'
+      fi
+    fi
   else
     log 'would install /etc/systemd/system/ai-remote-runner.service'
     log 'would enable/start ai-remote-runner.service after bridge secret is generated'
+    if [ "$ENABLE_TELEGRAM" = true ]; then
+      log 'would install /etc/systemd/system/ai-telegram-bot.service; it starts after Telegram pairing supplies a bot token'
+    fi
   fi
 else
   if [ "$DRY_RUN" = false ]; then
@@ -370,13 +410,28 @@ source "${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}/config.env"
 exec python3 -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
 EOF
     sudo chmod +x "$INSTALL_ROOT/run-local.sh"
+    if [ "$ENABLE_TELEGRAM" = true ]; then
+      sudo tee "$INSTALL_ROOT/run-telegram-local.sh" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}/config.env"
+exec python3 -m ai_remote_runner.cli telegram
+EOF
+      sudo chmod +x "$INSTALL_ROOT/run-telegram-local.sh"
+    fi
   else
     log "would write $INSTALL_ROOT/run-local.sh"
+    if [ "$ENABLE_TELEGRAM" = true ]; then
+      log "would write $INSTALL_ROOT/run-telegram-local.sh"
+    fi
   fi
 fi
 
 log 'stage 09: connect runner to communication platform'
 log 'use scripts/pair-runner.sh with Mattermost URL, webhook URL, bot token, and bridge shared secret'
+if [ "$ENABLE_TELEGRAM" = true ]; then
+  log 'use scripts/pair-telegram.sh with a BotFather token and Telegram chat_id to enable Telegram'
+fi
 
 log 'stage 10: run provider smoke tests'
 python3 -m ai_remote_runner.cli providers
@@ -411,6 +466,8 @@ if [ "$DRY_RUN" = false ]; then
   "codex_status": "$CODEX_STATUS",
   "codex_remediation_zh": "$CODEX_REMEDIATION_ZH",
   "claude_model": "$CLAUDE_MODEL",
+  "telegram_enabled": $ENABLE_TELEGRAM,
+  "telegram_status": "pending_pairing",
   "snapshots": {
     "config_env": $SNAPSHOT_CONFIG_ENV_JSON
   },

@@ -57,7 +57,7 @@ class InstallRunnerScriptTests(unittest.TestCase):
                   exit 0
                 fi
                 if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
-                  cat > "${FAKE_SYSTEMD_UNIT:?}"
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
                   exit 0
                 fi
                 exec "$@"
@@ -107,7 +107,7 @@ class InstallRunnerScriptTests(unittest.TestCase):
                     "AI_DEFAULT_PROVIDER": "codex",
                     "OPENAI_API_KEY": "test-openai-key",
                     "CODEX_BASE_URL": "https://example.invalid/v1",
-                    "FAKE_SYSTEMD_UNIT": str(root / "ai-remote-runner.service"),
+                    "FAKE_SYSTEMD_DIR": str(root),
                 }
             )
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
@@ -133,6 +133,77 @@ class InstallRunnerScriptTests(unittest.TestCase):
             self.assertIn("AI_BRIDGE_SECRET_TRANSFER_METHOD=ssh\n", config)
             provider_selection = json.loads((state / "provider-selection.json").read_text(encoding="utf-8"))
             self.assertEqual(provider_selection, {"provider": "codex"})
+
+    def test_enable_telegram_installs_service_without_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            state = root / "state"
+            workspaces = root / "workspaces"
+            install = root / "install"
+            state.mkdir()
+            (state / "config.env").write_text("AI_BRIDGE_SHARED_SECRET=" + "A" * 43 + "\n", encoding="utf-8")
+
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  while [ "$#" -gt 0 ] && [[ "$1" == *=* ]]; do shift; done
+                  exec "$@"
+                fi
+                if [ "${1:-}" = "python3" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pip" ]; then
+                  exit 0
+                fi
+                if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
+                  exit 0
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(
+                fakebin / "codex",
+                """
+                #!/usr/bin/env bash
+                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\\n'; fi
+                exit 0
+                """,
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "AI_WORKSPACE_ROOT": str(workspaces),
+                    "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_PROVIDERS": "codex",
+                    "AI_DEFAULT_PROVIDER": "codex",
+                    "FAKE_SYSTEMD_DIR": str(root),
+                }
+            )
+            env.pop("TELEGRAM_BOT_TOKEN", None)
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--enable-telegram"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            telegram_unit = root / "ai-telegram-bot.service"
+            self.assertTrue(telegram_unit.exists())
+            self.assertIn("ai_remote_runner.cli telegram", telegram_unit.read_text(encoding="utf-8"))
+            self.assertIn("Telegram service installed but not started", result.stdout)
+            manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
+            self.assertTrue(manifest["telegram_enabled"])
 
     def test_default_provider_must_be_requested(self) -> None:
         env = os.environ.copy()

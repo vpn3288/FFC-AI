@@ -151,6 +151,14 @@ scripts/install-runner.sh --dry-run
 sudo scripts/install-runner.sh
 ```
 
+如果你还想让 Telegram 也能连到同一个 AI runner，安装时加上可选项：
+
+```bash
+sudo scripts/install-runner.sh --enable-telegram
+```
+
+这会额外安装 `ai-telegram-bot.service`。如果还没有 BotFather token，服务会先装好但不启动，后面配对时再启动。
+
 默认会尝试启用两个 provider：
 
 ```text
@@ -386,7 +394,84 @@ sudo systemctl restart ai-remote-runner
 sudo /opt/ai-remote-runner/run-local.sh
 ```
 
-## 9. 验证是否打通
+## 9. 可选：配对 Telegram
+
+Telegram 不需要再部署聊天服务器，只需要一个 Telegram BotFather token。
+
+在 Telegram 里：
+
+- 找到 `@BotFather`。
+- 发送 `/newbot` 创建机器人。
+- 复制 BotFather 给你的 bot token。
+- 打开你自己的 bot，随便发一条消息，比如 `/start`。
+
+如果你已经知道 Telegram ID，可以直接配对：
+
+```bash
+cd FFC-AI
+sudo scripts/pair-telegram.sh \
+  --bot-token "BotFather给你的机器人密钥" \
+  --telegram-id 你的TelegramID
+```
+
+这样会直接写入配置并启动 `ai-telegram-bot.service`。
+
+如果你不想把 token 放在命令行里，也可以把 token 放到 runner 机器的 root 只读文件里：
+
+```bash
+sudo install -m 600 /dev/null /root/ffc-ai-telegram-token
+sudo nano /root/ffc-ai-telegram-token
+```
+
+如果你还不知道自己的 Telegram `chat_id`，先用发现模式启动：
+
+```bash
+cd FFC-AI
+sudo scripts/pair-telegram.sh \
+  --bot-token-file /root/ffc-ai-telegram-token \
+  --discover-chat-id
+```
+
+然后给 bot 发送 `/ai 状态`，它会回复未配对提示，里面包含 `chat_id`。这个模式不会执行 AI 命令。
+
+如果只是临时测试，也可以先允许所有 chat：
+
+```bash
+cd FFC-AI
+sudo scripts/pair-telegram.sh \
+  --bot-token-file /root/ffc-ai-telegram-token \
+  --allow-all-chats
+```
+
+临时测试完成后，建议重新配对成只允许你的 chat：
+
+```bash
+sudo scripts/pair-telegram.sh \
+  --bot-token-file /root/ffc-ai-telegram-token \
+  --telegram-id 你的TelegramID
+```
+
+配对脚本会写入：
+
+```text
+/var/lib/ai-remote-runner/config.env
+```
+
+并启动或重启：
+
+```text
+ai-telegram-bot.service
+```
+
+之后你可以在 Telegram 里发送：
+
+```text
+/ai 状态
+/ai 帮助
+请总结这个项目现在还有哪些待办
+```
+
+## 10. 验证是否打通
 
 ### 验证 runner 自己
 
@@ -459,7 +544,7 @@ sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 
 如果这些能返回结果，说明 slash command 已经能到达 runner。
 
-## 10. 当前支持的 `/ai` 命令
+## 11. 当前支持的 `/ai` 命令
 
 下面是当前 `src/ai_remote_runner/commands.py` 和 `executor.py` 实际支持的主要命令。
 
@@ -563,7 +648,7 @@ sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 /ai 取消
 ```
 
-## 11. 常见问题
+## 12. 常见问题
 
 ### 1. 用 1Panel 部署 Mattermost，会不会少功能？
 
@@ -633,7 +718,7 @@ sudo scripts/validate-integration.sh
 
 以及 manifest 文件为准。
 
-## 12. 回滚和卸载
+## 13. 回滚和卸载
 
 ### 回滚 runner
 
@@ -670,7 +755,7 @@ sudo scripts/rollback-communication.sh --delete-volumes
 
 请确认你真的不需要里面的数据。
 
-## 13. 本地测试
+## 14. 本地测试
 
 开发或改脚本后可以跑：
 
@@ -685,7 +770,7 @@ scripts/smoke-test.sh
 - 测试 `/ai 状态` 解析。
 - 测试命令索引、provider 探测、指令追加、预算记录。
 
-## 14. 安全提醒
+## 15. 安全提醒
 
 - 不要把 `AI_BRIDGE_SHARED_SECRET` 发到聊天里。
 - 不要把 Mattermost slash token 发到聊天里。
@@ -693,7 +778,7 @@ scripts/smoke-test.sh
 - 凭据应该走 credential broker，本地加密保存。
 - `pair-runner.sh` 已经要求 secret 从文件或 stdin 读取，这是为了避免 shell history 和进程列表泄露。
 
-## 15. 当前脚本状态总结
+## 16. 当前脚本状态总结
 
 当前仓库已经有了核心骨架：
 
