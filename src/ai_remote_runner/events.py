@@ -5,7 +5,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def status_event(run_id: str, phase: str, message_zh: str, provider: str = "runner") -> dict[str, Any]:
@@ -22,14 +22,22 @@ def status_event(run_id: str, phase: str, message_zh: str, provider: str = "runn
 
 
 class EventSink:
-    def __init__(self, path: Path, webhook_url: str | None = None) -> None:
+    def __init__(self, path: Path, webhook_url: str | None = None, observer: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.path = path
         self.webhook_url = webhook_url
+        self.observer = observer
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def emit(self, event: dict[str, Any]) -> None:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        if self.observer:
+            try:
+                self.observer(event)
+            except Exception as exc:  # pragma: no cover - observer failures are best-effort status fanout.
+                failure = {"event": event, "observer_error": str(exc), "time": int(time.time())}
+                with self.path.with_suffix(".observer-failures.jsonl").open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(failure, ensure_ascii=False, sort_keys=True) + "\n")
         if self.webhook_url:
             self._post_mattermost(event)
 

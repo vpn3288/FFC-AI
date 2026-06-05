@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .budget import BudgetLedger
 from .commands import command_index
@@ -26,6 +27,7 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("anthropic_or_openai_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")),
     ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*(?!<|\\$|\\{)[A-Za-z0-9_-]{32,}\b")),
 )
+DEFAULT_TASK_RESERVED_USD = 0.05
 
 
 @dataclass
@@ -33,6 +35,7 @@ class RunnerRuntime:
     state: Path
     workspaces: Path
     webhook_url: str | None = None
+    event_observer: Callable[[dict[str, Any]], None] | None = None
 
     @classmethod
     def default(cls) -> "RunnerRuntime":
@@ -56,14 +59,23 @@ class RunnerRuntime:
 
     @property
     def events(self) -> EventSink:
-        return EventSink(self.state / "events.jsonl", self.webhook_url)
+        return EventSink(self.state / "events.jsonl", self.webhook_url, self.event_observer)
+
+    def with_event_observer(self, observer: Callable[[dict[str, Any]], None]) -> "RunnerRuntime":
+        return RunnerRuntime(self.state, self.workspaces, self.webhook_url, observer)
 
     @property
     def policy_path(self) -> Path:
         return self.state / "conversation-policy.json"
 
     def load_policy(self) -> dict[str, Any]:
-        default = {"policy": "continue", "conversation_id": "default", "auto_compact_enabled": False, "permission_scope": "chat"}
+        default = {
+            "policy": "continue",
+            "conversation_id": "default",
+            "auto_compact_enabled": True,
+            "auto_compact_threshold_percent": 80,
+            "permission_scope": "chat",
+        }
         if self.policy_path.exists():
             return default | json.loads(self.policy_path.read_text(encoding="utf-8"))
         return default
@@ -119,6 +131,35 @@ def _secret_findings(text: str) -> list[str]:
 def _provider_capabilities(provider: str) -> dict[str, Any]:
     status = next((item for item in provider_status() if item.get("provider") == provider), None)
     return status.get("capabilities", {}) if status else {}
+
+
+def _context_threshold(policy: dict[str, Any]) -> int:
+    try:
+        value = int(policy.get("auto_compact_threshold_percent", 80))
+    except (TypeError, ValueError):
+        return 80
+    return min(90, max(70, value))
+
+
+def _default_reserved_usd() -> float:
+    raw = os.environ.get("AI_TASK_RESERVED_USD", str(DEFAULT_TASK_RESERVED_USD))
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_TASK_RESERVED_USD
+    return max(0.0, value)
+
+
+def _prompt_with_history(prompt: str, transcript: str) -> str:
+    if not transcript:
+        return prompt
+    return (
+        "# 持续对话历史\n"
+        "下面是同一个对话窗口中的最近公开问答，请在回答新问题时延续这些上下文和用户偏好。\n\n"
+        f"{transcript}\n\n"
+        "# 当前用户消息\n"
+        f"{prompt}"
+    )
 
 
 def _install_manifest(rt: RunnerRuntime) -> dict[str, Any]:
@@ -204,14 +245,24 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "budget_status":
         return _ok(request_id, run_id, "预算已生成", rt.ledger.load())
     if action == "context_status":
-        prompt_text = envelope.get("raw_text", "")
-        used = estimate_tokens(prompt_text)
-        state = ContextState("unknown", envelope.get("provider") or _selected_provider(rt) or "runner", 200000, used)
-        return _ok(request_id, run_id, "上下文状态已生成", state.__dict__ | {"context_used_percent": state.context_used_percent})
+        policy = rt.load_policy()
+        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        conversation_id = envelope.get("conversation_id") or policy.get("conversation_id") or "default"
+        existing = rt.contexts.load(conversation_id, provider)
+        state = ContextState(
+            conversation_id,
+            provider,
+            existing["context_limit_tokens"],
+            existing["context_used_tokens"],
+            existing.get("measurement", "estimated"),
+            _context_threshold(policy),
+            int(existing.get("hard_stop_threshold_percent", 95)),
+        )
+        return _ok(request_id, run_id, "上下文状态已生成", state.__dict__ | {"context_used_percent": state.context_used_percent, "policy": policy})
     if action == "task.run":
         prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
         provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
-        reserved_usd = float(envelope.get("reserved_usd", 1.0))
+        reserved_usd = float(envelope.get("reserved_usd", _default_reserved_usd()))
         budget_ok, budget_reason = rt.ledger.can_reserve(reserved_usd)
         if not budget_ok:
             return _error(request_id, budget_reason, f"Budget preflight failed before provider start: {budget_reason}")
@@ -240,8 +291,11 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         existing = rt.contexts.load(conversation_id, provider)
         if existing.get("summary_artifact") and Path(existing["summary_artifact"]).exists():
             instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(existing['summary_artifact']).read_text(encoding='utf-8')}\n"
-        used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, prompt)
-        context_state = ContextState(conversation_id, provider, existing["context_limit_tokens"], used)
+        threshold = _context_threshold(policy)
+        transcript = "" if policy.get("policy") == "new_each_request" else rt.contexts.transcript(conversation_id, provider)
+        provider_prompt = _prompt_with_history(prompt, transcript)
+        used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, provider_prompt)
+        context_state = ContextState(conversation_id, provider, existing["context_limit_tokens"], used, auto_compact_threshold_percent=threshold)
         if context_state.hard_stop:
             return _error(
                 request_id,
@@ -257,26 +311,38 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
                 policy["conversation_id"] = conversation_id
                 rt.save_policy(policy)
                 instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(compacted['summary_artifact']).read_text(encoding='utf-8')}\n"
+                transcript = rt.contexts.transcript(conversation_id, provider)
+                provider_prompt = _prompt_with_history(prompt, transcript)
         workspace = rt.workspaces / workspace_id
         workspace.mkdir(parents=True, exist_ok=True)
         emit = rt.events.emit
         if provider == "codex":
-            result = invoke_codex(prompt, workspace, rt.ledger, instruction_prompt=instruction_prompt, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
+            result = invoke_codex(provider_prompt, workspace, rt.ledger, instruction_prompt=instruction_prompt, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
         else:
-            result = invoke_claude(prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=policy.get("permission_scope", "chat"))
+            result = invoke_claude(provider_prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=policy.get("permission_scope", "chat"))
         rt.contexts.add_exchange(conversation_id, provider, instruction_prompt, prompt, result.output_text)
+        data = {
+            "provider": result.provider,
+            "status": result.status,
+            "output": result.output_text,
+            "conversation_id": conversation_id,
+            "global_md_sha256": global_info["sha256"],
+            "project_md_sha256": project_info["sha256"],
+        }
+        if result.status != "completed":
+            return {
+                "request_id": request_id,
+                "status": "error",
+                "run_id": run_id,
+                "message_zh": "执行失败",
+                "data": data,
+                "error": {"code": f"{result.provider}_{result.status}", "detail": result.output_text or result.status},
+            }
         return _ok(
             request_id,
             run_id,
             "任务已完成",
-            {
-                "provider": result.provider,
-                "status": result.status,
-                "output": result.output_text,
-                "conversation_id": conversation_id,
-                "global_md_sha256": global_info["sha256"],
-                "project_md_sha256": project_info["sha256"],
-            },
+            data,
         )
     if action == "compact_context":
         policy = rt.load_policy()
@@ -345,13 +411,35 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         scope = "global" if action.startswith("global_") else "project"
         text = " ".join(args)
         return _ok(request_id, run_id, "指令已替换", rt.instructions.write(scope, text, workspace_id, append=False))
+    if action == "conversation_status":
+        data = rt.load_policy()
+        data["policy"] = "continue"
+        data["last_action"] = action
+        rt.save_policy(data)
+        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        context = rt.contexts.load(data.get("conversation_id") or "default", provider)
+        return _ok(
+            request_id,
+            run_id,
+            "长期对话已启用",
+            {
+                "policy": data,
+                "conversation_id": data.get("conversation_id") or "default",
+                "provider": provider,
+                "context_used_tokens": context.get("context_used_tokens", 0),
+                "context_used_percent": context.get("context_used_percent", 0),
+                "auto_compact_threshold_percent": _context_threshold(data),
+                "recent_exchanges": len(context.get("exchanges", [])),
+            },
+        )
     if action in {"new_conversation", "continue_conversation", "set_policy_new_each_request", "set_policy_continue"}:
         data = rt.load_policy()
         if action == "new_conversation":
             data["conversation_id"] = str(uuid.uuid4())
+            data["policy"] = "continue"
         elif action == "set_policy_new_each_request":
             data["policy"] = "new_each_request"
-        elif action == "set_policy_continue":
+        elif action in {"set_policy_continue", "continue_conversation"}:
             data["policy"] = "continue"
         data["last_action"] = action
         rt.save_policy(data)
@@ -368,6 +456,12 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         data["last_action"] = action
         rt.save_policy(data)
         return _ok(request_id, run_id, "执行权限模式已更新", data)
+    if action == "cancel":
+        data = {"cancel_requested": True, "detail": "取消标记已记录；当前版本不会强制终止已经启动的 provider 进程。"}
+        _write_json_state(rt.state / "cancel-request.json", data | {"time": run_id})
+        return _ok(request_id, run_id, "取消标记已记录", data)
+    if action == "confirm":
+        return _error(request_id, "confirmation_not_found", "没有找到可确认的待执行请求，或确认已过期。")
     if action == "workspace.list":
         rt.workspaces.mkdir(parents=True, exist_ok=True)
         return _ok(request_id, run_id, "工作区列表已生成", {"workspaces": sorted(path.name for path in rt.workspaces.iterdir() if path.is_dir())})

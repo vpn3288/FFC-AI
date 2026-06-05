@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -15,11 +16,17 @@ class ContextStore:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def path(self, conversation_id: str) -> Path:
-        return self.root / f"{conversation_id}.json"
+    def path(self, conversation_id: str, provider: str = "claude-code") -> Path:
+        provider_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", provider or "runner")
+        return self.root / f"{conversation_id}.{provider_id}.json"
 
     def load(self, conversation_id: str, provider: str = "claude-code", limit: int = 200000) -> dict[str, Any]:
-        path = self.path(conversation_id)
+        path = self.path(conversation_id, provider)
+        legacy_path = self.root / f"{conversation_id}.json"
+        if not path.exists() and legacy_path.exists():
+            legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+            if legacy.get("provider", provider) == provider:
+                return legacy
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
         return {
@@ -40,8 +47,29 @@ class ContextStore:
         state["context_used_percent"] = int((state["context_used_tokens"] / limit) * 100)
         state.setdefault("exchanges", []).append({"time": int(time.time()), "texts": list(texts)})
         state["exchanges"] = state["exchanges"][-20:]
-        atomic_write_json(self.path(conversation_id), state)
+        state["provider"] = provider
+        atomic_write_json(self.path(conversation_id, provider), state)
         return state
+
+    def transcript(self, conversation_id: str, provider: str = "claude-code", limit: int = 12, max_chars: int = 24000) -> str:
+        state = self.load(conversation_id, provider)
+        lines: list[str] = []
+        for index, exchange in enumerate(state.get("exchanges", [])[-limit:], 1):
+            texts = exchange.get("texts", [])
+            if len(texts) >= 2:
+                prompt = str(texts[-2]).strip()
+                answer = str(texts[-1]).strip()
+            else:
+                prompt = str(texts[0]).strip() if texts else ""
+                answer = ""
+            if prompt:
+                lines.append(f"用户 {index}: {prompt}")
+            if answer:
+                lines.append(f"助手 {index}: {answer}")
+        text = "\n\n".join(lines)
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return text
 
     def compact(self, conversation_id: str, provider: str = "claude-code") -> dict[str, Any]:
         old = self.load(conversation_id, provider)
@@ -70,5 +98,5 @@ class ContextStore:
         new_state["context_used_tokens"] = estimate_tokens(summary_text)
         new_state["context_used_percent"] = int((new_state["context_used_tokens"] / max(1, int(new_state["context_limit_tokens"]))) * 100)
         new_state["summary_artifact"] = str(summary_path)
-        atomic_write_json(self.path(new_id), new_state)
+        atomic_write_json(self.path(new_id, provider), new_state)
         return {"old_conversation_id": conversation_id, "new_conversation_id": new_id, "summary_artifact": str(summary_path)}

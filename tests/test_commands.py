@@ -34,6 +34,7 @@ class CommandTests(unittest.TestCase):
     def test_context_aliases_match_documented_commands(self) -> None:
         self.assertEqual(parse_command("/ai context")["canonical_action"], "context_status")
         self.assertEqual(parse_command("/ai 整理上下文")["canonical_action"], "compact_context")
+        self.assertEqual(parse_command("/ai 对话")["canonical_action"], "conversation_status")
 
     def test_permission_mode_commands_require_confirmation_when_risky(self) -> None:
         edit = parse_command("/ai 编辑模式 开启")

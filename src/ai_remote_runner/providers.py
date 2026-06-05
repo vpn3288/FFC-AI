@@ -180,7 +180,7 @@ CODEX_EXEC_TEMPLATE = [
 ]
 
 
-CLAUDE_DEFAULT_MODEL = "claude-opus-4-6-20260130"
+CLAUDE_DEFAULT_MODEL = ""
 CLAUDE_MODEL_FALLBACKS = [
     "claude-opus-4-6-thinking",
     "claude-opus-4-6",
@@ -250,22 +250,21 @@ def invoke_claude(
     }.get(permission_scope, CLAUDE_CHAT_ONLY_TEMPLATE)
     command = [
         *template,
-        "--model",
-        os.environ.get("CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL),
         "--max-turns",
         os.environ.get("CLAUDE_MAX_TURNS", "12"),
         "--max-budget-usd",
         str(reserved_usd),
         "--append-system-prompt",
         instruction_prompt,
-        "--",
-        prompt,
     ]
+    claude_model = os.environ.get("CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL).strip()
+    if claude_model:
+        command.extend(["--model", claude_model])
     if emit:
         emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "calling_model"})
     env = {key: value for key in SAFE_ENV_KEYS if (value := os.environ.get(key))}
     try:
-        result = subprocess.run(command, cwd=workspace, env=env, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+        result = subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
         if emit:
@@ -275,15 +274,24 @@ def invoke_claude(
     output_text = result.stdout
     try:
         raw = json.loads(result.stdout)
-        output_text = str(raw.get("result") or raw.get("message") or result.stdout)
+        raw_output = raw.get("result")
+        if raw_output is None:
+            raw_output = raw.get("message")
+        output_text = str(raw_output or "")
     except json.JSONDecodeError:
         pass
+    if result.returncode != 0 and not output_text:
+        output_text = result.stderr or result.stdout
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
     ledger.complete(actual_run_id, _actual_cost_usd(raw), status="completed" if result.returncode == 0 else "failed")
+    status = "completed" if result.returncode == 0 else "failed"
     if emit:
-        emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "done" if result.returncode == 0 else "error"})
-    return ProviderResult(actual_run_id, "claude-code", "completed" if result.returncode == 0 else "failed", output_text, raw, result.returncode)
+        event = {"run_id": actual_run_id, "provider": "claude-code", "phase": "done" if status == "completed" else "error"}
+        if status != "completed":
+            event["error"] = output_text or f"returncode={result.returncode}"
+        emit(event)
+    return ProviderResult(actual_run_id, "claude-code", status, output_text, raw, result.returncode)
 
 
 def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_prompt: str = "") -> list[str]:
@@ -328,6 +336,8 @@ def invoke_codex(
         result = subprocess.run(command, cwd=workspace, text=True, capture_output=True, timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
+        if emit:
+            emit({"run_id": actual_run_id, "provider": "codex", "phase": "error", "error": "timeout"})
         return ProviderResult(actual_run_id, "codex", "timeout", "", None, -1)
     if output_file.exists():
         output_text = output_file.read_text(encoding="utf-8")
@@ -335,5 +345,11 @@ def invoke_codex(
         output_text = result.stdout or result.stderr
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
-    ledger.complete(actual_run_id, None, status="completed" if result.returncode == 0 else "failed")
-    return ProviderResult(actual_run_id, "codex", "completed" if result.returncode == 0 else "failed", output_text, None, result.returncode)
+    status = "completed" if result.returncode == 0 else "failed"
+    ledger.complete(actual_run_id, None, status=status)
+    if emit:
+        event = {"run_id": actual_run_id, "provider": "codex", "phase": "done" if status == "completed" else "error"}
+        if status != "completed":
+            event["error"] = output_text or f"returncode={result.returncode}"
+        emit(event)
+    return ProviderResult(actual_run_id, "codex", status, output_text, None, result.returncode)

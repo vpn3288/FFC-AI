@@ -77,11 +77,47 @@ class ProviderTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok", "total_cost_usd": 0.02}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+            with (
+                patch.dict("os.environ", {"CLAUDE_MODEL": ""}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+            ):
                 result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.1, permission_scope="edit")
             self.assertEqual(result.status, "completed")
             self.assertIn("Read,Grep,Glob,Edit,Write", run.call_args.args[0])
+            self.assertNotIn("--model", run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs["input"], "prompt")
+            self.assertNotIn("prompt", run.call_args.args[0])
             self.assertAlmostEqual(ledger.load()["daily_used_usd_estimate"], 0.02)
+
+    def test_invoke_claude_uses_model_only_when_explicitly_configured(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict("os.environ", {"CLAUDE_MODEL": "sonnet"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+            ):
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+            command = run.call_args.args[0]
+            self.assertIn("--model", command)
+            self.assertEqual(command[command.index("--model") + 1], "sonnet")
+
+    def test_invoke_claude_chat_template_disables_all_tools(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+            command = run.call_args.args[0]
+            self.assertIn("--tools", command)
+            self.assertEqual(command[command.index("--tools") + 1], "")
+            self.assertNotIn("--disallowedTools", command)
 
     def test_provider_probe_timeout_marks_unavailable(self) -> None:
         import subprocess

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ai_remote_runner.commands import parse_command
+from ai_remote_runner.commands import COMMANDS
 from ai_remote_runner.executor import RunnerRuntime, execute
 from ai_remote_runner.providers import ProviderResult
 
@@ -19,6 +20,18 @@ class ExecutorTests(unittest.TestCase):
             response = execute(parsed, {"request_id": "r1", "raw_text": "/ai 状态"}, runtime)
             self.assertEqual(response["status"], "accepted")
             self.assertIn("providers", response["data"])
+
+    def test_command_matrix_has_no_unsupported_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            for parts, spec in COMMANDS.items():
+                parsed = parse_command("/ai " + " ".join(parts))
+                envelope = {"request_id": ".".join(parts), "raw_text": "/ai " + " ".join(parts)}
+                if spec.requires_confirmation:
+                    envelope["confirmed"] = True
+                response = execute(parsed, envelope, runtime)
+                error = response.get("error") or {}
+                self.assertNotEqual(error.get("code"), "unsupported_action", parts)
 
     def test_status_includes_current_workspace_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,8 +138,38 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn("global_md_sha256", response["data"])
             self.assertIn("project_md_sha256", response["data"])
             invoke.assert_called_once()
-            context_file = runtime.state / "contexts" / "default.json"
+            context_file = runtime.state / "contexts" / "default.claude-code.json"
             self.assertTrue(context_file.exists())
+
+    def test_task_run_default_budget_reservation_is_chat_sized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                execute(parsed, {"request_id": "r8b", "raw_text": "do work"}, runtime)
+            self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 0.05)
+
+    def test_continue_policy_injects_recent_transcript_into_provider_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.contexts.add_exchange("default", "claude-code", "instructions", "remember alpha", "alpha saved")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "what did I ask?"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                execute(parsed, {"request_id": "hist1", "raw_text": "what did I ask?"}, runtime)
+            provider_prompt = invoke.call_args.args[0]
+            self.assertIn("remember alpha", provider_prompt)
+            self.assertIn("alpha saved", provider_prompt)
+
+    def test_conversation_command_enables_long_memory_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 每次新对话"), {"request_id": "conv1", "raw_text": "/ai 每次新对话"}, runtime)
+            response = execute(parse_command("/ai 对话"), {"request_id": "conv2", "raw_text": "/ai 对话"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(response["data"]["policy"]["policy"], "continue")
+            self.assertEqual(response["data"]["auto_compact_threshold_percent"], 80)
 
     def test_task_run_rejects_secret_like_instruction_before_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,7 +202,7 @@ class ExecutorTests(unittest.TestCase):
             runtime.ledger.save(data)
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
             with patch("ai_remote_runner.executor.invoke_claude") as invoke:
-                response = execute(parsed, {"request_id": "bud1", "raw_text": "do work"}, runtime)
+                response = execute(parsed, {"request_id": "bud1", "raw_text": "do work", "reserved_usd": 1.0}, runtime)
             self.assertEqual(response["status"], "error")
             self.assertEqual(response["error"]["code"], "daily_budget_exceeded")
             invoke.assert_not_called()
@@ -170,7 +213,7 @@ class ExecutorTests(unittest.TestCase):
             old_state = runtime.contexts.load("default", "claude-code", limit=100)
             old_state["context_used_tokens"] = 94
             old_state["context_limit_tokens"] = 100
-            runtime.contexts.path("default").write_text(json.dumps(old_state), encoding="utf-8")
+            runtime.contexts.path("default", "claude-code").write_text(json.dumps(old_state), encoding="utf-8")
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
             response = execute(parsed, {"request_id": "ctx1", "raw_text": "do work"}, runtime)
             self.assertEqual(response["status"], "error")
@@ -208,7 +251,7 @@ class ExecutorTests(unittest.TestCase):
             old_state = runtime.contexts.load("default", "claude-code", limit=100)
             old_state["context_used_tokens"] = 79
             old_state["context_limit_tokens"] = 100
-            runtime.contexts.path("default").write_text(json.dumps(old_state), encoding="utf-8")
+            runtime.contexts.path("default", "claude-code").write_text(json.dumps(old_state), encoding="utf-8")
 
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "x"}, "requires_confirmation": False}
             fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
@@ -235,7 +278,7 @@ class ExecutorTests(unittest.TestCase):
             old_state = runtime.contexts.load("default", "claude-code", limit=100)
             old_state["context_used_tokens"] = 79
             old_state["context_limit_tokens"] = 100
-            runtime.contexts.path("default").write_text(json.dumps(old_state), encoding="utf-8")
+            runtime.contexts.path("default", "claude-code").write_text(json.dumps(old_state), encoding="utf-8")
 
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "x"}, "requires_confirmation": False}
             fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)

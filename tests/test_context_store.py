@@ -15,6 +15,25 @@ class ContextStoreTests(unittest.TestCase):
             second = store.add_exchange("c1", "claude-code", "world")
             self.assertGreater(second["context_used_tokens"], first["context_used_tokens"])
 
+    def test_transcript_includes_recent_user_and_assistant_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ContextStore(Path(tmp))
+            store.add_exchange("c1", "claude-code", "instructions", "remember alpha", "alpha saved")
+            transcript = store.transcript("c1", "claude-code")
+            self.assertIn("remember alpha", transcript)
+            self.assertIn("alpha saved", transcript)
+
+    def test_context_isolated_by_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ContextStore(Path(tmp))
+            store.add_exchange("c1", "claude-code", "instructions", "claude memory", "claude answer")
+            store.add_exchange("c1", "codex", "instructions", "codex memory", "codex answer")
+
+            self.assertIn("claude memory", store.transcript("c1", "claude-code"))
+            self.assertNotIn("codex memory", store.transcript("c1", "claude-code"))
+            self.assertIn("codex memory", store.transcript("c1", "codex"))
+            self.assertNotEqual(store.path("c1", "claude-code"), store.path("c1", "codex"))
+
     def test_compact_creates_summary_and_new_conversation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = ContextStore(Path(tmp))

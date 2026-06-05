@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from .storage import atomic_write_json
 
 
 MAX_TELEGRAM_MESSAGE_CHARS = 3900
+DEFAULT_TELEGRAM_RESERVED_USD = 0.05
 
 
 @dataclass(frozen=True)
@@ -24,7 +26,7 @@ class TelegramConfig:
     allowed_chat_ids: set[str]
     api_base: str = "https://api.telegram.org"
     poll_timeout_seconds: int = 30
-    reserved_usd: float = 1.0
+    reserved_usd: float = DEFAULT_TELEGRAM_RESERVED_USD
 
     @classmethod
     def from_env(cls) -> "TelegramConfig":
@@ -38,7 +40,7 @@ class TelegramConfig:
             allowed_chat_ids=allowed,
             api_base=os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
             poll_timeout_seconds=int(os.environ.get("TELEGRAM_POLL_TIMEOUT_SECONDS", "30")),
-            reserved_usd=float(os.environ.get("TELEGRAM_RESERVED_USD", "1.0")),
+            reserved_usd=float(os.environ.get("TELEGRAM_RESERVED_USD", str(DEFAULT_TELEGRAM_RESERVED_USD))),
         )
 
 
@@ -168,6 +170,98 @@ class TelegramBot:
             return f"{response.get('message_zh', response.get('status', 'OK'))}\n{detail}"
         return str(response.get("message_zh") or response.get("status") or "OK")
 
+    def event_text(self, event: dict[str, Any]) -> str | None:
+        phase = str(event.get("phase") or "")
+        provider = str(event.get("provider") or "runner")
+        message = str(event.get("public_message_zh") or "")
+        if phase == "queued":
+            return f"已收到，正在排队。provider={provider}"
+        if phase == "calling_model":
+            return f"正在调用 {provider}，请稍等。"
+        if phase == "warning":
+            return message or "上下文接近阈值。"
+        if phase == "error":
+            return f"{provider} 执行出错：{event.get('error') or message or 'unknown'}"
+        return None
+
+    def default_provider(self) -> str:
+        path = self.runtime.state / "provider-selection.json"
+        if path.exists():
+            try:
+                provider = json.loads(path.read_text(encoding="utf-8")).get("provider")
+                if provider:
+                    return str(provider)
+            except json.JSONDecodeError:
+                pass
+        return "claude-code"
+
+    def status_interval_seconds(self) -> float:
+        raw = os.environ.get("TELEGRAM_STATUS_INTERVAL_SECONDS", "30")
+        try:
+            value = float(raw)
+        except ValueError:
+            return 30.0
+        return max(0.0, value)
+
+    def heartbeat_text(self, provider: str, started_at: float) -> str:
+        elapsed = max(1, int(time.time() - started_at))
+        return f"仍在运行，已等待 {elapsed}s。provider={provider}，可能是在模型排队、联网等待或生成中。"
+
+    def execute_with_status(
+        self,
+        chat_id: str,
+        parsed: dict[str, Any],
+        envelope: dict[str, Any],
+        runtime: RunnerRuntime,
+        provider: str,
+    ) -> dict[str, Any]:
+        holder: dict[str, dict[str, Any]] = {}
+
+        def run() -> None:
+            try:
+                holder["response"] = execute(parsed, envelope, runtime)
+            except Exception as exc:  # pragma: no cover - defensive guard for daemon mode
+                holder["response"] = {
+                    "request_id": envelope.get("request_id"),
+                    "status": "failed",
+                    "error": {"code": "telegram_execute_failed", "detail": str(exc)},
+                    "data": {},
+                }
+
+        started_at = time.time()
+        worker = threading.Thread(target=run, name="telegram-runner-task", daemon=True)
+        worker.start()
+        interval = self.status_interval_seconds()
+        if interval <= 0:
+            worker.join()
+            return holder.get("response") or {
+                "request_id": envelope.get("request_id"),
+                "status": "failed",
+                "error": {"code": "telegram_execute_missing_response", "detail": "missing_response"},
+                "data": {},
+            }
+        while worker.is_alive():
+            worker.join(interval)
+            if worker.is_alive():
+                self.client.send_message(chat_id, self.heartbeat_text(provider, started_at))
+        return holder.get("response") or {
+            "request_id": envelope.get("request_id"),
+            "status": "failed",
+            "error": {"code": "telegram_execute_missing_response", "detail": "missing_response"},
+            "data": {},
+        }
+
+    def task_runtime(self, chat_id: str) -> tuple[RunnerRuntime, str]:
+        provider = self.default_provider()
+        self.client.send_message(chat_id, f"已收到任务，准备调用 {provider}。")
+
+        def notify(event: dict[str, Any]) -> None:
+            text = self.event_text(event)
+            if text:
+                self.client.send_message(chat_id, text)
+
+        return self.runtime.with_event_observer(notify), provider
+
     def execute_text(self, chat_id: str, message: dict[str, Any], text: str) -> dict[str, Any]:
         request_id = f"telegram:{chat_id}:{message.get('message_id') or uuid.uuid4()}"
         parsed = self.parsed_for_text(text)
@@ -179,6 +273,9 @@ class TelegramBot:
             if not item:
                 return {"request_id": request_id, "status": "rejected", "error": {"code": "confirmation_not_found", "detail": "confirmation_not_found"}, "data": {}}
             item["envelope"]["confirmed"] = True
+            if item["parsed"].get("canonical_action") == "task.run":
+                runtime, provider = self.task_runtime(chat_id)
+                return self.execute_with_status(chat_id, item["parsed"], item["envelope"], runtime, provider)
             return execute(item["parsed"], item["envelope"], self.runtime)
 
         envelope = {
@@ -190,7 +287,12 @@ class TelegramBot:
             "raw_text": text,
             "reserved_usd": self.config.reserved_usd,
         }
-        response = execute(parsed, envelope, self.runtime)
+        runtime = self.runtime
+        if parsed.get("canonical_action") == "task.run":
+            runtime, provider = self.task_runtime(chat_id)
+            response = self.execute_with_status(chat_id, parsed, envelope, runtime, str(provider))
+        else:
+            response = execute(parsed, envelope, runtime)
         if response.get("status") == "needs_confirmation":
             token = response.get("data", {}).get("confirmation_token")
             if token:

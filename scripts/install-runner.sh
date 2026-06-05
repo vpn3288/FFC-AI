@@ -6,7 +6,8 @@ ENABLE_TELEGRAM="${ENABLE_TELEGRAM:-false}"
 STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
 WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-/srv/ai-workspaces}"
 INSTALL_ROOT="${AI_REMOTE_INSTALL_ROOT:-/opt/ai-remote-runner}"
-CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6-20260130}"
+RUNNER_PYTHON="$INSTALL_ROOT/.venv/bin/python"
+CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-}"
 AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -133,7 +134,7 @@ log "detected os=$OS_ID arch=$ARCH systemd=$SYSTEMD wsl=$WSL"
 log 'stage 02: install system packages required by runner'
 if command -v apt-get >/dev/null 2>&1; then
   run sudo apt-get update
-  apt_install python3 python3-pip ca-certificates curl git openssl gpg
+  apt_install python3 python3-pip python3-venv ca-certificates curl git openssl gpg
 else
   log 'apt-get unavailable; package installation skipped and must be handled externally'
 fi
@@ -190,14 +191,14 @@ if [ "$REQUEST_CODEX" = true ]; then
     log "codex missing; installing $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION through npm"
     apt_install nodejs npm
     if [ "$DRY_RUN" = false ]; then
-      npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+      sudo npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
       command -v codex >/dev/null 2>&1 || { log 'codex npm install did not place codex on PATH'; exit 1; }
       codex --version
       CODEX_READY=true
       CODEX_STATUS="installed"
       CODEX_REMEDIATION_ZH=""
     else
-      log "would run npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+      log "would run sudo npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
     fi
   else
     log 'codex missing; codex_status=external_prerequisite'
@@ -246,12 +247,14 @@ fi
 
 log 'stage 05: create runner directories'
 run sudo mkdir -p "$STATE_ROOT"/{credentials,instructions/snapshots,budget} "$WORKSPACE_ROOT" "$INSTALL_ROOT"
+run sudo rm -rf "$INSTALL_ROOT/src"
 run sudo cp -R "$REPO_ROOT"/src "$INSTALL_ROOT"/
 run sudo cp "$REPO_ROOT"/pyproject.toml "$INSTALL_ROOT"/
 if [ "$DRY_RUN" = false ]; then
-  (cd "$INSTALL_ROOT" && sudo python3 -m pip install --break-system-packages -e .)
+  sudo python3 -m venv "$INSTALL_ROOT/.venv"
+  (cd "$INSTALL_ROOT" && sudo "$RUNNER_PYTHON" -m pip install -e .)
 else
-  log "would install Python package from $INSTALL_ROOT"
+  log "would create $INSTALL_ROOT/.venv and install Python package from $INSTALL_ROOT"
 fi
 
 log 'stage 06: create runner configuration files'
@@ -357,7 +360,7 @@ After=network-online.target
 Type=simple
 EnvironmentFile=$STATE_ROOT/config.env
 WorkingDirectory=$INSTALL_ROOT
-ExecStart=/usr/bin/python3 -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
+ExecStart=$RUNNER_PYTHON -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=5
 
@@ -366,7 +369,7 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable ai-remote-runner.service
-    sudo systemctl start ai-remote-runner.service
+    sudo systemctl restart ai-remote-runner.service
     if [ "$ENABLE_TELEGRAM" = true ]; then
       sudo tee /etc/systemd/system/ai-telegram-bot.service >/dev/null <<EOF
 [Unit]
@@ -378,7 +381,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=$STATE_ROOT/config.env
 WorkingDirectory=$INSTALL_ROOT
-ExecStart=/usr/bin/python3 -m ai_remote_runner.cli telegram
+ExecStart=$RUNNER_PYTHON -m ai_remote_runner.cli telegram
 Restart=on-failure
 RestartSec=5
 
@@ -401,19 +404,19 @@ EOF
   fi
 else
   if [ "$DRY_RUN" = false ]; then
-    sudo tee "$INSTALL_ROOT/run-local.sh" >/dev/null <<'EOF'
+    sudo tee "$INSTALL_ROOT/run-local.sh" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-source "${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}/config.env"
-exec python3 -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
+source "$STATE_ROOT/config.env"
+exec "$RUNNER_PYTHON" -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
 EOF
     sudo chmod +x "$INSTALL_ROOT/run-local.sh"
     if [ "$ENABLE_TELEGRAM" = true ]; then
-      sudo tee "$INSTALL_ROOT/run-telegram-local.sh" >/dev/null <<'EOF'
+      sudo tee "$INSTALL_ROOT/run-telegram-local.sh" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-source "${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}/config.env"
-exec python3 -m ai_remote_runner.cli telegram
+source "$STATE_ROOT/config.env"
+exec "$RUNNER_PYTHON" -m ai_remote_runner.cli telegram
 EOF
       sudo chmod +x "$INSTALL_ROOT/run-telegram-local.sh"
     fi
