@@ -275,9 +275,6 @@ bridge command URL from the VPS is http://127.0.0.1:18765/bridge/command
 cd FFC-AI
 
 sudo env MATTERMOST_INSTALL_DIR=/opt/ffc-ai-mattermost \
-  MATTERMOST_URL=http://127.0.0.1:8065 \
-  MATTERMOST_ADMIN_USERNAME=ai-admin \
-  MATTERMOST_ADMIN_PASSWORD="$(sudo awk -F= '$1=="MATTERMOST_ADMIN_PASSWORD"{print $2}' /opt/ffc-ai-mattermost/.env)" \
   BRIDGE_COMMAND_URL="http://你的-bridge-地址/bridge/command" \
   bash scripts/bootstrap-mattermost.sh
 ```
@@ -287,9 +284,11 @@ sudo env MATTERMOST_INSTALL_DIR=/opt/ffc-ai-mattermost \
 - 创建或复用 `ai-lab` team。
 - 创建或复用 `ai-ops`、`ai-status` 等频道。
 - 创建 bot 身份。
+- 把管理员账号、邮箱、密码同步到 `.env` 中记录的值。
 - 开启 bot、webhook、commands。
 - 创建 incoming webhook。
 - 如果提供了 `BRIDGE_COMMAND_URL`，创建 `/ai` slash command。
+- 如果 slash command 指向 `127.0.0.1`、内网 IP 或 `host.docker.internal`，自动配置 Mattermost 允许访问这个内网 bridge host，并在可判断服务类型时重启 Mattermost 让配置生效。
 - 把 slash token 写入 `/opt/ffc-ai-mattermost/.env`。
 
 incoming webhook 的 ID 会在：
@@ -417,6 +416,13 @@ sudo scripts/validate-integration.sh
 
 ```text
 [validate-integration] bridge loopback passed
+[validate-integration] Mattermost /ai command passed
+```
+
+如果当前机器只能访问 bridge，不能登录 Mattermost REST API，可以临时跳过 slash command 层测试：
+
+```bash
+sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 ```
 
 这个脚本会把：
@@ -608,7 +614,7 @@ sudo journalctl -u ai-remote-runner -n 100 --no-pager
 - 让 SSH 隧道监听在 VPS 内网地址。
 - 用 VPN 或内网穿透提供一个容器可访问的 bridge URL。
 
-当前脚本不会自动修复这个网络问题。
+如果 `/ai` 的 URL 使用 `127.0.0.1`、内网 IP 或 `host.docker.internal`，重新运行 `bootstrap-mattermost.sh` 会自动把该 host 加入 Mattermost 的 `AllowedUntrustedInternalConnections`。如果仍然失败，再检查 Docker 网络视角下这个地址是否真的能连到 runner。
 
 ### 6. `/ai 状态` 里 core_ready 还是 false
 

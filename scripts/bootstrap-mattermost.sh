@@ -5,15 +5,31 @@ INSTALL_DIR="${MATTERMOST_INSTALL_DIR:-/opt/ffc-ai-mattermost}"
 MANIFEST="$INSTALL_DIR/mattermost-objects.json"
 MATTERMOST_URL="${MATTERMOST_URL:-}"
 MATTERMOST_ADMIN_TOKEN="${MATTERMOST_ADMIN_TOKEN:-}"
-MATTERMOST_ADMIN_USERNAME="${MATTERMOST_ADMIN_USERNAME:-ai-admin}"
-MATTERMOST_ADMIN_EMAIL="${MATTERMOST_ADMIN_EMAIL:-admin@example.invalid}"
+MATTERMOST_ADMIN_USERNAME="${MATTERMOST_ADMIN_USERNAME:-}"
+MATTERMOST_ADMIN_EMAIL="${MATTERMOST_ADMIN_EMAIL:-}"
 MATTERMOST_ADMIN_PASSWORD="${MATTERMOST_ADMIN_PASSWORD:-}"
 BRIDGE_COMMAND_URL="${BRIDGE_COMMAND_URL:-}"
 WEBHOOK_CHANNEL_ID="${WEBHOOK_CHANNEL_ID:-}"
+MATTERMOST_SYNC_ADMIN_PASSWORD="${MATTERMOST_SYNC_ADMIN_PASSWORD:-true}"
+MATTERMOST_RESTART_AFTER_INTERNAL_ALLOW="${MATTERMOST_RESTART_AFTER_INTERNAL_ALLOW:-auto}"
+MATTERMOST_RESTART_REQUIRED=false
 
 log() {
   printf '[bootstrap-mattermost] %s\n' "$*"
 }
+
+env_file_value() {
+  local key="$1"
+  [ -f "$INSTALL_DIR/.env" ] || return 0
+  awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$INSTALL_DIR/.env"
+}
+
+MATTERMOST_URL="${MATTERMOST_URL:-http://127.0.0.1:8065}"
+MATTERMOST_ADMIN_USERNAME="${MATTERMOST_ADMIN_USERNAME:-$(env_file_value MATTERMOST_ADMIN_USERNAME)}"
+MATTERMOST_ADMIN_EMAIL="${MATTERMOST_ADMIN_EMAIL:-$(env_file_value MATTERMOST_ADMIN_EMAIL)}"
+MATTERMOST_ADMIN_PASSWORD="${MATTERMOST_ADMIN_PASSWORD:-$(env_file_value MATTERMOST_ADMIN_PASSWORD)}"
+MATTERMOST_ADMIN_USERNAME="${MATTERMOST_ADMIN_USERNAME:-ai-admin}"
+MATTERMOST_ADMIN_EMAIL="${MATTERMOST_ADMIN_EMAIL:-admin@example.invalid}"
 
 mmctl() {
   if [ -x "$INSTALL_DIR/mattermost/bin/mmctl" ]; then
@@ -92,8 +108,11 @@ require_rest_config() {
 ensure_admin() {
   if ! mmctl user search "$MATTERMOST_ADMIN_USERNAME" >/dev/null 2>&1; then
     [ -n "$MATTERMOST_ADMIN_PASSWORD" ] || { log 'MATTERMOST_ADMIN_PASSWORD is required to create first admin'; exit 1; }
-    mmctl user create --email "$MATTERMOST_ADMIN_EMAIL" --username "$MATTERMOST_ADMIN_USERNAME" --password "$MATTERMOST_ADMIN_PASSWORD"
+    mmctl user create --email "$MATTERMOST_ADMIN_EMAIL" --username "$MATTERMOST_ADMIN_USERNAME" --password "$MATTERMOST_ADMIN_PASSWORD" --system-admin --email-verified --disable-welcome-email
+  elif [ "$MATTERMOST_SYNC_ADMIN_PASSWORD" = true ] && [ -n "$MATTERMOST_ADMIN_PASSWORD" ]; then
+    mmctl user change-password "$MATTERMOST_ADMIN_USERNAME" --password "$MATTERMOST_ADMIN_PASSWORD" >/dev/null
   fi
+  mmctl user email "$MATTERMOST_ADMIN_USERNAME" "$MATTERMOST_ADMIN_EMAIL" >/dev/null 2>&1 || true
   mmctl roles system-admin "$MATTERMOST_ADMIN_USERNAME" >/dev/null
 }
 
@@ -101,6 +120,111 @@ ensure_integration_config() {
   mmctl config set ServiceSettings.EnableBotAccountCreation true >/dev/null
   mmctl config set ServiceSettings.EnableIncomingWebhooks true >/dev/null
   mmctl config set ServiceSettings.EnableCommands true >/dev/null
+}
+
+bridge_command_host() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+parsed = urlparse(sys.argv[1])
+print(parsed.hostname or "")
+PY
+}
+
+host_needs_untrusted_allow() {
+  python3 - "$1" <<'PY'
+import ipaddress
+import sys
+
+host = sys.argv[1].strip("[]").lower()
+if not host:
+    raise SystemExit(1)
+if host in {"localhost", "host.docker.internal"}:
+    raise SystemExit(0)
+try:
+    ip = ipaddress.ip_address(host)
+except ValueError:
+    raise SystemExit(1)
+if ip.is_loopback or ip.is_private or ip.is_link_local:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+ensure_allowed_internal_connection() {
+  local url="$1"
+  local host
+  host="$(bridge_command_host "$url")"
+  [ -n "$host" ] || return
+  if ! host_needs_untrusted_allow "$host"; then
+    return
+  fi
+  local current
+  current="$(mmctl config get ServiceSettings.AllowedUntrustedInternalConnections 2>/dev/null | tr -d '"' || true)"
+  local updated
+  updated="$(
+    python3 - "$current" "$host" <<'PY'
+import sys
+
+items = [item.strip() for item in sys.argv[1].split(",") if item.strip()]
+host = sys.argv[2]
+if host not in items:
+    items.append(host)
+print(",".join(items))
+PY
+  )"
+  if [ "$updated" != "$current" ]; then
+    log "allowing Mattermost slash command access to internal bridge host: $host"
+    mmctl config set ServiceSettings.AllowedUntrustedInternalConnections "$updated" >/dev/null
+    MATTERMOST_RESTART_REQUIRED=true
+  fi
+}
+
+wait_mattermost_ready() {
+  for _ in $(seq 1 60); do
+    if curl -fsS "$MATTERMOST_URL/api/v4/system/ping" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  log 'Mattermost did not answer /api/v4/system/ping after restart'
+  exit 1
+}
+
+restart_mattermost_if_needed() {
+  [ "$MATTERMOST_RESTART_REQUIRED" = true ] || return
+  [ "$MATTERMOST_RESTART_AFTER_INTERNAL_ALLOW" != false ] || return
+  if command -v systemctl >/dev/null 2>&1 && sudo test -f /etc/systemd/system/ffc-ai-mattermost.service; then
+    log 'restarting native Mattermost so AllowedUntrustedInternalConnections takes effect'
+    sudo systemctl restart ffc-ai-mattermost.service
+    wait_mattermost_ready
+  elif [ -f "$INSTALL_DIR/docker-compose.yml" ] && grep -Eq '^[[:space:]]+mattermost:' "$INSTALL_DIR/docker-compose.yml"; then
+    log 'restarting Mattermost container so AllowedUntrustedInternalConnections takes effect'
+    (cd "$INSTALL_DIR" && compose restart mattermost)
+    wait_mattermost_ready
+  else
+    log 'Mattermost restart skipped; restart Mattermost manually if /ai command execution is still blocked'
+  fi
+}
+
+ensure_team_memberships() {
+  local team="$1"
+  local users=(
+    "$MATTERMOST_ADMIN_USERNAME"
+    ai-bridge
+    master-writer-ai
+    claude-code-ai
+    codex-ai
+    reviewer-ai-1
+    reviewer-ai-2
+    optional-specialist-ai
+  )
+  local channels=(town-square ai-ops ai-status ai-reviews ai-errors ai-archive)
+  mmctl team users add "$team" "${users[@]}" >/dev/null 2>&1 || true
+  for channel in "${channels[@]}"; do
+    mmctl channel users add "$team:$channel" "${users[@]}" >/dev/null 2>&1 || true
+  done
 }
 
 login_admin_token() {
@@ -137,6 +261,7 @@ require_rest_config
 for bot in ai-bridge master-writer-ai claude-code-ai codex-ai reviewer-ai-1 reviewer-ai-2 optional-specialist-ai; do
   ensure_bot "$bot" "$bot"
 done
+ensure_team_memberships ai-lab
 
 rest_json GET "$MATTERMOST_URL/api/v4/users/me" >/dev/null || {
   log 'MATTERMOST_ADMIN_TOKEN validation failed'
@@ -148,6 +273,7 @@ SLASH_TOKEN_CONFIGURED=false
 SLASH_COMMAND_URL=""
 if [ -n "$BRIDGE_COMMAND_URL" ]; then
   log 'creating /ai slash command through Mattermost REST API'
+  ensure_allowed_internal_connection "$BRIDGE_COMMAND_URL"
   EXISTING_COMMAND="$(
     rest_json GET "$MATTERMOST_URL/api/v4/commands?team_id=$TEAM_ID" |
       python3 -c 'import json,sys
@@ -236,4 +362,5 @@ sudo tee "$MANIFEST" >/dev/null <<EOF
 }
 EOF
 sudo chmod 0600 "$MANIFEST"
+restart_mattermost_if_needed
 log "wrote $MANIFEST"

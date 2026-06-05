@@ -39,7 +39,10 @@ compose() {
 }
 
 if ! mmctl user search "$ADMIN_USERNAME" >/dev/null 2>&1; then
-  mmctl user create --email "$ADMIN_EMAIL" --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD"
+  mmctl user create --email "$ADMIN_EMAIL" --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" --system-admin --email-verified --disable-welcome-email
+else
+  mmctl user change-password "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" >/dev/null
+  mmctl user email "$ADMIN_USERNAME" "$ADMIN_EMAIL" >/dev/null 2>&1 || true
 fi
 mmctl roles system-admin "$ADMIN_USERNAME" >/dev/null
 
