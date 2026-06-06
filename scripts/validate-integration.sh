@@ -7,8 +7,43 @@ MATTERMOST_OBJECTS_MANIFEST="${MATTERMOST_OBJECTS_MANIFEST:-$MATTERMOST_INSTALL_
 BRIDGE_COMMAND_URL="${BRIDGE_COMMAND_URL:-}"
 MATTERMOST_URL="${MATTERMOST_URL:-}"
 VALIDATE_MATTERMOST_COMMAND="${VALIDATE_MATTERMOST_COMMAND:-true}"
+VALIDATE_MATTERMOST_BACKGROUND_TASK="${VALIDATE_MATTERMOST_BACKGROUND_TASK:-false}"
 MATTERMOST_COMMAND_VALIDATED=false
-MATTERMOST_COMMANDS=("/ai" "/ai 状态" "/ai 帮助" "/ai 新对话" "/ai 压缩" "/ai 凭据 列表")
+MATTERMOST_BACKGROUND_TASK_VALIDATED=false
+MATTERMOST_COMMANDS=(
+  "/ai"
+  "/ai 状态"
+  "/ai 帮助"
+  "/ai 功能"
+  "/ai 索引"
+  "/ai 新对话"
+  "/ai 对话"
+  "/ai 继续"
+  "/ai 每次新对话"
+  "/ai mode continue"
+  "/ai mode new_each"
+  "/ai 压缩"
+  "/ai 上下文"
+  "/ai 预算"
+  "/ai 自动压缩 开启"
+  "/ai 自动压缩 关闭"
+  "/ai 聊天模式 开启"
+  "/ai 编辑模式 开启"
+  "/ai shell模式 开启"
+  "/ai 完全访问 开启"
+  "/ai 最高权限 开启"
+  "/ai root权限 开启"
+  "/ai 全局 查看"
+  "/ai 项目 查看"
+  "/ai 凭据 列表"
+  "/ai 工作区 列表"
+  "/ai 提供商 列表"
+  "/ai 扩展 列表"
+  "/ai 工具 列表"
+  "/ai mcp 列表"
+  "/ai 说明"
+  "/ai 说明 生成 smoke"
+)
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export PYTHONPATH="${PYTHONPATH:-$ROOT/src}"
@@ -119,12 +154,12 @@ if [ "$VALIDATE_MATTERMOST_COMMAND" = true ] && [ -f "$MATTERMOST_INSTALL_DIR/.e
     awk -F= '$1 == "MATTERMOST_ADMIN_PASSWORD" {print substr($0, index($0, "=") + 1); exit}' "$MATTERMOST_INSTALL_DIR/.env"
   )"
   if [ -n "$MATTERMOST_ADMIN_USERNAME" ] && [ -n "$MATTERMOST_ADMIN_PASSWORD" ]; then
-    python3 - "$MATTERMOST_URL" "$MATTERMOST_ADMIN_USERNAME" "$MATTERMOST_ADMIN_PASSWORD" "${MATTERMOST_COMMANDS[@]}" <<'PY' >/dev/null
+    python3 - "$MATTERMOST_URL" "$MATTERMOST_ADMIN_USERNAME" "$MATTERMOST_ADMIN_PASSWORD" "$VALIDATE_MATTERMOST_BACKGROUND_TASK" "${MATTERMOST_COMMANDS[@]}" <<'PY' >/dev/null
 import json
 import sys
 from urllib import request
 
-base, username, password, *commands = sys.argv[1:]
+base, username, password, validate_background_task, *commands = sys.argv[1:]
 login_body = json.dumps({"login_id": username, "password": password}).encode("utf-8")
 login_response = request.urlopen(
     request.Request(
@@ -187,8 +222,17 @@ confirmed_payload = execute_command(f"/ai 确认 {confirmation_token}")
 confirmed_inner = inner_response(confirmed_payload)
 if confirmed_inner.get("status") != "accepted" or not confirmed_inner.get("data", {}).get("upload_path"):
     raise SystemExit(f"Mattermost credential confirmation failed: {confirmed_payload}")
+
+if validate_background_task == "true":
+    task_payload = execute_command("/ai integration smoke task: reply with mattermost-background-ok")
+    task_inner = inner_response(task_payload)
+    if task_inner.get("status") != "accepted" or not task_inner.get("data", {}).get("background"):
+        raise SystemExit(f"Mattermost background task validation failed: {task_payload}")
 PY
     MATTERMOST_COMMAND_VALIDATED=true
+    if [ "$VALIDATE_MATTERMOST_BACKGROUND_TASK" = true ]; then
+      MATTERMOST_BACKGROUND_TASK_VALIDATED=true
+    fi
   else
     printf '[validate-integration] Mattermost admin credentials are required for slash command validation\n' >&2
     exit 1
@@ -208,6 +252,9 @@ trap - ERR
 printf '[validate-integration] bridge loopback passed\n'
 if [ "$MATTERMOST_COMMAND_VALIDATED" = true ]; then
   printf '[validate-integration] Mattermost /ai commands and credential confirmation passed\n'
+  if [ "$MATTERMOST_BACKGROUND_TASK_VALIDATED" = true ]; then
+    printf '[validate-integration] Mattermost background task dispatch passed\n'
+  fi
 else
   printf '[validate-integration] Mattermost /ai commands skipped; platform_ready was not marked validated\n'
 fi

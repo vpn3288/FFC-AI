@@ -1,5 +1,5 @@
 {
-  "round": 19,
+  "round": 20,
   "mode": "infinite_convergence",
   "min_score": 90,
   "max_usd": 25.0,
@@ -148,17 +148,39 @@
       "open_p0": 0,
       "open_p1": 0,
       "open_p2": 0
+    },
+    {
+      "round": 19,
+      "reviewer": "local-unit-and-script-gates",
+      "score": 95,
+      "open_p0": 0,
+      "open_p1": 0,
+      "open_p2": 0
+    },
+    {
+      "round": 20,
+      "reviewer": "claude-code-fresh-independent",
+      "score": 95,
+      "open_p0": 0,
+      "open_p1": 0,
+      "open_p2": 0
+    },
+    {
+      "round": 20,
+      "reviewer": "codex-fresh-independent",
+      "score": 94,
+      "open_p0": 0,
+      "open_p1": 0,
+      "open_p2": 0
     }
   ],
   "open_p0": 0,
   "open_p1": 0,
   "open_p2": 0,
-  "missing_user_requirements": [
-    "implementation scripts were absent before round 1 patch"
-  ],
+  "missing_user_requirements": [],
   "script_smoke_tests_passing": true,
-  "latest_patch_summary": "Round 19 records zero P0/P1/P2 from a fresh stateless full-file review at 69311c4 and applies P3 wording/comment polish for bridge bare-command routing, auto-compaction timing, and Mattermost bootstrap delegation.",
-  "last_github_push": "69311c4 pushed; P3 polish pending commit/push",
-  "post_patch_review_pending": true,
-  "stop_reason": null
+  "latest_patch_summary": "Round 20/21/22 completes Telegram and Mattermost first-class parity, shared phone rendering, visible provider/status heartbeats, Telegram pairing core-ready validation, root/global/full-access Claude Code/Codex/VSCode install behavior, and fresh independent review gating.",
+  "last_github_push": "round 22 upload committed and pushed to origin/main by this change set",
+  "post_patch_review_pending": false,
+  "stop_reason": "quality gate passed: local tests and fresh independent Claude/Codex reviews report no P0/P1/high-value P2/missing/must-fix items"
 }

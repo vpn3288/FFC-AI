@@ -120,6 +120,21 @@ class CredentialBroker:
         if allowed_actions and action not in allowed_actions:
             raise PermissionError("action_not_allowed")
 
+    def grant(self, handle: str, agent: str, action: str, duration_seconds: int | None = None) -> dict[str, Any]:
+        data = self._load_index()
+        record = data[handle]
+        allowed_agents = set(record.get("allowed_agents") or [])
+        allowed_actions = set(record.get("allowed_actions") or [])
+        allowed_agents.add(agent)
+        allowed_actions.add(action)
+        record["allowed_agents"] = sorted(allowed_agents)
+        record["allowed_actions"] = sorted(allowed_actions)
+        if duration_seconds is not None:
+            record["expires_at"] = time.time() + max(0, duration_seconds)
+        data[handle] = record
+        self._save_index(data)
+        return self.public_record(handle)
+
     def delete(self, handle: str) -> dict[str, Any]:
         data = self._load_index()
         record = data.pop(handle)

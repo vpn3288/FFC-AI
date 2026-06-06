@@ -7,6 +7,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from .phone_render import render_event_text
+
 
 def status_event(run_id: str, phase: str, message_zh: str, provider: str = "runner") -> dict[str, Any]:
     return {
@@ -42,10 +44,12 @@ class EventSink:
             self._post_mattermost(event)
 
     def _post_mattermost(self, event: dict[str, Any]) -> None:
+        provider = event.get("provider") or "runner"
+        text = render_event_text(event) or event.get("public_message_zh", "")
         body = json.dumps(
             {
-                "text": f"[{event.get('phase')}] {event.get('public_message_zh', '')}",
-                "props": {"run_id": event.get("run_id"), "provider": event.get("provider")},
+                "text": f"[{event.get('phase')}] provider={provider} {text}".strip(),
+                "props": {"run_id": event.get("run_id"), "provider": provider},
             },
             ensure_ascii=False,
         ).encode("utf-8")

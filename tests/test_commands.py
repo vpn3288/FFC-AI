@@ -36,14 +36,32 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(parse_command("/ai 整理上下文")["canonical_action"], "compact_context")
         self.assertEqual(parse_command("/ai 对话")["canonical_action"], "conversation_status")
 
-    def test_permission_mode_commands_require_confirmation_when_risky(self) -> None:
+    def test_documented_aliases_match_parser(self) -> None:
+        cases = {
+            "/ai 索引": "command_index",
+            "/ai new": "new_conversation",
+            "/ai continue": "continue_conversation",
+            "/ai mode new_each": "set_policy_new_each_request",
+            "/ai mode continue": "set_policy_continue",
+            "/ai 说明": "description.list",
+            "/ai 说明 编辑 demo": "description.edit",
+            "/ai 凭据 授权 credential://demo codex ssh.exec 60": "credential.grant",
+        }
+        for raw, action in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_command(raw)["canonical_action"], action)
+
+    def test_permission_mode_commands_are_direct_switches(self) -> None:
         edit = parse_command("/ai 编辑模式 开启")
         shell = parse_command("/ai shell模式 开启")
         chat = parse_command("/ai 聊天模式 开启")
+        full = parse_command("/ai 完全访问 开启")
         self.assertEqual(edit["canonical_action"], "set_permission_edit")
-        self.assertTrue(edit["requires_confirmation"])
-        self.assertTrue(shell["requires_confirmation"])
+        self.assertFalse(edit["requires_confirmation"])
         self.assertFalse(chat["requires_confirmation"])
+        self.assertFalse(shell["requires_confirmation"])
+        self.assertEqual(full["canonical_action"], "set_permission_full")
+        self.assertFalse(full["requires_confirmation"])
 
     def test_bare_slash_returns_command_index_when_enabled(self) -> None:
         result = parse_command("/", allow_bare=True)

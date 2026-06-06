@@ -85,6 +85,28 @@ class PairRunnerScriptTests(unittest.TestCase):
             self.assertIn("restart ai-remote-runner.service", calls.read_text(encoding="utf-8"))
             self.assertIn("ai-remote-runner.service restarted", result.stdout)
 
+    def test_pair_runner_rejects_two_stdin_secret_sources(self) -> None:
+        result = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "scripts" / "pair-runner.sh"),
+                "--platform-url",
+                "https://mattermost.example",
+                "--webhook-url",
+                "https://mattermost.example/hooks/test",
+                "--transfer-method",
+                "manual-secure",
+                "--bridge-secret-stdin",
+                "--slash-token-stdin",
+            ],
+            input="secret\nslash\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("stdin can only be consumed once", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
 
@@ -112,6 +113,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
 
@@ -150,6 +152,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
 
@@ -189,6 +192,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
 
@@ -212,6 +216,48 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=123,-456\n", config)
             self.assertIn("systemctl restart ai-telegram-bot.service", calls.read_text(encoding="utf-8"))
 
+    def test_pair_telegram_runs_core_ready_validation_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            service = root / "ai-telegram-bot.service"
+            validate = root / "validate-core-ready.sh"
+            state.mkdir()
+            service.write_text("[Service]\n", encoding="utf-8")
+            validate.write_text("#!/usr/bin/env bash\nprintf 'validate %s\\n' \"$AI_REMOTE_STATE\" >> \"${VALIDATE_CALLS:?}\"\n", encoding="utf-8")
+            validate.chmod(validate.stat().st_mode | stat.S_IXUSR)
+            fakebin, calls = self.make_fakebin(root)
+            validate_calls = root / "validate-calls.log"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "VALIDATE_CORE_READY_SCRIPT": str(validate),
+                    "VALIDATE_CALLS": str(validate_calls),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--bot-token",
+                    "test-token:ABC_def",
+                    "--chat-id",
+                    "123",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("running core readiness validation", result.stdout)
+            self.assertIn(f"validate {state}", validate_calls.read_text(encoding="utf-8"))
+
     def test_rejects_invalid_chat_id_before_writing_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -227,6 +273,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(root / "missing.service"),
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
 

@@ -2,22 +2,35 @@
 
 本文根据当前仓库脚本和代码整理，适合第一次部署的人照着走。
 
-先说结论：FFC-AI 不是一个新的聊天软件。它用 Mattermost 当手机聊天入口，用本地或服务器上的 AI runner 去调用 Claude Code、Codex 等 AI 工具。Mattermost 负责收发消息、频道、通知、`/ai` slash command；真正的 AI 执行逻辑在 runner 里。
+先说结论：FFC-AI 不是一个新的聊天软件。它用 Telegram 和/或 Mattermost 当手机聊天入口，用本地或服务器上的 AI runner 去调用 Claude Code、Codex 等 AI 工具。Telegram 更简单、速度快，适合当日常主入口；Mattermost 更适合自建团队频道、webhook 和 slash command。真正的 AI 执行逻辑都在 runner 里。
 
 ## 1. 它到底是怎么工作的
 
 ```mermaid
 flowchart LR
-  phone["手机 Mattermost 客户端"] --> mm["Mattermost 服务器"]
+  phone_tg["手机 Telegram"] --> tg["Telegram bot"]
+  phone_mm["手机 Mattermost 客户端"] --> mm["Mattermost 服务器"]
+  tg --> bridge["AI bridge: /bridge/command"]
   mm --> slash["/ai slash command"]
-  slash --> bridge["AI bridge: /bridge/command"]
+  slash --> bridge
   bridge --> runner["AI remote runner"]
   runner --> provider["Claude Code / Codex CLI"]
   runner --> status["Mattermost incoming webhook 状态通知"]
+  runner --> tg_status["Telegram typing / 心跳 / 最终回复"]
   status --> mm
+  tg_status --> phone_tg
 ```
 
-你可以把 Mattermost 部署在 VPS、1Panel、Docker、云服务器，或者其他位置。功能是否一样，不取决于部署方式，而取决于最后有没有配好这些东西：
+Telegram 和 Mattermost 地位同等。你可以只用 Telegram、只用 Mattermost，或者两个都装。功能是否一样，不取决于谁排在前面，而取决于最后有没有配好同一套 runner 能力、命令表和状态通知。
+
+如果用 Telegram，你需要：
+
+- BotFather 创建的 bot token。
+- 你的 Telegram ID 或发现模式拿到的 chat_id。
+- `ai-telegram-bot.service` 已安装并启动。
+- bot 能访问 runner 的命令处理逻辑。
+
+如果用 Mattermost，你可以把它部署在 VPS、1Panel、Docker、云服务器，或者其他位置。需要配好：
 
 - Mattermost 能用手机正常登录。
 - Mattermost 开启了 bot、incoming webhook、slash command。
@@ -26,11 +39,15 @@ flowchart LR
 - runner 端保存了 Mattermost 的 URL、webhook URL、slash token、bridge shared secret。
 - Mattermost 能访问 runner 的 `/bridge/command` 地址。
 
+Telegram 和 Mattermost 的普通状态/帮助命令都会尽量同步返回；Claude/Codex 这类长 AI 任务会先返回“已收到/后台运行”，随后持续发送排队、调用、运行、完成或失败状态，避免手机端看不出它是在思考、联网、执行工具，还是已经断开。
+
 ## 2. 推荐准备
 
-### 通信服务器
+### 手机入口
 
-推荐：
+Telegram 不需要单独部署聊天服务器，只要 BotFather token 和 Telegram ID。它最轻，速度也快，适合作为日常主入口。
+
+Mattermost 需要一台通信服务器。推荐：
 
 - 一台 VPS。
 - 一个域名，例如 `ai.example.com`。
@@ -83,9 +100,29 @@ runner 机器需要：
 /opt/ai-remote-runner/run-local.sh
 ```
 
-## 3. 两种部署思路
+## 3. 两种通信入口思路
 
-### 方式 A：用本项目脚本部署 Mattermost
+### 方式 A：Telegram 直连 runner
+
+适合你想先最快把手机和 AI runner 打通。
+
+在 runner 安装时启用 Telegram：
+
+```bash
+sudo scripts/install-runner.sh --enable-telegram
+sudo scripts/pair-telegram.sh --telegram-id 你的TelegramID
+```
+
+脚本会安全提示输入 BotFather token，并启动：
+
+```text
+ai-telegram-bot.service
+```
+
+Telegram 和 Mattermost 使用同一套 `/ai` 命令表、同一套 provider 选择、同一套长对话/新对话策略、同一套全权限开关。
+配对完成后，`pair-telegram.sh` 会自动运行 `validate-core-ready.sh`，用真实 Claude Code/Codex full-access smoke 验证 root、网络、文件、venv/安装能力；不通过就不会把 `core_ready` 标记成 true。
+
+### 方式 B：用本项目脚本部署 Mattermost
 
 适合你想让脚本帮你装 Mattermost、Caddy、PostgreSQL。
 
@@ -121,7 +158,7 @@ sudo scripts/install-communication-vps.sh --domain ai.example.com
 - `install-manifest.json` 里一开始会是 `platform_ready=false`，这是正常的。
 - 如果安装时还不知道 runner 的 bridge 地址，`/ai` slash command 会暂时不创建，后面要补。
 
-### 方式 B：用 1Panel 或已有 Mattermost
+### 方式 C：用 1Panel 或已有 Mattermost
 
 可以。只要你最终手动完成同样的 Mattermost 配置，功能上没有区别。
 
@@ -151,7 +188,7 @@ scripts/install-runner.sh --dry-run
 sudo scripts/install-runner.sh
 ```
 
-如果你还想让 Telegram 也能连到同一个 AI runner，安装时加上可选项：
+如果你想让 Telegram 也能连到同一个 AI runner，安装时加上：
 
 ```bash
 sudo scripts/install-runner.sh --enable-telegram
@@ -159,22 +196,24 @@ sudo scripts/install-runner.sh --enable-telegram
 
 这会额外安装 `ai-telegram-bot.service`。如果还没有 BotFather token，服务会先装好但不启动，后面配对时再启动。
 
-默认会尝试启用两个 provider：
+安装脚本会安装/验证两个核心 provider：
 
 ```text
 claude-code,codex
 ```
 
-如果你只想用 Claude Code：
+同时会安装/验证 VSCode，并创建 root/full-access 包装器：
 
-```bash
-AI_RUNNER_PROVIDERS=claude-code sudo -E scripts/install-runner.sh
+```text
+/usr/local/bin/code-root
 ```
 
-如果你只想用 Codex：
+`code-root` 会用 root 的 VSCode 数据目录和扩展目录启动 `code`，并传入 `--no-sandbox`、`--disable-workspace-trust`，用于这类专门创建的 VM/测试机。
+
+`AI_DEFAULT_PROVIDER` 只决定默认把任务发给谁，不会跳过另一个 provider 的安装/验证。例如默认使用 Codex：
 
 ```bash
-AI_RUNNER_PROVIDERS=codex AI_DEFAULT_PROVIDER=codex sudo -E scripts/install-runner.sh
+AI_DEFAULT_PROVIDER=codex sudo -E scripts/install-runner.sh
 ```
 
 runner 默认目录：
@@ -225,7 +264,11 @@ export CODEX_MODEL="gpt-5.5"
 export CODEX_BASE_URL="https://api.openai.com/v1"
 ```
 
-注意：当前脚本把 Codex 配置写到运行脚本用户的 `$HOME/.codex`。如果 systemd 服务用 root 身份运行，要确认 root 环境也能正常调用 `codex exec`。
+脚本默认按 root/global 模式配置 AI 工具：systemd 服务显式以 root 运行，`HOME=/root`，`CODEX_HOME=/root/.codex`，Codex 配置启用 `approval_policy="never"`、`network_access="enabled"` 和 `danger-full-access`。如果你显式设置 `AI_TOOL_HOME` 或 `AI_CODEX_HOME`，才会写到自定义目录。
+
+### VSCode
+
+脚本会检查 `code --version`。如果没有安装，并且系统支持 apt，会通过 Microsoft apt repository 安装最新 `code` 包。安装后会写入 `/usr/local/bin/code-root`，方便在 VM 内以 root/full-access 方式启动 VSCode。
 
 ## 6. 让 Mattermost 能访问 runner
 
@@ -382,21 +425,21 @@ sudo scripts/pair-runner.sh \
 /var/lib/ai-remote-runner/config.env
 ```
 
-重要：`pair-runner.sh` 写完配置后不会自动重启 `ai-remote-runner.service`。为了让新的 slash token 生效，建议手动重启：
+`pair-runner.sh` 写完配置后会在 systemd 环境中自动重启 `ai-remote-runner.service`，让新的 slash token 生效。
 
 ```bash
 sudo systemctl restart ai-remote-runner
 ```
 
-如果你是在无 systemd 环境中运行，重新启动：
+如果你是在无 systemd 环境中运行，或者你想手动确认，可以重新启动：
 
 ```bash
 sudo /opt/ai-remote-runner/run-local.sh
 ```
 
-## 9. 可选：配对 Telegram
+## 9. 配对 Telegram
 
-Telegram 不需要再部署聊天服务器，只需要一个 Telegram BotFather token。
+Telegram 不需要再部署聊天服务器，只需要一个 Telegram BotFather token。它和 Mattermost 是同等级入口；你完全可以把 Telegram 当日常主要入口。
 
 在 Telegram 里：
 
@@ -461,6 +504,8 @@ ai-telegram-bot.service
 请总结这个项目现在还有哪些待办
 ```
 
+当 AI 任务正在运行时，Telegram bot 会发送 `typing` 状态，并持续发中文心跳，例如“正在调用 provider，模型正在思考或工具正在运行”“仍在运行，可能是模型思考、工具执行、联网等待或生成中”。如果长时间没有最终回复，先看这些心跳和 runner 日志，而不是判断为没有连接。
+
 ## 10. 验证是否打通
 
 ### 验证 runner 自己
@@ -477,6 +522,8 @@ sudo scripts/validate-core-ready.sh
 ```text
 [validate-core-ready] core_ready=true
 ```
+
+`validate-core-ready.sh` 会实际调用 Claude Code 和 Codex 的 full-access smoke test。任一 provider 不能以 root/full-access 方式运行时，不会写入 `core_ready=true`。
 
 这个脚本会检查：
 
@@ -507,6 +554,14 @@ sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 ```
 
 注意：跳过 slash command 时只会验证 runner bridge，不会把 Mattermost 的 `platform_ready` 标记为 validated。
+
+如果你要在真实验收时连同 Mattermost 后台 AI 任务派发一起测，可以显式打开：
+
+```bash
+sudo env VALIDATE_MATTERMOST_BACKGROUND_TASK=true scripts/validate-integration.sh
+```
+
+默认不打开这个开关，是为了避免普通集成检查消耗 provider 预算；`validate-core-ready.sh` 已经单独做 Claude Code/Codex 的 full-access 文件写读、网络、venv/安装能力 smoke。
 
 完整验证通过后，脚本会把：
 
@@ -569,9 +624,12 @@ sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 /ai 聊天模式 开启
 /ai 编辑模式 开启
 /ai shell模式 开启
+/ai 完全访问 开启
+/ai 最高权限 开启
+/ai root权限 开启
 ```
 
-`编辑模式` 和 `shell模式` 需要确认。shell 模式下，每次实际任务还会再次要求确认。
+默认就是 `完全访问`。Claude Code 的 `编辑模式` 和 `shell模式` 会直接切换到可执行对应工具的权限；只有你显式设置 `AI_REQUIRE_SHELL_CONFIRMATION=1` 时，shell 任务才会逐次确认。Codex 当前只按 full-access 执行，如果你把权限改成非 full 又选择 Codex，runner 会明确报“不支持该 scope”，不会悄悄用 full access 继续跑。
 
 指令文件：
 
@@ -631,14 +689,14 @@ sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 
 注意：当前扩展、工具、MCP 列表主要是占位索引，还没有实现一键安装扩展。
 
-### 当前解析了但执行器还没完整实现的命令
-
-下面命令能被解析，但当前 `executor.py` 没有对应处理逻辑，可能返回 `unsupported_action`：
+取消命令：
 
 ```text
 /ai 停止
 /ai 取消
 ```
+
+当前取消会记录取消标记，并明确提示“不会强制终止已经启动的 provider 进程”。
 
 ## 12. 常见问题
 
@@ -780,6 +838,7 @@ scripts/smoke-test.sh
 - bridge HTTP 服务。
 - Mattermost slash command 接入。
 - Claude Code / Codex provider 探测和调用。
+- VSCode 安装和 root/full-access wrapper。
 - 指令文件、工作区、凭据、预算、上下文的基础实现。
 - 校验和回滚脚本。
 
@@ -787,8 +846,8 @@ scripts/smoke-test.sh
 
 - 1Panel 部署需要你手动创建或适配 Mattermost 集成对象。
 - Docker Mattermost 到本机 runner 的网络地址需要你确认。
-- `pair-runner.sh` 写配置后需要手动重启 runner 服务。
-- `/ai 停止`、`/ai 取消` 当前还没有完整执行逻辑。
+- systemd 环境下 `pair-runner.sh` 写配置后会自动重启 runner 服务；无 systemd 环境需要手动重新运行本地脚本。
+- `/ai 停止`、`/ai 取消` 当前会记录取消标记，但不会强杀已经启动的 provider 进程。
 - 扩展、工具、MCP 目前主要是列表占位，还没有完整安装流程。
 
 如果你按这份 README 部署，最重要的验收标准是：

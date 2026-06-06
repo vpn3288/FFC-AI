@@ -6,10 +6,17 @@ ENABLE_TELEGRAM="${ENABLE_TELEGRAM:-false}"
 STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
 WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-/srv/ai-workspaces}"
 INSTALL_ROOT="${AI_REMOTE_INSTALL_ROOT:-/opt/ai-remote-runner}"
+AI_TOOL_HOME="${AI_TOOL_HOME:-/root}"
+CODEX_HOME="${AI_CODEX_HOME:-$AI_TOOL_HOME/.codex}"
+VSCODE_ROOT_WRAPPER="${AI_VSCODE_ROOT_WRAPPER:-/usr/local/bin/code-root}"
+VSCODE_ROOT_DIR="${AI_VSCODE_ROOT_DIR:-/root/.vscode-root}"
+SERVICE_PATH="${AI_SERVICE_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 RUNNER_PYTHON="$INSTALL_ROOT/.venv/bin/python"
 CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-}"
 AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
+AI_PERMISSION_SCOPE="${AI_PERMISSION_SCOPE:-full}"
+AI_REQUIRE_SHELL_CONFIRMATION="${AI_REQUIRE_SHELL_CONFIRMATION:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
@@ -42,11 +49,86 @@ run() {
   fi
 }
 
+root_env_run() {
+  if [ "$DRY_RUN" = true ]; then
+    printf '[dry-run] root env HOME=%s CODEX_HOME=%s PATH=%s %s\n' "$AI_TOOL_HOME" "$CODEX_HOME" "$SERVICE_PATH" "$*"
+  else
+    sudo env HOME="$AI_TOOL_HOME" CODEX_HOME="$CODEX_HOME" PATH="$SERVICE_PATH" "$@"
+  fi
+}
+
+runner_cli() {
+  if [ "$DRY_RUN" = true ]; then
+    root_env_run "$RUNNER_PYTHON" -m ai_remote_runner.cli "$@"
+  else
+    root_env_run "$RUNNER_PYTHON" -m ai_remote_runner.cli "$@"
+  fi
+}
+
+root_has_command() {
+  if [ "$DRY_RUN" = true ]; then
+    printf '[dry-run] root env PATH=%s command -v %s\n' "$SERVICE_PATH" "$1"
+    return 0
+  else
+    sudo env HOME="$AI_TOOL_HOME" CODEX_HOME="$CODEX_HOME" PATH="$SERVICE_PATH" sh -c "command -v '$1' >/dev/null 2>&1"
+  fi
+}
+
 apt_install() {
   if [ "$DRY_RUN" = true ]; then
     run sudo apt-get install -y "$@"
   else
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+  fi
+}
+
+install_vscode() {
+  log 'stage 05: install or verify VSCode for root/full-access operation'
+  VSCODE_READY=false
+  if root_has_command code; then
+    root_env_run code --version | head -n 1 || true
+  elif command -v apt-get >/dev/null 2>&1; then
+    log 'code missing; installing latest Visual Studio Code from Microsoft apt repository'
+    run sudo install -d -m 0755 /etc/apt/keyrings
+    if [ "$DRY_RUN" = false ]; then
+      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o /tmp/microsoft.asc
+      command -v gpg >/dev/null 2>&1 || { log 'gpg required for Microsoft apt key installation'; exit 1; }
+      gpg --dearmor /tmp/microsoft.asc | sudo tee /etc/apt/keyrings/packages.microsoft.gpg >/dev/null
+      sudo chmod 0644 /etc/apt/keyrings/packages.microsoft.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" \
+        | sudo tee /etc/apt/sources.list.d/vscode.list >/dev/null
+    else
+      log 'would install Microsoft apt key and /etc/apt/sources.list.d/vscode.list'
+    fi
+    run sudo apt-get update
+    apt_install code
+    if [ "$DRY_RUN" = false ]; then
+      root_has_command code || { log 'VSCode install failed; code command is required in the root service PATH'; exit 1; }
+      root_env_run code --version | head -n 1 || true
+    else
+      log 'would verify code --version after package install'
+    fi
+  else
+    log 'code missing and native package installer unavailable; VSCode is required for full-access workstation setup'
+    exit 1
+  fi
+  if [ "$DRY_RUN" = false ]; then
+    sudo tee "$VSCODE_ROOT_WRAPPER" >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\$(id -u)" != 0 ]; then
+  exec sudo -E "\$0" "\$@"
+fi
+exec code --no-sandbox --user-data-dir="$VSCODE_ROOT_DIR" --extensions-dir="$VSCODE_ROOT_DIR/extensions" --disable-workspace-trust "\$@"
+EOF
+    sudo chmod 0755 "$VSCODE_ROOT_WRAPPER"
+    sudo mkdir -p "$VSCODE_ROOT_DIR/extensions"
+    sudo chown -R root:root "$VSCODE_ROOT_DIR" 2>/dev/null || true
+    root_env_run "$VSCODE_ROOT_WRAPPER" --version >/dev/null || { log 'code-root smoke test failed'; exit 1; }
+    VSCODE_READY=true
+  else
+    log "would install $VSCODE_ROOT_WRAPPER root wrapper with --no-sandbox and root user-data/extensions directories"
+    VSCODE_READY=true
   fi
 }
 
@@ -103,48 +185,12 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-REQUEST_CLAUDE=false
-REQUEST_CODEX=false
-if [ -z "$AI_RUNNER_PROVIDERS" ]; then
-  if [ -n "$AI_DEFAULT_PROVIDER" ]; then
-    AI_RUNNER_PROVIDERS="$AI_DEFAULT_PROVIDER"
-  else
-    AI_RUNNER_PROVIDERS="claude-code,codex"
-  fi
+REQUEST_CLAUDE=true
+REQUEST_CODEX=true
+if [ -n "$AI_RUNNER_PROVIDERS" ] && [ "$AI_RUNNER_PROVIDERS" != "claude-code,codex" ]; then
+  log "AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS ignored; core install requires claude-code,codex"
 fi
-for provider in ${AI_RUNNER_PROVIDERS//,/ }; do
-  case "$provider" in
-    all|both)
-      REQUEST_CLAUDE=true
-      REQUEST_CODEX=true
-      ;;
-    claude|claude-code|codex)
-      normalized_provider="$(normalize_provider "$provider")"
-      case "$normalized_provider" in
-        claude-code) REQUEST_CLAUDE=true ;;
-        codex) REQUEST_CODEX=true ;;
-      esac
-      ;;
-    *)
-      log "AI_RUNNER_PROVIDERS contains unsupported provider: $provider"
-      exit 2
-      ;;
-  esac
-done
-if [ "$REQUEST_CLAUDE" = false ] && [ "$REQUEST_CODEX" = false ]; then
-  log 'AI_RUNNER_PROVIDERS must request claude-code, codex, or both'
-  exit 2
-fi
-if [ "$REQUEST_CLAUDE" = true ] && [ "$REQUEST_CODEX" = true ]; then
-  AI_RUNNER_PROVIDERS="claude-code,codex"
-elif [ "$REQUEST_CLAUDE" = true ]; then
-  AI_RUNNER_PROVIDERS="claude-code"
-else
-  AI_RUNNER_PROVIDERS="codex"
-fi
-if [ -z "$AI_DEFAULT_PROVIDER" ] && { [ "$REQUEST_CLAUDE" = false ] || [ "$REQUEST_CODEX" = false ]; }; then
-  AI_DEFAULT_PROVIDER="$AI_RUNNER_PROVIDERS"
-fi
+AI_RUNNER_PROVIDERS="claude-code,codex"
 if [ -n "$AI_DEFAULT_PROVIDER" ]; then
   AI_DEFAULT_PROVIDER="$(normalize_provider "$AI_DEFAULT_PROVIDER")" || { log 'AI_DEFAULT_PROVIDER must be claude-code, claude, or codex'; exit 2; }
   case ",$AI_RUNNER_PROVIDERS," in
@@ -152,6 +198,14 @@ if [ -n "$AI_DEFAULT_PROVIDER" ]; then
     *) log "AI_DEFAULT_PROVIDER=$AI_DEFAULT_PROVIDER must be included in AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS"; exit 2 ;;
   esac
 fi
+case "$AI_PERMISSION_SCOPE" in
+  chat|edit|shell|full) ;;
+  *) log 'AI_PERMISSION_SCOPE must be chat, edit, shell, or full'; exit 2 ;;
+esac
+case "$AI_REQUIRE_SHELL_CONFIRMATION" in
+  0|1|true|false|yes|no) ;;
+  *) log 'AI_REQUIRE_SHELL_CONFIRMATION must be 0/1, true/false, or yes/no'; exit 2 ;;
+esac
 
 log 'stage 01: detect OS, WSL, architecture, systemd availability, shell, PATH'
 OS_ID="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-unknown}")"
@@ -177,8 +231,8 @@ fi
 
 log 'stage 03: install or verify requested Claude Code provider'
 if [ "$REQUEST_CLAUDE" = true ]; then
-  if command -v claude >/dev/null 2>&1; then
-    claude --version
+  if root_has_command claude; then
+    root_env_run claude --version
   elif command -v apt-get >/dev/null 2>&1; then
     # Source: official Claude Code installation docs, https://code.claude.com/docs/en/installation
     run sudo install -d -m 0755 /etc/apt/keyrings
@@ -199,14 +253,12 @@ if [ "$REQUEST_CLAUDE" = true ]; then
     fi
     run sudo apt-get update
     apt_install claude-code
-    command -v claude >/dev/null 2>&1 || { log 'claude install failed; see official Claude Code installation docs'; exit 1; }
-    claude --version
+    root_has_command claude || { log 'claude install failed or is not available in the root service PATH'; exit 1; }
+    root_env_run claude --version
   else
     log 'claude missing and native installer unavailable; install from official Claude Code docs before core_ready'
     exit 1
   fi
-else
-  log 'skip Claude Code install; provider not requested'
 fi
 
 log 'stage 04: install or verify requested Codex CLI provider'
@@ -215,11 +267,11 @@ CODEX_NPM_VERSION="$(read_lock codex_npm_version || true)"
 CODEX_NPM_PACKAGE="${CODEX_NPM_PACKAGE:-@openai/codex}"
 CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.137.0}"
 CODEX_READY=false
-CODEX_STATUS="external_prerequisite"
-CODEX_REMEDIATION_ZH="Codex CLI 未安装；请按当前 Codex 官方安装说明手动安装后重新运行 /ai 提供商 列表。"
+CODEX_STATUS="install_required"
+CODEX_REMEDIATION_ZH="Codex CLI 必须由安装脚本全局安装；若失败请检查网络、Node.js/npm、以及版本锁。"
 if [ "$REQUEST_CODEX" = true ]; then
-  if command -v codex >/dev/null 2>&1; then
-    codex --version
+  if root_has_command codex; then
+    root_env_run codex --version
     CODEX_READY=true
     CODEX_STATUS="installed"
     CODEX_REMEDIATION_ZH=""
@@ -229,8 +281,8 @@ if [ "$REQUEST_CODEX" = true ]; then
     if [ "$DRY_RUN" = false ]; then
       command -v npm >/dev/null 2>&1 || { log 'npm missing after Node.js install; Codex CLI cannot be installed'; exit 1; }
       sudo npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
-      command -v codex >/dev/null 2>&1 || { log 'codex npm install did not place codex on PATH'; exit 1; }
-      codex --version
+      root_has_command codex || { log 'codex npm install did not place codex on the root service PATH'; exit 1; }
+      root_env_run codex --version
       CODEX_READY=true
       CODEX_STATUS="installed"
       CODEX_REMEDIATION_ZH=""
@@ -238,26 +290,34 @@ if [ "$REQUEST_CODEX" = true ]; then
       log "would run sudo npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
     fi
   else
-    log 'codex missing; codex_status=external_prerequisite'
+    log 'codex missing and native package installer unavailable; Codex CLI is required for core install'
+    exit 1
   fi
 else
-  CODEX_STATUS="not_requested"
-  CODEX_REMEDIATION_ZH=""
-  log 'skip Codex CLI install; provider not requested'
+  log 'Codex CLI is required for core install'
+  exit 1
 fi
 if [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
   CODEX_KEY="${CODEX_API_KEY:-$OPENAI_API_KEY}"
   if [ "$DRY_RUN" = false ]; then
-    mkdir -p "$HOME/.codex"
-    cat > "$HOME/.codex/config.toml" <<EOF
+    sudo mkdir -p "$CODEX_HOME"
+    sudo tee "$CODEX_HOME/config.toml" >/dev/null <<EOF
 model_provider = "${CODEX_MODEL_PROVIDER:-OpenAI}"
 model = "${CODEX_MODEL:-gpt-5.5}"
 review_model = "${CODEX_REVIEW_MODEL:-${CODEX_MODEL:-gpt-5.5}}"
 model_reasoning_effort = "${CODEX_REASONING_EFFORT:-xhigh}"
-disable_response_storage = true
+disable_response_storage = ${CODEX_DISABLE_RESPONSE_STORAGE:-false}
 network_access = "enabled"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+workspace_write_network_access = true
+dangerously_bypass_approvals_and_sandbox = true
 model_context_window = ${CODEX_CONTEXT_WINDOW:-200000}
 model_auto_compact_token_limit = ${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-160000}
+hide_agent_reasoning = false
+
+[shell_environment_policy]
+inherit = "all"
 
 [model_providers.${CODEX_MODEL_PROVIDER:-OpenAI}]
 name = "${CODEX_MODEL_PROVIDER:-OpenAI}"
@@ -268,21 +328,24 @@ requires_openai_auth = true
 [features]
 goals = true
 EOF
-    CODEX_KEY="$CODEX_KEY" python3 - <<'PY'
+    sudo env CODEX_KEY="$CODEX_KEY" CODEX_HOME="$CODEX_HOME" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
-path = Path.home() / ".codex" / "auth.json"
+path = Path(os.environ["CODEX_HOME"]) / "auth.json"
 path.write_text(json.dumps({"OPENAI_API_KEY": os.environ["CODEX_KEY"]}, indent=2), encoding="utf-8")
 path.chmod(0o600)
 PY
-    chmod 0600 "$HOME/.codex/config.toml"
+    sudo chmod 0600 "$CODEX_HOME/config.toml" "$CODEX_HOME/auth.json"
+    sudo chown -R root:root "$CODEX_HOME" 2>/dev/null || true
   else
-    log 'would write ~/.codex/config.toml and ~/.codex/auth.json from CODEX_* environment'
+    log "would write $CODEX_HOME/config.toml and $CODEX_HOME/auth.json from CODEX_* environment"
   fi
 fi
 
-log 'stage 05: create runner directories'
+install_vscode
+
+log 'stage 06: create runner directories'
 run sudo mkdir -p "$STATE_ROOT"/{credentials,instructions/snapshots,budget} "$WORKSPACE_ROOT" "$INSTALL_ROOT"
 run sudo rm -rf "$INSTALL_ROOT/src"
 run sudo cp -R "$REPO_ROOT"/src "$INSTALL_ROOT"/
@@ -294,12 +357,14 @@ else
   log "would create $INSTALL_ROOT/.venv and install Python package from $INSTALL_ROOT"
 fi
 
-log 'stage 06: create runner configuration files'
+log 'stage 07: create runner configuration files'
 SNAPSHOT_DIR="$STATE_ROOT/install-snapshots"
 if [ -n "${AI_BRIDGE_SHARED_SECRET:-}" ]; then
   BRIDGE_SECRET="$AI_BRIDGE_SHARED_SECRET"
 elif [ -n "$(config_value AI_BRIDGE_SHARED_SECRET)" ]; then
   BRIDGE_SECRET="$(config_value AI_BRIDGE_SHARED_SECRET)"
+elif [ "$DRY_RUN" = true ]; then
+  BRIDGE_SECRET="DRY_RUN_BRIDGE_SECRET_PLACEHOLDER_000000000000"
 else
   BRIDGE_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 fi
@@ -330,8 +395,13 @@ if [ "$DRY_RUN" = false ]; then
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
 AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS
+AI_PERMISSION_SCOPE=$AI_PERMISSION_SCOPE
+AI_REQUIRE_SHELL_CONFIRMATION=$AI_REQUIRE_SHELL_CONFIRMATION
+HOME=$AI_TOOL_HOME
+CODEX_HOME=$CODEX_HOME
+PATH=$SERVICE_PATH
 CLAUDE_MODEL=$CLAUDE_MODEL
-CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-0}
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 EOF
   if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
@@ -378,14 +448,39 @@ print(json.dumps({"provider": provider}, indent=2, sort_keys=True))
 PY
     sudo chmod 0600 "$STATE_ROOT/provider-selection.json"
   fi
+  sudo env AI_PERMISSION_SCOPE="$AI_PERMISSION_SCOPE" python3 - "$STATE_ROOT/conversation-policy.json" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+scope = os.environ["AI_PERMISSION_SCOPE"]
+default = {
+    "policy": "continue",
+    "conversation_id": "default",
+    "provider_conversations": {},
+    "auto_compact_enabled": True,
+    "auto_compact_threshold_percent": 80,
+}
+try:
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+except json.JSONDecodeError:
+    data = {}
+data = default | data
+data["permission_scope"] = scope
+path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
 else
   log "would write $STATE_ROOT/config.env with a generated bridge secret"
+  log "would set conversation policy permission_scope=$AI_PERMISSION_SCOPE"
 fi
 
-log 'stage 07: create credential broker storage backend'
+log 'stage 08: create credential broker storage backend'
 run sudo chmod 0700 "$STATE_ROOT/credentials"
 
-log 'stage 08: install runner bridge service'
+log 'stage 09: install runner bridge service'
 if [ "$SYSTEMD" = true ]; then
   if [ "$DRY_RUN" = false ]; then
     sudo tee /etc/systemd/system/ai-remote-runner.service >/dev/null <<EOF
@@ -395,6 +490,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+User=root
 EnvironmentFile=$STATE_ROOT/config.env
 WorkingDirectory=$INSTALL_ROOT
 ExecStart=$RUNNER_PYTHON -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
@@ -416,6 +512,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
 EnvironmentFile=$STATE_ROOT/config.env
 WorkingDirectory=$INSTALL_ROOT
 ExecStart=$RUNNER_PYTHON -m ai_remote_runner.cli telegram
@@ -445,6 +542,9 @@ else
     sudo tee "$INSTALL_ROOT/run-local.sh" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "\$(id -u)" != 0 ]; then
+  exec sudo -E "\$0" "\$@"
+fi
 source "$STATE_ROOT/config.env"
 exec "$RUNNER_PYTHON" -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
 EOF
@@ -453,6 +553,9 @@ EOF
       sudo tee "$INSTALL_ROOT/run-telegram-local.sh" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "\$(id -u)" != 0 ]; then
+  exec sudo -E "\$0" "\$@"
+fi
 source "$STATE_ROOT/config.env"
 exec "$RUNNER_PYTHON" -m ai_remote_runner.cli telegram
 EOF
@@ -466,30 +569,37 @@ EOF
   fi
 fi
 
-log 'stage 09: connect runner to communication platform'
+log 'stage 10: connect runner to communication platform'
 log 'use scripts/pair-runner.sh with Mattermost URL, webhook URL, bot token, and bridge shared secret'
 if [ "$ENABLE_TELEGRAM" = true ]; then
   log 'use scripts/pair-telegram.sh with a BotFather token and Telegram chat_id to enable Telegram'
 fi
 
-log 'stage 10: run provider smoke tests'
-python3 -m ai_remote_runner.cli providers
+log 'stage 11: run provider CLI/auth preflight; full-access smoke is enforced by validate-core-ready.sh'
+runner_cli providers
 if [ "$DRY_RUN" = false ] && [ "$REQUEST_CLAUDE" = true ]; then
-  command -v claude >/dev/null 2>&1 || { log 'claude is required before core_ready for requested provider claude-code'; exit 1; }
-  claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready for requested provider claude-code'; exit 1; }
-  log 'defer real Claude print-json smoke to scripts/validate-core-ready.sh to avoid install-time provider spend'
-elif [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
-  command -v codex >/dev/null 2>&1 || { log 'codex is required before core_ready for AI_DEFAULT_PROVIDER=codex'; exit 1; }
-  log 'claude auth not required unless claude-code provider is requested'
-elif [ "$DRY_RUN" = true ]; then
-  log "would run provider smoke tests for AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS"
+  root_has_command claude || { log 'claude is required before core_ready for requested provider claude-code'; exit 1; }
+  root_env_run claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready for requested provider claude-code'; exit 1; }
+fi
+if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
+  root_has_command codex || { log 'codex is required before core_ready for requested provider codex'; exit 1; }
+  root_env_run codex exec --help >/dev/null || { log 'codex exec is required before core_ready for requested provider codex'; exit 1; }
+  if root_env_run codex exec --help 2>&1 | grep -Eq -- '--dangerously-bypass-approvals-and-sandbox|--sandbox'; then
+    log 'codex full-access exec flag is available'
+  else
+    log 'codex full-access exec flag is unavailable'
+    exit 1
+  fi
+fi
+if [ "$DRY_RUN" = true ]; then
+  log "would run provider CLI/auth preflight for AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS"
 fi
 
-log 'stage 11: run phone command smoke tests'
-python3 -m ai_remote_runner.cli parse '/ai 状态'
-python3 -m ai_remote_runner.cli index >/dev/null
+log 'stage 12: run phone command smoke tests'
+runner_cli parse '/ai 状态'
+runner_cli index >/dev/null
 
-log 'stage 12: report core_ready or failed'
+log 'stage 13: report core_ready or failed'
 if [ "$DRY_RUN" = false ]; then
   sudo tee "$STATE_ROOT/install-manifest.json" >/dev/null <<EOF
 {
@@ -497,6 +607,8 @@ if [ "$DRY_RUN" = false ]; then
   "state_root": "$STATE_ROOT",
   "workspace_root": "$WORKSPACE_ROOT",
   "install_root": "$INSTALL_ROOT",
+  "ai_tool_home": "$AI_TOOL_HOME",
+  "codex_home": "$CODEX_HOME",
   "systemd": $SYSTEMD,
   "wsl": $WSL,
   "core_ready": false,
@@ -504,7 +616,12 @@ if [ "$DRY_RUN" = false ]; then
   "codex_ready": $CODEX_READY,
   "codex_status": "$CODEX_STATUS",
   "codex_remediation_zh": "$CODEX_REMEDIATION_ZH",
+  "vscode_ready": $VSCODE_READY,
+  "vscode_root_wrapper": "$VSCODE_ROOT_WRAPPER",
+  "vscode_root_dir": "$VSCODE_ROOT_DIR",
   "claude_model": "$CLAUDE_MODEL",
+  "permission_scope": "$AI_PERMISSION_SCOPE",
+  "shell_confirmation_required": "$AI_REQUIRE_SHELL_CONFIRMATION",
   "telegram_enabled": $ENABLE_TELEGRAM,
   "telegram_status": "pending_pairing",
   "snapshots": {

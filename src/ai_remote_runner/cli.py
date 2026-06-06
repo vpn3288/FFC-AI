@@ -11,7 +11,7 @@ from .credentials import CredentialBroker
 from .executor import RunnerRuntime, current_status, execute
 from .instructions import InstructionStore
 from .paths import ensure_runtime_dirs, state_root, workspace_root
-from .providers import provider_status
+from .providers import invoke_claude, invoke_codex, provider_status
 
 
 def print_json(data: object) -> None:
@@ -28,6 +28,13 @@ def main() -> int:
     exec_p.add_argument("raw_text")
     sub.add_parser("index")
     sub.add_parser("providers")
+    smoke_p = sub.add_parser("provider-smoke")
+    smoke_p.add_argument("--provider", choices=["claude-code", "codex"], required=True)
+    smoke_p.add_argument("--workspace", default=None)
+    smoke_p.add_argument("--prompt", default="Return exactly: ok")
+    smoke_p.add_argument("--expect-contains", default="")
+    smoke_p.add_argument("--timeout-seconds", type=int, default=180)
+    smoke_p.add_argument("--reserved-usd", type=float, default=0.05)
     budget_p = sub.add_parser("budget")
     budget_p.add_argument("--reserve-run")
     budget_p.add_argument("--provider", default="claude-code")
@@ -62,6 +69,35 @@ def main() -> int:
         print_json(command_index())
     elif args.cmd == "providers":
         print_json(provider_status())
+    elif args.cmd == "provider-smoke":
+        workspace = Path(args.workspace) if args.workspace else workspace_root() / "provider-smoke"
+        workspace.mkdir(parents=True, exist_ok=True)
+        ledger = BudgetLedger(state_root() / "budget" / "ledger.json")
+        if args.provider == "codex":
+            result = invoke_codex(
+                args.prompt,
+                workspace,
+                ledger,
+                instruction_prompt="Provider smoke test. Use full VM access configuration.",
+                reserved_usd=args.reserved_usd,
+                timeout_seconds=args.timeout_seconds,
+            )
+        else:
+            result = invoke_claude(
+                args.prompt,
+                workspace,
+                "Provider smoke test. Use full VM access configuration.",
+                ledger,
+                reserved_usd=args.reserved_usd,
+                timeout_seconds=args.timeout_seconds,
+                permission_scope="full",
+            )
+        output = result.output_text.strip()
+        print_json({"provider": result.provider, "status": result.status, "output": output[:500]})
+        if result.status != "completed":
+            return 1
+        if args.expect_contains and args.expect_contains not in output:
+            return 1
     elif args.cmd == "budget":
         ledger = BudgetLedger(state_root() / "budget" / "ledger.json")
         if args.reserve_run:

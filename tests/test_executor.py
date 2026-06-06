@@ -40,6 +40,14 @@ class ExecutorTests(unittest.TestCase):
             response = execute(parse_command("/ai 状态"), {"request_id": "sw2", "raw_text": "/ai 状态"}, runtime)
             self.assertEqual(response["data"]["current_workspace"], "demo")
 
+    def test_status_includes_recent_run_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.events.emit({"run_id": "run-active", "provider": "claude-code", "phase": "running", "public_message_zh": "仍在运行", "time": 123})
+            response = execute(parse_command("/ai 状态"), {"request_id": "sw-events", "raw_text": "/ai 状态"}, runtime)
+            active = next(item for item in response["data"]["recent_runs"] if item["run_id"] == "run-active")
+            self.assertEqual(active["phase"], "running")
+
     def test_status_reads_core_ready_from_install_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -162,6 +170,15 @@ class ExecutorTests(unittest.TestCase):
                 execute(parsed, {"request_id": "r8b", "raw_text": "do work"}, runtime)
             self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 0.05)
 
+    def test_default_permission_scope_is_full_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                execute(parsed, {"request_id": "perm-default", "raw_text": "do work"}, runtime)
+            self.assertEqual(invoke.call_args.kwargs["permission_scope"], "full")
+
     def test_continue_policy_injects_recent_transcript_into_provider_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -245,6 +262,18 @@ class ExecutorTests(unittest.TestCase):
                 response = execute(parsed, {"request_id": "ps2", "raw_text": "do work"}, runtime)
             self.assertEqual(response["data"]["provider"], "codex")
             invoke.assert_called_once()
+
+    def test_codex_rejects_non_full_permission_scope_without_misleading_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 提供商 使用 codex"), {"request_id": "codex-scope-1", "raw_text": "/ai 提供商 使用 codex"}, runtime)
+            execute(parse_command("/ai 聊天模式 开启"), {"request_id": "codex-scope-2", "raw_text": "/ai 聊天模式 开启"}, runtime)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            with patch("ai_remote_runner.executor.invoke_codex") as invoke:
+                response = execute(parsed, {"request_id": "codex-scope-3", "raw_text": "do work"}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "codex_permission_scope_unsupported")
+            invoke.assert_not_called()
 
     def test_provider_switch_keeps_provider_specific_conversation_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -385,14 +414,33 @@ class ExecutorTests(unittest.TestCase):
                 execute(parsed, {"request_id": "pm2", "raw_text": "edit work"}, runtime)
             self.assertEqual(invoke.call_args.kwargs["permission_scope"], "edit")
 
-    def test_shell_permission_scope_requires_per_task_confirmation(self) -> None:
+    def test_shell_permission_scope_runs_without_per_task_confirmation_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
-            execute(parse_command("/ai shell模式 开启"), {"request_id": "sh1", "raw_text": "/ai shell模式 开启", "confirmed": True}, runtime)
+            execute(parse_command("/ai shell模式 开启"), {"request_id": "sh1", "raw_text": "/ai shell模式 开启"}, runtime)
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "run shell"}, "requires_confirmation": False}
-            response = execute(parsed, {"request_id": "sh2", "raw_text": "run shell"}, runtime)
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                response = execute(parsed, {"request_id": "sh2", "raw_text": "run shell"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(invoke.call_args.kwargs["permission_scope"], "shell")
+
+    def test_shell_permission_scope_can_require_confirmation_when_env_enables_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai shell模式 开启"), {"request_id": "sh3", "raw_text": "/ai shell模式 开启"}, runtime)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "run shell"}, "requires_confirmation": False}
+            with patch.dict("os.environ", {"AI_REQUIRE_SHELL_CONFIRMATION": "1"}, clear=False):
+                response = execute(parsed, {"request_id": "sh4", "raw_text": "run shell"}, runtime)
             self.assertEqual(response["status"], "needs_confirmation")
             self.assertEqual(response["data"]["permission_scope"], "shell")
+
+    def test_full_access_permission_command_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            response = execute(parse_command("/ai 完全访问 开启"), {"request_id": "full1", "raw_text": "/ai 完全访问 开启"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(runtime.load_policy()["permission_scope"], "full")
 
 
 if __name__ == "__main__":

@@ -18,8 +18,10 @@ The stack SHALL support:
 - Claude Code;
 - Codex;
 - other future AI adapters;
-- self-hosted communication platform, default Mattermost, fallback Matrix/Synapse;
-- optional Telegram bot channel after explicit pairing;
+- first-class Telegram phone bot after explicit pairing;
+- first-class Mattermost self-hosted communication platform;
+- Matrix/Synapse fallback;
+- root/full-access VSCode installation for the VM workstation;
 - mobile command/control UX;
 - mobile status/progress display;
 - context usage display;
@@ -31,9 +33,11 @@ The stack SHALL support:
 - command, skill, MCP, CLI, and feature index with Chinese descriptions;
 - optional post-install extension/tool bundle.
 
-Telegram MAY be used only as an optional runner-side bot channel. It MUST NOT replace Mattermost as the default platform, MUST NOT block core-ready, and MUST require explicit BotFather token plus Telegram ID pairing before executing AI commands.
+Telegram and Mattermost MUST be treated as equal first-class communication platforms. Telegram MAY be the user's main daily phone entrypoint because it is simpler and faster. Mattermost remains an equal self-hosted team/channel platform. Telegram MUST require explicit BotFather token plus Telegram ID pairing before executing AI commands.
 
-Privacy/stealth MUST NOT be optimized beyond minimum credential safety, remote-execution safety, budget control, and recoverability.
+Privacy/stealth MUST NOT be optimized beyond minimum credential hygiene. The VM itself is the security and privacy boundary for AI execution; Claude Code, Codex, and VSCode MUST be allowed root/full access inside that VM by default.
+
+The master-writer and reviewer AIs MUST preserve explicit user requests outside these three guidance files as first-class requirements. The guidance files are the standing operating spec, but newer direct user requirements override stale guidance and MUST be reflected back into the maintained files and implementation.
 
 ## 2. Maintained Files
 
@@ -73,7 +77,7 @@ The master-writer AI MUST:
 - keep scope centered on core working functionality;
 - merge reviewer output only after independent reviews finish;
 - maintain version hashes and review state;
-- reject recommendations that make Telegram mandatory, unauthenticated, or a replacement for default Mattermost;
+- reject recommendations that make Telegram unauthenticated, omit Mattermost parity, or make Mattermost artificially higher priority than Telegram;
 - reject privacy/stealth expansion unless required for credential or remote-execution safety.
 - engage reviewer AIs adversarially instead of using them only as defect detectors;
 - maintain a separate creative-proposal track for strong non-blocking ideas.
@@ -171,7 +175,7 @@ Rules:
 - Creative proposals MUST NOT be treated as blockers unless they expose P0/P1 risk.
 - Master-writer MUST mark each creative proposal as `adopted`, `deferred`, or `rejected`.
 - Master-writer MAY relax non-safety constraints when a proposal improves core functionality, mobile UX, extensibility, or implementation quality.
-- Master-writer MUST NOT relax: Telegram optional-only, no secrets in AI prompts, no uncontrolled remote execution, no unlimited spend.
+- Master-writer MUST NOT relax: Telegram/Mattermost first-class parity, explicit Telegram pairing, no secrets in AI prompts, no secrets in GitHub, reviewer independence, and no unlimited spend. Full root remote execution inside the user-created VM is a required feature, not a violation.
 - Reviewer AIs SHOULD actively disagree with weak assumptions.
 - Reviewer AIs SHOULD propose at least three non-obvious improvements per round unless none are useful.
 - Reviewer AIs MUST explicitly state whether the master-writer over-compressed necessary implementation detail.
@@ -241,12 +245,16 @@ Pass requires:
 - implementation scripts exist for runner install, communication install, rollback, bridge, providers, commands, credentials, budget, context, instruction files, and smoke tests;
 - implementation smoke tests pass locally;
 - latest optimization commit has been pushed to GitHub;
-- Telegram optional service present only when explicitly enabled and paired;
-- Mattermost selected as primary platform;
+- Telegram and Mattermost both treated as first-class platforms;
+- Telegram may be the user's primary daily phone entrypoint after explicit pairing;
+- Mattermost remains equal, not primary-over-Telegram;
 - Matrix/Synapse selected as fallback platform;
 - AI runner core install not blocked by optional skills/CLI/MCP tools;
 - AI runner installer explicitly installs or verifies Claude Code;
-- AI runner installer explicitly installs, verifies, or marks Codex as external prerequisite with remediation;
+- AI runner installer explicitly installs and verifies Codex with root/full VM access; Codex MUST NOT be accepted as an external prerequisite in the current VM lab requirement;
+- `core_ready=true` MUST require real Claude Code and Codex full-access provider smoke tests when those providers are enabled;
+- Telegram-primary pairing MUST trigger the same `validate-core-ready.sh` path as Mattermost pairing;
+- Telegram and Mattermost visible responses MUST render the same structured runner data, not merely hidden response props;
 - communication VPS installer explicitly installs Mattermost server by default;
 - communication VPS installer explicitly configures team/channels/bots/bridge endpoints;
 - bridge integration between phone communication platform and local AI runner has smoke tests;
@@ -273,7 +281,6 @@ Minimum safety means only:
 
 - no secrets in GitHub;
 - no secrets in AI prompts;
-- no uncontrolled remote shell;
 - no unlimited spend;
 - recoverable install/update/rollback.
 
@@ -282,7 +289,7 @@ Minimum safety means only:
 P0:
 
 - credential disclosure;
-- uncontrolled remote command execution;
+- uncontrolled execution outside the user-created VM boundary;
 - unlimited spend;
 - destructive install/update behavior;
 - unrecoverable system damage.
@@ -310,13 +317,13 @@ P3:
 Claude Code reviewer prompt MUST include:
 
 ```text
-Review all guidance files and implementation scripts in a fresh conversation with no resume/continue context. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Verify that Telegram is optional-only and requires explicit pairing, Mattermost is primary, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, optional tools do not block core-ready, command index shows Chinese descriptions, and scripts implement the guidance rather than logging placeholder stages.
+Review all guidance files, implementation scripts, and latest explicit user requests in a fresh conversation with no resume/continue context. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Verify that Telegram and Mattermost are first-class equal platforms, Telegram may be the user's primary daily phone entrypoint after explicit pairing, Telegram status/heartbeat shows queued/calling/running states, Mattermost parity is preserved, Matrix is fallback, mobile commands work in Chinese, credentials use handles, global.md/project.md are supported, Claude Code/Codex/VSCode install and run with root/full VM access by default, reviewer independence is script-enforced, optional tools do not block core-ready, command index shows Chinese descriptions, and scripts implement the guidance rather than logging placeholder stages.
 ```
 
 GPT-5.5 reviewer prompt MUST include:
 
 ```text
-Review all guidance files and implementation scripts in a fresh conversation. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Do not expand privacy/stealth scope. Check mobile UX completeness, AI compatibility, communication platform choice, credential handle workflow, context compaction, command index, Chinese descriptions, optional post-install tooling, and whether scripts fully implement the guidance without placeholder-only stages.
+Review all guidance files, implementation scripts, and latest explicit user requests in a fresh conversation. Report P0/P1 blockers, high-value P2, missing user requirements, creative proposals, over-compression findings, and over-engineering findings. Be adversarial. Challenge weak assumptions. Check mobile UX completeness, Telegram queued/calling/running heartbeat visibility, AI compatibility, communication platform choice, credential handle workflow, context compaction, command index, Chinese descriptions, root/full-access Claude Code/Codex/VSCode behavior, script-enforced independent reviewer workflow, optional post-install tooling, and whether scripts fully implement the guidance without placeholder-only stages.
 ```
 
 ## 10. Source Anchors

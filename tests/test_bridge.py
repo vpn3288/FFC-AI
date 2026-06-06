@@ -192,6 +192,29 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(payload["response_type"], "ephemeral")
                 self.assertEqual(payload["props"]["ai_remote_response"]["status"], "accepted")
                 self.assertEqual(payload["props"]["ai_remote_response"]["data"]["default_workspace"], "default")
+                self.assertIn("状态已生成", payload["text"])
+                self.assertIn("default_workspace", payload["text"])
+                self.assertIn("recent_runs", payload["text"])
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_mattermost_help_text_renders_visible_command_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MATTERMOST_SLASH_TOKEN": "slash-secret"}):
+            server, _, url = self._server(tmp)
+            try:
+                body = urlencode({"token": "slash-secret", "command": "/ai", "text": "帮助", "trigger_id": "help-1"}).encode("utf-8")
+                req = request.Request(
+                    f"{url}/bridge/command",
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                response = request.urlopen(req, timeout=10)
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertIn("/ai 状态", payload["text"])
+                self.assertIn("显示当前运行", payload["text"])
+                self.assertIn("索引已生成", payload["text"])
             finally:
                 server.shutdown()
                 server.server_close()
@@ -230,9 +253,118 @@ class BridgeHTTPTests(unittest.TestCase):
                 fake = ProviderResult("run", "claude-code", "completed", "hi", None, 0)
                 with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
                     response = request.urlopen(req, timeout=10)
-                payload = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(payload["props"]["ai_remote_response"]["status"], "accepted")
-                self.assertEqual(payload["text"], "hi")
+                    payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(payload["props"]["ai_remote_response"]["status"], "accepted")
+                    self.assertIn("后台运行", payload["text"])
+                    deadline = time.time() + 5
+                    while time.time() < deadline and invoke.call_count == 0:
+                        time.sleep(0.05)
+                    invoke.assert_called_once()
+                    deadline = time.time() + 5
+                    cached = {}
+                    while time.time() < deadline:
+                        cached = server.state.responses().get("task-1", {})  # type: ignore[attr-defined]
+                        if cached.get("data", {}).get("output") == "hi":
+                            break
+                        time.sleep(0.05)
+                self.assertEqual(cached.get("data", {}).get("output"), "hi")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_mattermost_background_task_emits_running_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "MATTERMOST_SLASH_TOKEN": "slash-secret",
+                "AI_WORKSPACE_ROOT": str(Path(tmp) / "workspaces"),
+                "AI_MATTERMOST_HEARTBEAT_SECONDS": "1",
+            },
+        ):
+            server, _, url = self._server(tmp)
+            try:
+                body = urlencode({"token": "slash-secret", "command": "/ai", "text": "slow task", "trigger_id": "task-heartbeat"}).encode("utf-8")
+                req = request.Request(
+                    f"{url}/bridge/command",
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+
+                def slow_provider(*args: object, **kwargs: object) -> ProviderResult:
+                    time.sleep(1.4)
+                    return ProviderResult("run", "claude-code", "completed", "done", None, 0)
+
+                with patch("ai_remote_runner.executor.invoke_claude", side_effect=slow_provider):
+                    response = request.urlopen(req, timeout=10)
+                    payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(payload["props"]["ai_remote_response"]["status"], "accepted")
+                    deadline = time.time() + 5
+                    while time.time() < deadline:
+                        events_path = Path(tmp) / "state" / "events.jsonl"
+                        if events_path.exists() and '"phase": "running"' in events_path.read_text(encoding="utf-8"):
+                            break
+                        time.sleep(0.05)
+                    deadline = time.time() + 5
+                    while time.time() < deadline:
+                        cached = server.state.responses().get("task-heartbeat", {})  # type: ignore[attr-defined]
+                        if cached.get("data", {}).get("output") == "done":
+                            break
+                        time.sleep(0.05)
+                events = (Path(tmp) / "state" / "events.jsonl").read_text(encoding="utf-8")
+                self.assertIn('"phase": "running"', events)
+                self.assertIn('"provider": "claude-code"', events)
+                self.assertNotIn('"provider": "runner"', events)
+                self.assertIn("不是卡死", events)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_mattermost_background_needs_confirmation_can_be_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "MATTERMOST_SLASH_TOKEN": "slash-secret",
+                "AI_WORKSPACE_ROOT": str(Path(tmp) / "workspaces"),
+                "AI_REQUIRE_SHELL_CONFIRMATION": "1",
+            },
+        ):
+            server, _, url = self._server(tmp)
+            try:
+                for trigger, text in (("shell-mode", "shell模式 开启"), ("shell-task", "run shell task")):
+                    body = urlencode({"token": "slash-secret", "command": "/ai", "text": text, "trigger_id": trigger}).encode("utf-8")
+                    request.urlopen(
+                        request.Request(
+                            f"{url}/bridge/command",
+                            data=body,
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            method="POST",
+                        ),
+                        timeout=10,
+                    ).read()
+                deadline = time.time() + 5
+                cached = {}
+                while time.time() < deadline:
+                    cached = server.state.responses().get("shell-task", {})  # type: ignore[attr-defined]
+                    if cached.get("status") == "needs_confirmation":
+                        break
+                    time.sleep(0.05)
+                token = cached.get("data", {}).get("confirmation_token")
+                self.assertTrue(token)
+                fake = ProviderResult("run", "claude-code", "completed", "confirmed", None, 0)
+                with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                    body = urlencode({"token": "slash-secret", "command": "/ai", "text": f"确认 {token}", "trigger_id": "shell-confirm"}).encode("utf-8")
+                    response = request.urlopen(
+                        request.Request(
+                            f"{url}/bridge/command",
+                            data=body,
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            method="POST",
+                        ),
+                        timeout=10,
+                    )
+                    payload = json.loads(response.read().decode("utf-8"))
+                    self.assertIn("confirmed", payload["text"])
                 invoke.assert_called_once()
             finally:
                 server.shutdown()

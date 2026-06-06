@@ -3,6 +3,8 @@ set -euo pipefail
 
 STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
 TELEGRAM_SYSTEMD_UNIT="${TELEGRAM_SYSTEMD_UNIT:-/etc/systemd/system/ai-telegram-bot.service}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VALIDATE_CORE_READY_SCRIPT="${VALIDATE_CORE_READY_SCRIPT:-$SCRIPT_DIR/validate-core-ready.sh}"
 BOT_TOKEN=""
 BOT_TOKEN_FILE=""
 BOT_TOKEN_STDIN=false
@@ -157,4 +159,11 @@ if command -v systemctl >/dev/null 2>&1 && [ -f "$TELEGRAM_SYSTEMD_UNIT" ]; then
   printf '[pair-telegram] ai-telegram-bot.service started\n'
 else
   printf '[pair-telegram] systemd service not found; run /opt/ai-remote-runner/run-telegram-local.sh manually on non-systemd installs\n'
+fi
+
+if [ "${PAIR_TELEGRAM_VALIDATE_CORE_READY:-true}" = true ] && { [ -x "$VALIDATE_CORE_READY_SCRIPT" ] || [ -f "$VALIDATE_CORE_READY_SCRIPT" ]; }; then
+  printf '[pair-telegram] running core readiness validation for Telegram channel\n'
+  sudo env AI_REMOTE_STATE="$STATE_ROOT" bash "$VALIDATE_CORE_READY_SCRIPT"
+else
+  printf '[pair-telegram] core readiness validation skipped; run validate-core-ready.sh before treating Telegram as ready\n'
 fi

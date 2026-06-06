@@ -7,28 +7,26 @@ Style: AI-only executable specification. Human readability is not a goal.
 
 ## 1. Core Decision
 
-Primary platform: Mattermost.
+First-class phone platforms: Telegram and Mattermost.
 
 Fallback platform: Matrix/Synapse.
 
-Optional direct bot channel: Telegram.
-
-Telegram MAY be enabled as an optional runner-side bot after core install. It MUST NOT replace the default Mattermost communication platform, MUST NOT be required for core-ready, and MUST require explicit BotFather token plus Telegram ID pairing before executing AI commands.
+Telegram and Mattermost MUST be treated as equal first-class communication channels. If the user prefers speed and simplicity, Telegram MAY be the main day-to-day phone entrypoint. Mattermost remains an equal self-hosted team/channel platform, not a higher-priority platform. Telegram MUST require explicit BotFather token plus Telegram ID pairing before executing AI commands.
 
 Rationale:
 
-- Mattermost best matches mobile command UX, internal channels, bot/webhook/API support, slash-command-style control, and reproducible VPS deployment.
+- Telegram best matches fast personal mobile command UX and simple bot pairing.
+- Mattermost best matches self-hosted team/channel UX, internal channels, bot/webhook/API support, slash-command-style control, and reproducible VPS deployment.
 - Matrix/Synapse is fallback for open protocol, bridges, and multi-client ecosystem.
-- Telegram is useful as a lightweight optional direct mobile channel when the user supplies a bot token and Telegram ID.
 
 Example weighted score:
 
 ```text
+Telegram direct bot: 90
 Mattermost: 88
 Matrix/Synapse: 80
 Zulip: 74
 Rocket.Chat: 70
-Telegram direct bot: optional
 ```
 
 ## 2. Platform Selection Criteria
@@ -46,9 +44,15 @@ basic admin controls: 5
 GitHub-reproducible docs: 10
 ```
 
-The implementation MUST use Mattermost unless a future review produces a P1 blocker.
+The implementation MUST support Telegram and Mattermost as equal first-class communication paths when selected by the installer/operator. A deployment MAY install only Telegram, only Mattermost, or both, but if both are installed they MUST expose the same command table, status vocabulary, provider selection, long-conversation policy, and full-access controls.
 
-The runner implementation MAY additionally support Telegram long polling as an optional service installed by `scripts/install-runner.sh --enable-telegram` and paired by `scripts/pair-telegram.sh`.
+The runner implementation MUST support Telegram long polling as a first-class optional service installed by `scripts/install-runner.sh --enable-telegram` and paired by `scripts/pair-telegram.sh`.
+
+When Telegram is enabled and paired, the bot MUST align with the same `/ai` command table as Mattermost. For task execution it MUST provide visible progress states on phone: queued, calling model, running heartbeat, provider error, and final response. It SHOULD use Telegram `sendChatAction` typing while a provider is active so the user can tell the bot is connected even when the AI is thinking or tools are running.
+
+Telegram pairing MUST trigger core readiness validation. A Telegram-primary deployment MUST run the same full-access Claude Code/Codex smoke validation as a Mattermost-paired deployment before `core_ready=true`.
+
+Mattermost slash commands MUST NOT hold the phone request open for a long Claude/Codex run. Non-task commands MAY respond synchronously, but AI task commands MUST return an immediate accepted/background-running response and send queued/calling/running/final/error progress through the configured incoming webhook or bot status channel. A running heartbeat MUST be sent periodically while the background task is active so the phone UI can distinguish thinking/tool/network wait from a disconnected runner.
 
 ## 3. VPS Baseline
 
@@ -89,7 +93,7 @@ Core ops:
 
 The VPS communication installer MUST install, configure, and validate the self-hosted communication server.
 
-Default target MUST be Mattermost.
+The VPS self-hosted communication server installer target is Mattermost. This does not make Mattermost higher priority than Telegram; Telegram is a runner-side first-class phone channel and does not require a self-hosted chat server.
 
 Installer stages:
 
@@ -164,6 +168,8 @@ Communication bridge integration MUST validate:
 /ai 提供商 使用
 /ai 扩展 列表
 ```
+
+`scripts/validate-integration.sh` MUST cover the no-provider command list by default. Real provider-backed Mattermost background task dispatch MAY be enabled with `VALIDATE_MATTERMOST_BACKGROUND_TASK=true` during paid/manual acceptance testing so normal CI and dry validation do not spend model budget.
 
 This smoke list MUST match AI runner bridge smoke tests.
 
@@ -283,6 +289,8 @@ Required examples:
 /ai 编辑模式 开启
 /ai shell模式 开启
 ```
+
+Mattermost and Telegram visible responses MUST render structured runner data, not only hidden props. `/ai 帮助`, `/ai 状态`, `/ai 功能`, `/ai 提供商 列表`, `/ai 上下文`, and `/ai 预算` MUST show useful phone-visible content on both platforms.
 
 ## 6. Matrix/Synapse Fallback
 

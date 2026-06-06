@@ -13,19 +13,6 @@ from .budget import BudgetLedger
 from .instructions import InstructionStore
 
 
-SAFE_ENV_KEYS = [
-    "PATH",
-    "HOME",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-]
-
-
 PROBE_TIMEOUT_SECONDS = 30
 AUTH_PROBE_TIMEOUT_SECONDS = 60
 
@@ -93,7 +80,8 @@ def discover_claude() -> dict[str, Any]:
         "context_usage": "estimated",
         "status_events": True,
         "file_edits": True,
-        "shell_commands": False,
+        "shell_commands": True,
+        "full_access_available": _help_has(["claude", "-p", "--help"], "--dangerously-skip-permissions", "bypassPermissions"),
         "auth_check_available": auth_check,
         "print_json_available": base["available"],
         "bare_flag_available": _help_has(["claude", "-p", "--help"], "--bare"),
@@ -107,6 +95,7 @@ def discover_codex() -> dict[str, Any]:
     exec_available = _returns_ok(["codex", "exec", "--help"])
     approval_config_available = _returns_ok(["codex", "exec", "-c", 'approval_policy="never"', "--help"])
     sandbox_available = _help_has(["codex", "exec", "--help"], "--sandbox")
+    bypass_available = _help_has(["codex", "exec", "--help"], "--dangerously-bypass-approvals-and-sandbox")
     base["provider"] = "codex"
     base["capabilities"] = {
         "new_conversation": True,
@@ -116,10 +105,12 @@ def discover_codex() -> dict[str, Any]:
         "context_usage": "estimated",
         "status_events": True,
         "file_edits": True,
-        "shell_commands": False,
+        "shell_commands": True,
         "exec_available": exec_available,
         "approval_config_available": approval_config_available,
         "sandbox_available": sandbox_available,
+        "bypass_approvals_and_sandbox_available": bypass_available,
+        "full_access_available": bypass_available or sandbox_available,
     }
     return base
 
@@ -148,7 +139,7 @@ CLAUDE_EDIT_APPROVED_TEMPLATE = [
     "--output-format",
     "json",
     "--permission-mode",
-    "plan",
+    "bypassPermissions",
     "--tools",
     "Read,Grep,Glob,Edit,Write",
     "--no-session-persistence",
@@ -161,10 +152,25 @@ CLAUDE_SHELL_APPROVED_TEMPLATE = [
     "--output-format",
     "json",
     "--permission-mode",
-    "plan",
+    "bypassPermissions",
     "--tools",
     "Read,Grep,Glob,Edit,Write,Bash",
     "--no-session-persistence",
+]
+
+
+CLAUDE_FULL_ACCESS_TEMPLATE = [
+    "claude",
+    "-p",
+    "--output-format",
+    "json",
+    "--add-dir",
+    "/",
+    "--permission-mode",
+    "bypassPermissions",
+    "--dangerously-skip-permissions",
+    "--tools",
+    "default",
 ]
 
 
@@ -173,10 +179,11 @@ CODEX_EXEC_TEMPLATE = [
     "exec",
     "-c",
     'approval_policy="never"',
+    "-c",
+    "network_access=\"enabled\"",
+    "-c",
+    "shell_environment_policy.inherit=all",
     "--json",
-    "--ephemeral",
-    "--sandbox",
-    "workspace-write",
 ]
 
 
@@ -277,7 +284,7 @@ def _short_chat_fallback(prompt: str) -> str | None:
 
 
 def _run_claude_command(command: list[str], workspace: Path, prompt: str, timeout_seconds: int) -> subprocess.CompletedProcess[str]:
-    env = {key: value for key in SAFE_ENV_KEYS if (value := os.environ.get(key))}
+    env = os.environ.copy()
     return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
 
 
@@ -326,7 +333,7 @@ def invoke_claude(
     timeout_seconds: int = 1800,
     max_output_bytes: int = 200000,
     emit: Callable[[dict[str, Any]], None] | None = None,
-    permission_scope: str = "chat",
+    permission_scope: str = "full",
 ) -> ProviderResult:
     actual_run_id = run_id or str(uuid.uuid4())
     ledger.reserve(actual_run_id, "claude-code", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
@@ -334,7 +341,8 @@ def invoke_claude(
         "chat": CLAUDE_CHAT_ONLY_TEMPLATE,
         "edit": CLAUDE_EDIT_APPROVED_TEMPLATE,
         "shell": CLAUDE_SHELL_APPROVED_TEMPLATE,
-    }.get(permission_scope, CLAUDE_CHAT_ONLY_TEMPLATE)
+        "full": CLAUDE_FULL_ACCESS_TEMPLATE,
+    }.get(permission_scope, CLAUDE_FULL_ACCESS_TEMPLATE)
     command = [
         *template,
         "--max-turns",
@@ -348,7 +356,14 @@ def invoke_claude(
     if claude_model:
         command.extend(["--model", claude_model])
     if emit:
-        emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "calling_model"})
+        emit(
+            {
+                "run_id": actual_run_id,
+                "provider": "claude-code",
+                "phase": "calling_model",
+                "public_message_zh": "正在调用 Claude Code：模型思考、工具执行或联网等待中。",
+            }
+        )
     try:
         result = _run_claude_command(command, workspace, prompt, timeout_seconds)
     except subprocess.TimeoutExpired:
@@ -360,7 +375,7 @@ def invoke_claude(
     first_cost_usd = _actual_cost_usd(raw)
     retry_cost_usd: float | None = None
     retry_started = False
-    if result.returncode == 0 and permission_scope == "chat" and not output_text.strip():
+    if result.returncode == 0 and permission_scope in {"chat", "full"} and not output_text.strip():
         fallback = _short_chat_fallback(prompt)
         if fallback:
             output_text = fallback
@@ -413,11 +428,18 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
         "--",
         effective_prompt,
     ]
-    if not _help_has(["codex", "exec", "--help"], "--sandbox"):
-        sandbox_index = command.index("--sandbox")
-        if sandbox_index + 1 >= len(command) or not command[sandbox_index + 1].startswith("workspace-"):
-            raise RuntimeError("unexpected_codex_sandbox_template")
-        del command[sandbox_index : sandbox_index + 2]
+    if _help_has(["codex", "exec", "--help"], "--dangerously-bypass-approvals-and-sandbox"):
+        command.insert(command.index("--cd"), "--dangerously-bypass-approvals-and-sandbox")
+    elif _help_has(["codex", "exec", "--help"], "--sandbox"):
+        command[command.index("--cd") : command.index("--cd")] = ["--sandbox", "danger-full-access"]
+    else:
+        raise RuntimeError("codex_full_access_unavailable")
+    if _help_has(["codex", "exec", "--help"], "--dangerously-bypass-hook-trust"):
+        command.insert(command.index("--cd"), "--dangerously-bypass-hook-trust")
+    if _help_has(["codex", "exec", "--help"], "--ignore-rules"):
+        command.insert(command.index("--cd"), "--ignore-rules")
+    if _help_has(["codex", "exec", "--help"], "--add-dir"):
+        command[command.index("--cd") : command.index("--cd")] = ["--add-dir", "/"]
     if _help_has(["codex", "exec", "--help"], "--skip-git-repo-check"):
         command.insert(command.index("--cd"), "--skip-git-repo-check")
     return command
@@ -437,9 +459,22 @@ def invoke_codex(
     actual_run_id = run_id or str(uuid.uuid4())
     ledger.reserve(actual_run_id, "codex", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
     output_file = workspace / ".ai-remote-codex-last-message.txt"
-    command = codex_command(prompt, workspace, output_file, instruction_prompt)
+    try:
+        command = codex_command(prompt, workspace, output_file, instruction_prompt)
+    except RuntimeError as exc:
+        ledger.complete(actual_run_id, None, status="failed")
+        if emit:
+            emit({"run_id": actual_run_id, "provider": "codex", "phase": "error", "error": str(exc)})
+        return ProviderResult(actual_run_id, "codex", "failed", str(exc), None, -1)
     if emit:
-        emit({"run_id": actual_run_id, "provider": "codex", "phase": "calling_model"})
+        emit(
+            {
+                "run_id": actual_run_id,
+                "provider": "codex",
+                "phase": "calling_model",
+                "public_message_zh": "正在调用 Codex：模型思考、工具执行或联网等待中。",
+            }
+        )
     try:
         result = subprocess.run(command, cwd=workspace, text=True, capture_output=True, timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired:

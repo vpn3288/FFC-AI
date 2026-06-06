@@ -75,7 +75,7 @@ class RunnerRuntime:
             "provider_conversations": {},
             "auto_compact_enabled": True,
             "auto_compact_threshold_percent": 80,
-            "permission_scope": "chat",
+            "permission_scope": os.environ.get("AI_PERMISSION_SCOPE", "full"),
         }
         if self.policy_path.exists():
             data = default | json.loads(self.policy_path.read_text(encoding="utf-8"))
@@ -199,6 +199,35 @@ def _install_manifest(rt: RunnerRuntime) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _recent_run_events(rt: RunnerRuntime, limit: int = 10) -> list[dict[str, Any]]:
+    path = rt.state / "events.jsonl"
+    if not path.exists():
+        return []
+    runs: dict[str, dict[str, Any]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines[-500:]:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        run_id = str(event.get("run_id") or "")
+        if not run_id:
+            continue
+        runs[run_id] = {
+            "run_id": run_id,
+            "provider": event.get("provider") or "runner",
+            "phase": event.get("phase") or "unknown",
+            "message_zh": event.get("public_message_zh") or event.get("error") or "",
+            "time": event.get("time"),
+        }
+    return sorted(runs.values(), key=lambda item: int(item.get("time") or 0), reverse=True)[:limit]
+
+
 def _command_index_with_availability(items: list[dict[str, Any]], providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     any_provider_available = any(item.get("available") for item in providers)
     codex_available = any(item.get("provider") == "codex" and item.get("available") for item in providers)
@@ -229,6 +258,7 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "current_workspace": _selected_workspace(runtime) or "default",
         "default_provider": _selected_provider(runtime) or "claude-code",
         "default_workspace": _selected_workspace(runtime) or "default",
+        "recent_runs": _recent_run_events(runtime),
         "state_root": str(runtime.state),
         "workspace_root": str(runtime.workspaces),
     }
@@ -254,8 +284,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     workspace_id = envelope.get("workspace_id") or _selected_workspace(rt) or "default"
     if not _valid_workspace_id(workspace_id):
         return _error(request_id, "invalid_workspace_id", "workspace_id must contain only letters, numbers, dash, or underscore")
-    run_id = str(uuid.uuid4())
-    rt.events.emit(status_event(run_id, "queued", "正在排队"))
+    run_id = envelope.get("run_id") or str(uuid.uuid4())
+    initial_provider = envelope.get("provider") if action == "task.run" else "runner"
+    rt.events.emit(status_event(run_id, "queued", "正在排队", str(initial_provider or "runner")))
 
     if action == "status":
         return _ok(request_id, run_id, "状态已生成", current_status(rt))
@@ -265,12 +296,12 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         feature_data: dict[str, Any] = {"items": _command_index_with_availability(command_index(), providers), "providers": providers}
         codex = next((item for item in providers if item["provider"] == "codex"), None)
         feature_data["codex_ready"] = manifest.get("codex_ready", bool(codex and codex.get("available")))
-        feature_data["codex_status"] = manifest.get("codex_status", "external_prerequisite")
-        feature_data["codex_remediation_zh"] = "Codex 若不可用，需要按当前 Codex CLI 官方说明手动安装并重新运行 /ai 提供商 列表。"
+        feature_data["codex_status"] = manifest.get("codex_status", "install_required")
+        feature_data["codex_remediation_zh"] = "Codex 必须由安装脚本全局安装并启用 full access；若不可用，请重新运行 runner 安装脚本。"
         if manifest.get("codex_remediation_zh"):
             feature_data["codex_remediation_zh"] = manifest["codex_remediation_zh"]
         if codex and not codex.get("available"):
-            feature_data["codex_remediation_zh"] = "Codex 当前需要手动安装。请查看官方安装说明后重新运行 /ai 提供商 列表。"
+            feature_data["codex_remediation_zh"] = "Codex 当前不可用；请重新运行 runner 安装脚本，确保 Node.js/npm、网络和版本锁可用。"
         return _ok(request_id, run_id, "索引已生成", feature_data)
     if action == "budget_status":
         return _ok(request_id, run_id, "预算已生成", rt.ledger.load())
@@ -303,7 +334,15 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         global_info = rt.instructions.show("global", workspace_id)
         project_info = rt.instructions.show("project", workspace_id)
         policy = rt.load_policy()
-        if policy.get("permission_scope") == "shell" and not envelope.get("confirmed"):
+        require_shell_confirmation = os.environ.get("AI_REQUIRE_SHELL_CONFIRMATION", "0").lower() in {"1", "true", "yes"}
+        permission_scope = str(policy.get("permission_scope", "full"))
+        if provider == "codex" and permission_scope != "full":
+            return _error(
+                request_id,
+                "codex_permission_scope_unsupported",
+                "Codex 当前只按 full access 运行。请发送 /ai 完全访问 开启 后再使用 Codex，或切换到 Claude Code 使用 scoped 模式。",
+            )
+        if policy.get("permission_scope") == "shell" and require_shell_confirmation and not envelope.get("confirmed"):
             return {
                 "request_id": request_id,
                 "status": "needs_confirmation",
@@ -350,7 +389,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if provider == "codex":
             result = invoke_codex(provider_prompt, workspace, rt.ledger, instruction_prompt=instruction_prompt, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
         else:
-            result = invoke_claude(provider_prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=policy.get("permission_scope", "chat"))
+            result = invoke_claude(provider_prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=permission_scope)
         rt.contexts.add_exchange(conversation_id, provider, instruction_prompt, prompt, result.output_text)
         data = {
             "provider": result.provider,
@@ -415,6 +454,20 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if not args:
             return _error(request_id, "missing_credential_handle", "missing_credential_handle")
         return _ok(request_id, run_id, "凭据测试完成", rt.credentials.test(args[0]))
+    if action == "credential.grant":
+        if len(args) < 3:
+            return _error(request_id, "missing_credential_grant_args", "usage: /ai 凭据 授权 <handle> <agent> <action> [duration_seconds]")
+        duration_seconds = None
+        if len(args) >= 4:
+            try:
+                duration_seconds = int(args[3])
+            except ValueError:
+                return _error(request_id, "invalid_duration_seconds", "duration_seconds must be an integer")
+        try:
+            granted = rt.credentials.grant(args[0], args[1], args[2], duration_seconds)
+        except KeyError:
+            return _error(request_id, "credential_not_found", args[0])
+        return _ok(request_id, run_id, "凭据授权已更新", {"credential": granted})
     if action == "credential.delete":
         if not args:
             return _error(request_id, "missing_credential_handle", "missing_credential_handle")
@@ -485,7 +538,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         data["last_action"] = action
         rt.save_policy(data)
         return _ok(request_id, run_id, "自动压缩策略已更新", data)
-    if action in {"set_permission_chat", "set_permission_edit", "set_permission_shell"}:
+    if action in {"set_permission_chat", "set_permission_edit", "set_permission_shell", "set_permission_full"}:
         data = rt.load_policy()
         data["permission_scope"] = action.removeprefix("set_permission_")
         data["last_action"] = action
@@ -531,4 +584,10 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "description.generate":
         target = args[0] if args else "unknown"
         return _ok(request_id, run_id, "说明已生成", {"id": target, "description_zh": f"{target} 的中文说明待人工确认。", "description_source": "generated_ai_stub"})
+    if action == "description.list":
+        return _ok(request_id, run_id, "说明索引已生成", {"items": command_index()})
+    if action == "description.edit":
+        target = args[0] if args else "unknown"
+        text = " ".join(args[1:]) if len(args) > 1 else ""
+        return _ok(request_id, run_id, "说明编辑请求已记录", {"id": target, "description_zh": text, "description_source": "manual"})
     return _error(request_id, "unsupported_action", action)

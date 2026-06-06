@@ -9,9 +9,9 @@ Style: AI-only executable specification. Human readability is not a goal.
 
 The runner MUST provide the core mobile-controlled AI execution layer.
 
-Core install MUST NOT depend on optional skills, MCP extensions, CLI tools, or Telegram.
+Core install MUST NOT depend on optional skills, MCP extensions, or CLI tools.
 
-Telegram MAY be installed as an optional runner-side bot channel. It MUST be disabled until paired with a BotFather token and explicit Telegram ID, and it MUST NOT block core-ready or Mattermost operation.
+Telegram is a selectable first-class runner-side phone channel, equal to Mattermost for command and status behavior. It MUST be disabled until paired with a BotFather token and explicit Telegram ID. A deployment MAY select Telegram, Mattermost, or both.
 
 The runner MUST support:
 
@@ -19,7 +19,7 @@ The runner MUST support:
 - Codex adapter;
 - future AI adapters;
 - Mattermost/Matrix communication bridge;
-- optional Telegram bot service;
+- selectable first-class Telegram bot service;
 - Chinese command aliases;
 - canonical English internal actions;
 - status/progress event stream;
@@ -66,13 +66,13 @@ stage 01: detect OS, WSL, architecture, systemd availability, shell, PATH
 stage 02: install system packages required by runner
 stage 03: install or verify Claude Code
 stage 04: install or verify Codex CLI
-stage 05: create runner directories
-stage 06: create runner configuration files
-stage 07: create credential broker storage backend
-stage 08: install runner bridge service
-stage 09: optionally install Telegram bot service when explicitly requested
+stage 05: install or verify VSCode root/full-access tool wrapper
+stage 06: create runner directories
+stage 07: create runner configuration files
+stage 08: create credential broker storage backend
+stage 09: install runner bridge service
 stage 10: connect runner to communication platform
-stage 11: run provider smoke tests
+stage 11: run provider CLI/auth/full-access-flag preflight
 stage 12: run phone command smoke tests
 stage 13: report core_ready or failed
 ```
@@ -86,22 +86,30 @@ Claude Code installation requirement:
 - installer MUST use official Claude Code installation source pinned or referenced in release lock file.
 - Debian/Ubuntu installer MUST prefer official Claude Code signed apt/native installer from Claude Code installation docs.
 - npm fallback MAY be used only when official installer is unavailable.
-- npm fallback MUST NOT use `sudo npm install -g`.
+- Codex CLI MAY be installed globally with `sudo npm install -g` when this is the resolved install source.
 
 Codex installation requirement:
 
-- installer MUST install Codex CLI if `codex` is missing and a resolved install source exists;
+- installer MUST install Codex CLI globally if `codex` is missing;
 - installer MUST verify `codex --version`;
-- installer MUST verify `codex doctor` exists;
 - installer MUST verify `codex exec` exists;
-- installer MUST verify remote adapter can call Codex non-interactively or mark Codex adapter `auth_pending`;
-- if public release cannot ship a resolved Codex install source, installer MUST set `codex_ready=false`, `codex_status=external_prerequisite`, and MUST show remediation in `/功能`.
+- installer MUST verify remote adapter can call Codex non-interactively with full VM access;
+- if Codex cannot be installed or cannot expose full VM access, core install MUST fail loudly instead of marking Codex as an optional external prerequisite.
+
+VSCode installation requirement:
+
+- installer MUST install or verify Visual Studio Code with `code --version`;
+- Debian/Ubuntu installer SHOULD use Microsoft apt repository so fresh installs receive the current stable `code` package;
+- installer MUST create a root wrapper named `code-root` by default at `/usr/local/bin/code-root`;
+- `code-root` MUST re-exec through sudo when needed and run VSCode with root user-data/extensions directories, `--no-sandbox`, and `--disable-workspace-trust`;
+- VSCode failure MUST be reported in the install manifest and MUST block the full-access workstation setup.
 
 Runner service installation requirement:
 
 - Linux/systemd target MUST install `ai-remote-runner.service`.
+- Linux/systemd target MUST run runner and optional Telegram services as `root` by default.
 - WSL without systemd MUST generate `run-local.sh`.
-- Service MUST load runner config but MUST NOT load communication platform admin secrets into provider subprocesses.
+- Service MUST load runner config with `HOME=/root` and `CODEX_HOME=/root/.codex` unless explicitly overridden for a non-root lab setup.
 - Service MUST expose local health endpoint or health command for communication bridge.
 
 Bridge connection requirement:
@@ -110,8 +118,9 @@ Bridge connection requirement:
 - bridge shared secret input MUST use a root-readable file, stdin, or a brokered secure channel; installer and pairing commands MUST NOT accept raw bridge-secret argv values;
 - installer MUST test posting status event to communication platform;
 - installer MUST test receiving a command from communication platform or run an equivalent loopback test.
-- default bridge topology MUST be runner-initiated outbound WebSocket or runner-initiated long-poll queue.
-- VPS MUST NOT require inbound access to a home/WSL runner.
+- default lab topology MAY use direct `/bridge/command` through same-host networking, VPN, or a reverse SSH tunnel.
+- runner-initiated outbound WebSocket or runner-initiated long-poll queue remains the preferred no-inbound topology when no VPN/reverse tunnel exists.
+- VPS MUST NOT require unprotected inbound access to a home/WSL runner; reverse SSH tunnel, VPN, same-host deployment, or runner-initiated polling are acceptable protected paths.
 
 Bridge protocol contract:
 
@@ -190,8 +199,10 @@ Core smoke tests:
 claude_version
 claude_auth_or_api_config
 claude_print_json
-codex_version_or_external_prerequisite
-codex_exec_or_auth_pending
+claude_full_access_provider_smoke
+codex_version
+codex_exec_full_access
+codex_full_access_provider_smoke
 communication_bridge_post
 phone_status_command
 phone_slash_index
@@ -201,13 +212,13 @@ project_md_append
 context_status
 ```
 
-`core_ready` requires Claude Code ready, communication bridge ready, phone commands ready, credential broker ready, and instruction files ready.
+`core_ready` requires Claude Code ready, Codex ready, real full-access provider smoke tests, communication bridge ready, phone commands ready, credential broker ready, and instruction files ready. `validate-core-ready.sh` MUST NOT write `core_ready=true` unless both enabled providers can complete their full-access smoke tests.
 
-`codex_ready` is separate from `core_ready`.
+`codex_ready=true` is required for `core_ready`.
 
 `full_ready` requires `core_ready=true`, `codex_ready=true`, and selected optional bundle items installed.
 
-Codex MAY be `external_prerequisite` only if the release cannot legally or reliably install it. In that case `/功能` MUST show Codex as unavailable with exact remediation.
+Codex MUST NOT be left as an external prerequisite in the current VM lab requirement. If Codex cannot be installed or cannot run with full VM access, the core install MUST fail loudly.
 
 Rollback contract:
 
@@ -258,69 +269,38 @@ Verified local Claude Code CLI facts:
 - `--output-format stream-json` streams events.
 - `--max-budget-usd` limits per-call spend in print mode.
 - `--max-turns` limits turns.
-- `--permission-mode plan` is valid.
-- `--tools ""` disables all built-in tools.
+- `--permission-mode bypassPermissions` bypasses tool permission prompts.
+- `--dangerously-skip-permissions` bypasses all Claude Code permission checks.
 - `--tools default` enables default built-in tools.
-- `--allowedTools` means tools allowed without prompting. It MUST NOT be used as the primary restriction mechanism.
-- `--disallowedTools` denies tools.
-- `--no-session-persistence` disables resume.
-- `--continue` and `--resume` require session persistence.
-- `--bare` reduces implicit context, hooks, plugin sync, keychain reads, auto-memory, background prefetches, and `CLAUDE.md` auto-discovery.
+- `--add-dir /` allows the provider to access the full VM filesystem.
+- `--continue` and `--resume` require session persistence and MUST NOT be used for independent reviewer runs.
 - `--system-prompt` and `--append-system-prompt` are valid.
 - `claude auth status --json` returns JSON containing `loggedIn`, `authMethod`, and `apiProvider`.
 
-Claude mode templates:
-
-`chat_only` MUST be default:
+Default Claude mode for this project is `full_access` because the VM is the user-selected security boundary:
 
 ```bash
 cd "$RUNNER_WORKSPACE"
-env -i \
-  HOME="$CLAUDE_RUNNER_HOME" \
-  PATH="$SAFE_PATH" \
-  ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL" \
-  ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN" \
-  ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}" \
-  HTTP_PROXY="$CLAUDE_HTTP_PROXY" \
-  HTTPS_PROXY="$CLAUDE_HTTPS_PROXY" \
-  NO_PROXY="$NO_PROXY" \
-  claude -p --bare \
-    --model "$CLAUDE_MODEL" \
-    --output-format json \
-    --max-turns "$CLAUDE_MAX_TURNS" \
-    --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" \
-    --permission-mode plan \
-    --tools "" \
-    --no-session-persistence \
-    --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" \
-    -- \
-    "$PROMPT"
+claude -p \
+  --output-format json \
+  --add-dir / \
+  --max-turns "$CLAUDE_MAX_TURNS" \
+  --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" \
+  --permission-mode bypassPermissions \
+  --dangerously-skip-permissions \
+  --tools default \
+  --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" \
+  -- \
+  "$PROMPT"
 ```
 
-`edit_approved` MUST require explicit preview/approval:
-
-```bash
-claude -p --model "$CLAUDE_MODEL" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write" --disallowedTools "Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
-```
-
-`shell_approved` MUST require explicit preview/approval:
-
-```bash
-claude -p --model "$CLAUDE_MODEL" --output-format json --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "Read,Grep,Glob,Edit,Write,Bash" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
-```
-
-`continue_mode` MUST NOT use `--no-session-persistence`:
-
-```bash
-claude -p --model "$CLAUDE_MODEL" --output-format json --continue --max-turns "$CLAUDE_MAX_TURNS" --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" --permission-mode plan --tools "$CLAUDE_TOOLS_FOR_CONTINUE" --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" -- "$PROMPT"
-```
+Optional downgrade modes MAY exist for debugging (`chat`, `edit`, `shell`), but installer default and phone-controlled task execution MUST be `full`. `shell` and `full` modes MUST NOT require per-task approval unless `AI_REQUIRE_SHELL_CONFIRMATION=1` is explicitly set for a special test environment. `edit` and `shell` modes MUST use Claude Code permissions that can actually perform the named capability; they MUST NOT be plan-only modes. Codex currently supports only full-access execution in this runner; if a non-full permission scope is active with Codex selected, the runner MUST return an explicit unsupported-scope error instead of silently running full access.
 
 Command construction rules:
 
 - `--tools` is variadic; command MUST terminate options with `--` before prompt or pass prompt through stdin.
-- `--bare` plus `--append-system-prompt` was locally verified in print mode.
-- `Bash` MUST NOT be enabled by default.
+- Provider subprocesses MUST inherit the root service environment so proxy, API, package-manager, and tool-chain settings are available.
+- Reviewer runs MUST be fresh: no `--continue`, no `--resume`, no persisted previous review context.
 
 ## 6. Codex Adapter
 
@@ -347,24 +327,36 @@ Required adapter operations:
 - compact context natively or emulate;
 - expose unsupported features with reason.
 
-Default Codex `exec` template:
+Default Codex `exec` template MUST use full VM access. Prefer the CLI's explicit dangerous bypass flag when supported; otherwise fall back to `--sandbox danger-full-access`.
 
 ```bash
 cd "$RUNNER_WORKSPACE"
-env -i \
-  HOME="$CODEX_RUNNER_HOME" \
-  CODEX_HOME="$CODEX_HOME" \
-  PATH="$SAFE_PATH" \
-  codex exec \
-    -c 'approval_policy="never"' \
-    --json \
-    --ephemeral \
-    --ignore-user-config \
-    --sandbox workspace-write \
-    --cd "$RUNNER_WORKSPACE" \
-    --output-last-message "$RUN_OUTPUT_FILE" \
-    -- \
-    "$PROMPT"
+codex exec \
+  -c 'approval_policy="never"' \
+  -c 'network_access="enabled"' \
+  -c 'shell_environment_policy.inherit=all' \
+  --json \
+  --dangerously-bypass-approvals-and-sandbox \
+  --dangerously-bypass-hook-trust \
+  --ignore-rules \
+  --add-dir / \
+  --skip-git-repo-check \
+  --cd "$RUNNER_WORKSPACE" \
+  --output-last-message "$RUN_OUTPUT_FILE" \
+  -- \
+  "$PROMPT"
+```
+
+Codex config written by the installer MUST target root/global execution by default:
+
+```toml
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+network_access = "enabled"
+dangerously_bypass_approvals_and_sandbox = true
+
+[shell_environment_policy]
+inherit = "all"
 ```
 
 Codex adapter MUST wrap `codex exec` with service-level budget reservation, timeout, kill, and output-size caps because verified local `codex exec --help` does not expose a universal `--max-budget-usd`.
@@ -430,13 +422,8 @@ Phone commands:
 
 ```text
 /ai 扩展 列表
-/ai 扩展 安装 <id>
-/ai 扩展 启用 <id>
-/ai 扩展 禁用 <id>
 /ai 工具 列表
-/ai 工具 安装 <id>
 /ai mcp 列表
-/ai mcp 启用 <id>
 ```
 
 ## 8. Conversation Policy
@@ -468,6 +455,8 @@ Rules:
 - `continue` MUST reuse the selected conversation only when provider continuation is safe.
 - If provider continuation is unavailable, runner MUST emulate continuation using compacted summary context.
 - `/ai 状态` MUST show current policy, provider, workspace, and conversation id.
+- Telegram task execution MUST show visible queued/calling/running status, use Telegram typing chat action when possible, and keep sending heartbeat messages while the provider is active so phone users can distinguish thinking/running/network wait from a disconnected bot.
+- Telegram pairing MUST trigger the same `validate-core-ready.sh` full-access provider smoke path as Mattermost pairing. Telegram-primary deployments MUST NOT remain permanently `core_ready=false` after successful pairing unless a real provider/full-access smoke fails.
 
 ## 9. Instruction Files
 
@@ -486,13 +475,11 @@ Phone commands:
 /ai 全局 追加
 /ai 全局 替换
 /ai 全局 回滚 <snapshot>
-/ai 全局 清空
 /ai 项目 查看
 /ai 项目 设置
 /ai 项目 追加
 /ai 项目 替换
 /ai 项目 回滚 <snapshot>
-/ai 项目 清空
 ```
 
 Rules:
@@ -529,7 +516,7 @@ Commands:
 /ai 说明 编辑 <id>
 ```
 
-`/ai 帮助` MUST show a categorized Chinese index.
+`/ai 帮助`, `/ai 命令`, and `/ai 索引` MUST show the Chinese command index. `/ai 说明` MUST show description metadata for the implemented command table. `/ai 说明 编辑 <id>` MUST at minimum record a metadata edit request and MUST NOT modify tool code without a separate confirmed implementation path.
 
 Bare `/` MAY show the same index only when the selected communication platform can deliver normal-message shortcuts to the bridge.
 
@@ -742,8 +729,11 @@ Required compound mappings:
   "/ai 自动压缩 开启": {"canonical_action": "set_auto_compact_enabled"},
   "/ai 自动压缩 关闭": {"canonical_action": "set_auto_compact_disabled"},
   "/ai 聊天模式 开启": {"canonical_action": "set_permission_chat"},
-  "/ai 编辑模式 开启": {"canonical_action": "set_permission_edit", "requires_confirmation": true},
-  "/ai shell模式 开启": {"canonical_action": "set_permission_shell", "requires_confirmation": true},
+  "/ai 编辑模式 开启": {"canonical_action": "set_permission_edit"},
+  "/ai shell模式 开启": {"canonical_action": "set_permission_shell"},
+  "/ai 完全访问 开启": {"canonical_action": "set_permission_full"},
+  "/ai 最高权限 开启": {"canonical_action": "set_permission_full"},
+  "/ai root权限 开启": {"canonical_action": "set_permission_full"},
   "/ai 扩展 列表": {"canonical_action": "extension.list"},
   "/ai 工具 列表": {"canonical_action": "tool.list"},
   "/ai mcp 列表": {"canonical_action": "mcp.list"}
@@ -783,6 +773,8 @@ Commands:
 /ai 凭据 授权 <handle> <agent> <action> <duration>
 ```
 
+`/ai 凭据 授权` updates non-secret credential metadata (`allowed_agents`, `allowed_actions`, optional expiry) and MUST NOT reveal plaintext secret material.
+
 Record schema:
 
 ```json
@@ -819,7 +811,7 @@ Rules:
 - SSH password execution MUST NOT pass password via process arguments.
 - SSH password credentials MUST authorize `ssh.exec.password`; generic `ssh.exec` authorization alone MUST NOT permit password-based SSH.
 - Password-based SSH MAY use broker-controlled `sshpass -e` or stdin/pty helper only after explicit approval; the password MUST be supplied through broker-controlled environment or stdin, never through argv or chat.
-- API tokens are injected only into exact subprocess environment via `env -i`.
+- API tokens MAY be injected into the root service environment or exact subprocess environment according to provider requirements; they MUST NOT be committed to GitHub or written into AI prompts.
 
 Action request:
 
@@ -853,8 +845,8 @@ Minimum safety MUST cover only:
 - secrets not in GitHub;
 - secrets not in AI prompts;
 - secrets not in ordinary logs/channel history;
-- remote shell disabled by default;
-- credential handle authorization;
+- remote shell enabled by default inside the VM for Claude Code and Codex full-access tasks;
+- credential handle authorization for externally supplied secrets;
 - budget freeze;
 - recoverable install/update/rollback.
 
@@ -949,6 +941,7 @@ Core-ready requires:
 
 - `/ai 状态` works from phone.
 - `/ai 帮助` returns Chinese index.
+- Telegram, when enabled and paired, shows queued/calling/running heartbeat status during long AI tasks.
 - `/ai 压缩` works natively or emulated.
 - `/ai 新对话` starts fresh conversation.
 - `/ai 每次新对话` changes policy.
@@ -959,5 +952,7 @@ Core-ready requires:
 - credential handle can run approved SSH test.
 - AI prompt never receives secret plaintext.
 - Claude Code adapter uses `--tools`, not `--allowedTools`, for restriction.
+- Claude Code and Codex run in root/full VM access by default.
+- VSCode `code-root` exists and starts VSCode with root/full-access settings.
 - Codex adapter reports unsupported native features.
 - optional unresolved tools do not block core-ready.

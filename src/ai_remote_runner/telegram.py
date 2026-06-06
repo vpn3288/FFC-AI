@@ -13,6 +13,7 @@ from urllib import error, request
 from .commands import parse_command
 from .executor import RunnerRuntime, execute
 from .paths import state_root, workspace_root
+from .phone_render import render_event_text, render_response_text
 from .storage import atomic_write_json
 
 
@@ -84,6 +85,9 @@ class TelegramClient:
                 timeout=10,
             )
 
+    def send_chat_action(self, chat_id: str, action: str = "typing") -> None:
+        self.call("sendChatAction", {"chat_id": chat_id, "action": action}, timeout=10)
+
 
 class TelegramBot:
     def __init__(self, config: TelegramConfig, client: TelegramClient, runtime: RunnerRuntime, state: Path) -> None:
@@ -144,6 +148,27 @@ class TelegramBot:
                 )
             return False
 
+    def safe_send_chat_action(self, chat_id: str, action: str = "typing") -> bool:
+        try:
+            self.client.send_chat_action(chat_id, action)
+            return True
+        except Exception as exc:  # pragma: no cover - depends on Telegram/network failures
+            with (self.state / "telegram-send-failures.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "time": int(time.time()),
+                            "chat_id": chat_id,
+                            "chat_action": action,
+                            "error": str(exc)[:500],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            return False
+
     def pairing_hint(self, chat_id: str) -> str:
         return (
             "Telegram bot 已安装，但这个 chat 还没有配对。\n"
@@ -172,39 +197,10 @@ class TelegramBot:
         return parsed
 
     def response_text(self, response: dict[str, Any]) -> str:
-        if response.get("status") == "needs_confirmation":
-            token = response.get("data", {}).get("confirmation_token", "")
-            return f"{response.get('message_zh', '需要确认')}\n发送：/ai 确认 {token}".strip()
-        if response.get("error"):
-            error_data = response["error"]
-            return f"{response.get('message_zh', '执行失败')}: {error_data.get('detail') or error_data.get('code')}"
-        data = response.get("data", {})
-        output = data.get("output") if isinstance(data, dict) else None
-        if output:
-            return str(output)
-        if isinstance(data, dict) and "items" in data:
-            lines = [response.get("message_zh", "索引已生成")]
-            for item in data.get("items", [])[:40]:
-                lines.append(f"{item.get('usage')}: {item.get('description_zh')}")
-            return "\n".join(lines)
-        if data:
-            detail = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
-            return f"{response.get('message_zh', response.get('status', 'OK'))}\n{detail}"
-        return str(response.get("message_zh") or response.get("status") or "OK")
+        return render_response_text(response, platform="telegram")
 
     def event_text(self, event: dict[str, Any]) -> str | None:
-        phase = str(event.get("phase") or "")
-        provider = str(event.get("provider") or "runner")
-        message = str(event.get("public_message_zh") or "")
-        if phase == "queued":
-            return f"已收到，正在排队。provider={provider}"
-        if phase == "calling_model":
-            return f"正在调用 {provider}，请稍等。"
-        if phase == "warning":
-            return message or "上下文接近阈值。"
-        if phase == "error":
-            return f"{provider} 执行出错：{event.get('error') or message or 'unknown'}"
-        return None
+        return render_event_text(event)
 
     def default_provider(self) -> str:
         path = self.runtime.state / "provider-selection.json"
@@ -227,7 +223,7 @@ class TelegramBot:
 
     def heartbeat_text(self, provider: str, started_at: float) -> str:
         elapsed = max(1, int(time.time() - started_at))
-        return f"仍在运行，已等待 {elapsed}s。provider={provider}，可能是在模型排队、联网等待或生成中。"
+        return f"仍在运行，已等待 {elapsed}s。provider={provider}，状态可能是模型思考、工具执行、联网等待或生成中；不是卡死。"
 
     def execute_with_status(
         self,
@@ -265,6 +261,7 @@ class TelegramBot:
         while worker.is_alive():
             worker.join(interval)
             if worker.is_alive():
+                self.safe_send_chat_action(chat_id, "typing")
                 self.safe_send_message(chat_id, self.heartbeat_text(provider, started_at))
         return holder.get("response") or {
             "request_id": envelope.get("request_id"),
@@ -275,7 +272,8 @@ class TelegramBot:
 
     def task_runtime(self, chat_id: str) -> tuple[RunnerRuntime, str]:
         provider = self.default_provider()
-        self.safe_send_message(chat_id, f"已收到任务，准备调用 {provider}。")
+        self.safe_send_chat_action(chat_id, "typing")
+        self.safe_send_message(chat_id, f"已收到任务，准备调用 {provider}。状态：排队中。")
 
         def notify(event: dict[str, Any]) -> None:
             text = self.event_text(event)

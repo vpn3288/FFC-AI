@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 from .commands import parse_command
 from .executor import RunnerRuntime, execute
+from .events import status_event
+from .phone_render import render_response_text
 from .security import NonceStore, verify_header_preamble, verify_headers
 from .storage import atomic_write_json
 
@@ -144,19 +147,87 @@ class BridgeHandler(BaseHTTPRequestHandler):
         }
 
     def _mattermost_response_text(self, response: dict) -> str:
+        return render_response_text(response, platform="mattermost", max_chars=3500)
+
+    def _mattermost_task_provider(self, item: dict) -> str:
+        if item.get("provider"):
+            return str(item["provider"])
+        path = self.state.root / "provider-selection.json"
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                provider = data.get("provider")
+                if provider in {"claude-code", "codex"}:
+                    return str(provider)
+            except json.JSONDecodeError:
+                pass
+        return "claude-code"
+
+    def _run_mattermost_task_background(self, parsed: dict, item: dict) -> None:
+        request_id = item.get("request_id") or str(uuid.uuid4())
+        run_id = item.get("run_id") or str(uuid.uuid4())
+        item["run_id"] = run_id
+        provider = self._mattermost_task_provider(item)
+        item["provider"] = provider
+        done = threading.Event()
+        self.state.runtime.events.emit(status_event(run_id, "queued", "Mattermost 任务已进入后台队列", provider))
+
+        def heartbeat() -> None:
+            heartbeat_seconds = int(os.environ.get("AI_MATTERMOST_HEARTBEAT_SECONDS", "45"))
+            if heartbeat_seconds <= 0:
+                return
+            while not done.wait(heartbeat_seconds):
+                self.state.runtime.events.emit(
+                    status_event(
+                        run_id,
+                        "running",
+                        "仍在运行：模型思考、工具执行、联网等待或生成中；不是卡死。",
+                        provider,
+                    )
+                )
+
+        heartbeat_thread = threading.Thread(target=heartbeat, name=f"mattermost-heartbeat-{request_id}", daemon=True)
+        heartbeat_thread.start()
+        try:
+            response = execute(parsed, item, self.state.runtime)
+        except Exception as exc:  # pragma: no cover - daemon safety net.
+            response = {
+                "request_id": request_id,
+                "status": "error",
+                "run_id": run_id,
+                "message_zh": "执行失败",
+                "data": {},
+                "error": {"code": "mattermost_background_task_failed", "detail": str(exc)},
+            }
+        finally:
+            done.set()
         if response.get("status") == "needs_confirmation":
-            token = response.get("data", {}).get("confirmation_token", "")
-            return f"{response.get('message_zh', '需要确认')} /ai 确认 {token}".strip()
-        if response.get("error"):
-            error = response["error"]
-            return f"{response.get('message_zh', '执行失败')}: {error.get('detail') or error.get('code')}"
-        output = response.get("data", {}).get("output")
-        if output:
-            return str(output)[:3500]
-        detail = response.get("data", {}).get("detail") if isinstance(response.get("data"), dict) else None
-        if detail:
-            return f"{response.get('message_zh', response.get('status', 'OK'))}: {detail}"[:3500]
-        return str(response.get("message_zh") or response.get("status") or "OK")
+            token = response.get("data", {}).get("confirmation_token")
+            if token:
+                pending = self.state.confirmations()
+                pending[token] = {"created_at": int(time.time()), "parsed": parsed, "envelope": item}
+                self.state.save_confirmations(pending)
+        self.state.save_response(request_id, response)
+        text = self._mattermost_response_text(response)
+        phase = "done" if response.get("status") == "accepted" else "error"
+        self.state.runtime.events.emit(status_event(response.get("run_id") or run_id, phase, text, response.get("data", {}).get("provider") or provider))
+
+    def _start_mattermost_task_background(self, parsed: dict, item: dict) -> dict:
+        request_id = item.get("request_id") or str(uuid.uuid4())
+        item["run_id"] = item.get("run_id") or str(uuid.uuid4())
+        item["provider"] = self._mattermost_task_provider(item)
+        thread = threading.Thread(target=self._run_mattermost_task_background, args=(parsed, item), name=f"mattermost-task-{request_id}", daemon=True)
+        thread.start()
+        response = {
+            "request_id": request_id,
+            "status": "accepted",
+            "run_id": item["run_id"],
+            "message_zh": "已收到任务，正在后台运行。状态和最终结果会发送到配置的 Mattermost 状态频道。",
+            "data": {"background": True, "provider": item["provider"]},
+            "error": None,
+        }
+        self.state.save_response(request_id, response)
+        return response
 
     def _handle_command_payload(self, payload: dict) -> dict:
         request_id = payload.get("request_id") or str(uuid.uuid4())
@@ -201,6 +272,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         item.update(parsed)
         item["request_id"] = request_id
         self.state.append_jsonl(self.state.commands_path, item)
+        if payload.get("platform") == "mattermost" and parsed.get("canonical_action") == "task.run" and not item.get("confirmed"):
+            return self._start_mattermost_task_background(parsed, item)
         response = execute(parsed, item, self.state.runtime)
         if response.get("status") == "needs_confirmation":
             token = response.get("data", {}).get("confirmation_token")

@@ -39,6 +39,10 @@ case "$TRANSFER_METHOD" in
   ssh|broker|manual-secure) ;;
   *) printf '[pair-runner] --transfer-method must be ssh, broker, or manual-secure\n' >&2; exit 2 ;;
 esac
+if [ "$BRIDGE_SECRET_STDIN" = true ] && [ "$SLASH_TOKEN_STDIN" = true ]; then
+  printf '[pair-runner] stdin can only be consumed once; use a file for either bridge secret or slash token\n' >&2
+  exit 2
+fi
 if [ -n "$BRIDGE_SECRET_FILE" ]; then
   BRIDGE_SECRET="$(tr -d '\r\n' < "$BRIDGE_SECRET_FILE")"
 elif [ "$BRIDGE_SECRET_STDIN" = true ]; then

@@ -15,9 +15,13 @@ class FakeTelegramClient(TelegramClient):
     def __init__(self, config: TelegramConfig) -> None:
         self.config = config
         self.sent: list[tuple[str, str]] = []
+        self.actions: list[tuple[str, str]] = []
 
     def send_message(self, chat_id: str, text: str) -> None:
         self.sent.append((chat_id, text))
+
+    def send_chat_action(self, chat_id: str, action: str = "typing") -> None:
+        self.actions.append((chat_id, action))
 
 
 class FailingHeartbeatClient(FakeTelegramClient):
@@ -75,8 +79,9 @@ class TelegramBotTests(unittest.TestCase):
 
             sent_text = "\n".join(text for _, text in client.sent)
             self.assertIn("已收到任务", sent_text)
-            self.assertIn("正在调用 claude-code", sent_text)
+            self.assertIn("模型正在思考", sent_text)
             self.assertIn("telegram ok", sent_text)
+            self.assertIn(("123", "typing"), client.actions)
 
     def test_long_task_sends_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,7 +104,9 @@ class TelegramBotTests(unittest.TestCase):
 
             sent_text = "\n".join(text for _, text in client.sent)
             self.assertIn("仍在运行", sent_text)
+            self.assertIn("模型思考", sent_text)
             self.assertIn("slow ok", sent_text)
+            self.assertIn(("123", "typing"), client.actions)
 
     def test_heartbeat_send_failure_does_not_abort_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -151,7 +158,7 @@ class TelegramBotTests(unittest.TestCase):
 
             sent_text = "\n".join(text for _, text in client.sent)
             self.assertIn("已收到任务", sent_text)
-            self.assertIn("正在调用 claude-code", sent_text)
+            self.assertIn("模型正在思考", sent_text)
             self.assertIn("仍在运行", sent_text)
             self.assertIn("confirmed ok", sent_text)
 

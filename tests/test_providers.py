@@ -11,9 +11,28 @@ from ai_remote_runner.budget import BudgetLedger
 
 class ProviderTests(unittest.TestCase):
     def test_codex_command_uses_supported_approval_config(self) -> None:
-        command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
+        def supported(_: list[str], *needles: str) -> bool:
+            flags = {
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--dangerously-bypass-hook-trust",
+                "--ignore-rules",
+                "--add-dir",
+                "--skip-git-repo-check",
+            }
+            return all(needle in flags for needle in needles)
+
+        with patch("ai_remote_runner.providers._help_has", side_effect=supported):
+            command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
         self.assertIn("-c", command)
         self.assertIn('approval_policy="never"', command)
+        self.assertIn("network_access=\"enabled\"", command)
+        self.assertIn("shell_environment_policy.inherit=all", command)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
+        self.assertIn("--dangerously-bypass-hook-trust", command)
+        self.assertIn("--ignore-rules", command)
+        self.assertIn("--add-dir", command)
+        self.assertEqual(command[command.index("--add-dir") + 1], "/")
+        self.assertNotIn("--sandbox", command)
         self.assertNotIn("--ask-for-approval", command)
         self.assertNotIn("--ignore-user-config", command)
 
@@ -30,11 +49,22 @@ class ProviderTests(unittest.TestCase):
         capabilities = discover_codex()["capabilities"]
         self.assertIn("approval_config_available", capabilities)
         self.assertIn("sandbox_available", capabilities)
+        self.assertIn("full_access_available", capabilities)
 
-    def test_codex_command_omits_sandbox_when_flag_unavailable(self) -> None:
+    def test_codex_command_fails_when_full_access_flag_unavailable(self) -> None:
         with patch("ai_remote_runner.providers._help_has", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "codex_full_access_unavailable"):
+                codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
+
+    def test_codex_command_uses_danger_full_access_when_bypass_flag_unavailable(self) -> None:
+        def sandbox_only(_: list[str], *needles: str) -> bool:
+            return all(needle == "--sandbox" for needle in needles)
+
+        with patch("ai_remote_runner.providers._help_has", side_effect=sandbox_only):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
-        self.assertNotIn("--sandbox", command)
+        self.assertIn("--sandbox", command)
+        self.assertEqual(command[command.index("--sandbox") + 1], "danger-full-access")
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
 
     def test_codex_command_skips_git_repo_trust_check_when_supported(self) -> None:
         with patch("ai_remote_runner.providers._help_has", return_value=True):
@@ -84,10 +114,31 @@ class ProviderTests(unittest.TestCase):
                 result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.1, permission_scope="edit")
             self.assertEqual(result.status, "completed")
             self.assertIn("Read,Grep,Glob,Edit,Write", run.call_args.args[0])
+            self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--permission-mode") + 1], "bypassPermissions")
             self.assertNotIn("--model", run.call_args.args[0])
             self.assertEqual(run.call_args.kwargs["input"], "prompt")
             self.assertNotIn("prompt", run.call_args.args[0])
             self.assertAlmostEqual(ledger.load()["daily_used_usd_estimate"], 0.02)
+
+    def test_claude_full_permission_scope_uses_bypass_template(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok", "total_cost_usd": 0.02}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+                result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.1, permission_scope="full")
+            command = run.call_args.args[0]
+            self.assertEqual(result.status, "completed")
+            self.assertIn("--permission-mode", command)
+            self.assertEqual(command[command.index("--permission-mode") + 1], "bypassPermissions")
+            self.assertIn("--dangerously-skip-permissions", command)
+            self.assertIn("--add-dir", command)
+            self.assertEqual(command[command.index("--add-dir") + 1], "/")
+            self.assertEqual(command[command.index("--tools") + 1], "default")
+            self.assertNotIn("--no-session-persistence", command)
 
     def test_invoke_claude_uses_model_only_when_explicitly_configured(self) -> None:
         import tempfile
@@ -105,7 +156,7 @@ class ProviderTests(unittest.TestCase):
             self.assertIn("--model", command)
             self.assertEqual(command[command.index("--model") + 1], "sonnet")
 
-    def test_invoke_claude_chat_template_disables_all_tools(self) -> None:
+    def test_invoke_claude_chat_template_disables_all_tools_when_requested(self) -> None:
         import tempfile
         import subprocess
         import json
@@ -113,7 +164,7 @@ class ProviderTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
-                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1, permission_scope="chat")
             command = run.call_args.args[0]
             self.assertIn("--tools", command)
             self.assertEqual(command[command.index("--tools") + 1], "")
