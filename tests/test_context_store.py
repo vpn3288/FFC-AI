@@ -44,6 +44,18 @@ class ContextStoreTests(unittest.TestCase):
             self.assertTrue(summary.exists())
             self.assertIn("prompt", summary.read_text(encoding="utf-8"))
 
+    def test_compact_summary_paths_are_provider_isolated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ContextStore(Path(tmp))
+            store.add_exchange("c1", "claude-code", "claude prompt", "claude answer")
+            store.add_exchange("c1", "codex", "codex prompt", "codex answer")
+            claude = store.compact("c1", "claude-code")
+            codex = store.compact("c1", "codex")
+
+            self.assertNotEqual(claude["summary_artifact"], codex["summary_artifact"])
+            self.assertIn("claude-code", Path(claude["summary_artifact"]).name)
+            self.assertIn("codex", Path(codex["summary_artifact"]).name)
+
 
 if __name__ == "__main__":
     unittest.main()

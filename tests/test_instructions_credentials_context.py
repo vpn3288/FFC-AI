@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from ai_remote_runner.context import ContextState, estimate_tokens
+from ai_remote_runner.context_store import ContextStore
 from ai_remote_runner.credentials import CredentialBroker
 from ai_remote_runner.instructions import InstructionStore
 
@@ -116,6 +118,28 @@ class StoreTests(unittest.TestCase):
         state = ContextState("c1", "claude-code", 100, used)
         self.assertTrue(state.needs_warning)
         self.assertTrue(state.hard_stop)
+
+    def test_legacy_context_without_provider_is_not_reused_across_providers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ContextStore(Path(tmp))
+            (Path(tmp) / "default.json").write_text(
+                json.dumps(
+                    {
+                        "conversation_id": "default",
+                        "context_limit_tokens": 200000,
+                        "context_used_tokens": 10,
+                        "exchanges": [{"texts": ["old", "answer"]}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = store.load("default", "codex")
+            self.assertEqual(state["provider"], "codex")
+            self.assertEqual(state["exchanges"], [])
+            claude = store.load("default", "claude-code")
+            self.assertEqual(claude["provider"], "claude-code")
+            self.assertEqual(claude["exchanges"][0]["texts"], ["old", "answer"])
+            self.assertTrue(store.path("default", "claude-code").exists())
 
 
 if __name__ == "__main__":

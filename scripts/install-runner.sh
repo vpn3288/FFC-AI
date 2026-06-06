@@ -50,6 +50,42 @@ apt_install() {
   fi
 }
 
+node_major() {
+  command -v node >/dev/null 2>&1 || return 1
+  node -v 2>/dev/null | sed -E 's/^v?([0-9]+).*/\1/'
+}
+
+ensure_codex_node() {
+  local major
+  major="$(node_major || true)"
+  case "$major" in
+    ''|*[!0-9]*) major=0 ;;
+  esac
+  if [ "$major" -ge 20 ]; then
+    return 0
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    log 'Node.js 20+ is required for Codex CLI; install Node.js 20+ and npm before rerunning'
+    return 1
+  fi
+  log 'Node.js 20+ is required for Codex CLI; installing Node.js 20 from NodeSource'
+  if [ "$DRY_RUN" = false ]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/nodesource_setup_20.x.sh
+    sudo env DEBIAN_FRONTEND=noninteractive bash /tmp/nodesource_setup_20.x.sh
+  else
+    log 'would download and run https://deb.nodesource.com/setup_20.x'
+  fi
+  apt_install nodejs
+  major="$(node_major || true)"
+  case "$major" in
+    ''|*[!0-9]*) major=0 ;;
+  esac
+  if [ "$DRY_RUN" = false ] && [ "$major" -lt 20 ]; then
+    log 'Node.js 20+ install failed; Codex CLI cannot be installed safely'
+    exit 1
+  fi
+}
+
 config_value() {
   local key="$1"
   if [ "$DRY_RUN" = false ] && [ -f "$STATE_ROOT/config.env" ]; then
@@ -189,8 +225,9 @@ if [ "$REQUEST_CODEX" = true ]; then
     CODEX_REMEDIATION_ZH=""
   elif command -v apt-get >/dev/null 2>&1; then
     log "codex missing; installing $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION through npm"
-    apt_install nodejs npm
+    ensure_codex_node
     if [ "$DRY_RUN" = false ]; then
+      command -v npm >/dev/null 2>&1 || { log 'npm missing after Node.js install; Codex CLI cannot be installed'; exit 1; }
       sudo npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
       command -v codex >/dev/null 2>&1 || { log 'codex npm install did not place codex on PATH'; exit 1; }
       codex --version
@@ -391,6 +428,7 @@ EOF
       sudo systemctl daemon-reload
       if [ -n "$(config_value TELEGRAM_BOT_TOKEN)" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
         sudo systemctl enable --now ai-telegram-bot.service
+        sudo systemctl restart ai-telegram-bot.service
       else
         log 'Telegram service installed but not started; run scripts/pair-telegram.sh after creating a BotFather token'
       fi

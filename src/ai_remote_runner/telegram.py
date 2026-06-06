@@ -122,6 +122,28 @@ class TelegramBot:
     def chat_allowed(self, chat_id: str) -> bool:
         return chat_id in self.config.allowed_chat_ids
 
+    def safe_send_message(self, chat_id: str, text: str) -> bool:
+        try:
+            self.client.send_message(chat_id, text)
+            return True
+        except Exception as exc:  # pragma: no cover - depends on Telegram/network failures
+            self.state.mkdir(parents=True, exist_ok=True)
+            with (self.state / "telegram-send-failures.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "time": int(time.time()),
+                            "chat_id": chat_id,
+                            "text_chars": len(text),
+                            "error": str(exc)[:500],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            return False
+
     def pairing_hint(self, chat_id: str) -> str:
         return (
             "Telegram bot 已安装，但这个 chat 还没有配对。\n"
@@ -243,7 +265,7 @@ class TelegramBot:
         while worker.is_alive():
             worker.join(interval)
             if worker.is_alive():
-                self.client.send_message(chat_id, self.heartbeat_text(provider, started_at))
+                self.safe_send_message(chat_id, self.heartbeat_text(provider, started_at))
         return holder.get("response") or {
             "request_id": envelope.get("request_id"),
             "status": "failed",
@@ -253,12 +275,12 @@ class TelegramBot:
 
     def task_runtime(self, chat_id: str) -> tuple[RunnerRuntime, str]:
         provider = self.default_provider()
-        self.client.send_message(chat_id, f"已收到任务，准备调用 {provider}。")
+        self.safe_send_message(chat_id, f"已收到任务，准备调用 {provider}。")
 
         def notify(event: dict[str, Any]) -> None:
             text = self.event_text(event)
             if text:
-                self.client.send_message(chat_id, text)
+                self.safe_send_message(chat_id, text)
 
         return self.runtime.with_event_observer(notify), provider
 
@@ -310,11 +332,11 @@ class TelegramBot:
             return False
         chat_id = str(chat_id_value)
         if not self.chat_allowed(chat_id):
-            self.client.send_message(chat_id, self.pairing_hint(chat_id))
+            self.safe_send_message(chat_id, self.pairing_hint(chat_id))
             return True
         normalized = self.normalize_text(text)
         response = self.execute_text(chat_id, message, normalized)
-        self.client.send_message(chat_id, self.response_text(response))
+        self.safe_send_message(chat_id, self.response_text(response))
         return True
 
     def poll_forever(self) -> None:

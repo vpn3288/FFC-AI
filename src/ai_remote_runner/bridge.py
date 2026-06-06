@@ -153,6 +153,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         output = response.get("data", {}).get("output")
         if output:
             return str(output)[:3500]
+        detail = response.get("data", {}).get("detail") if isinstance(response.get("data"), dict) else None
+        if detail:
+            return f"{response.get('message_zh', response.get('status', 'OK'))}: {detail}"[:3500]
         return str(response.get("message_zh") or response.get("status") or "OK")
 
     def _handle_command_payload(self, payload: dict) -> dict:

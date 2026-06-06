@@ -229,6 +229,93 @@ def build_instruction_prompt(store: InstructionStore, workspace_id: str) -> str:
     return f"# Global Instructions\n{global_doc}\n\n# Project Instructions\n{project_doc}\n"
 
 
+def _claude_chat_retry_prompt(prompt: str) -> str:
+    return (
+        "你正在作为 Telegram/Mattermost 聊天机器人回复用户。\n"
+        "上一轮 Claude Code 返回了空字符串，这对聊天用户不可见。\n"
+        "现在必须直接输出一条非空中文回复；不要解释系统状态，不要输出 JSON，不要留空。\n"
+        "如果用户消息只是问候、数字、ping、test、测试或其他短消息，请严格只输出：收到，我在。\n"
+        "如果用户提出了明确问题，请直接回答该问题；如果无法判断，也请严格只输出：收到，我在。\n"
+        "你的下一条响应第一个字符必须是中文可见字符。\n\n"
+        "# 用户原始消息\n"
+        f"{prompt}\n\n"
+        "# 输出要求\n"
+        "只输出最终给用户看的文本。"
+    )
+
+
+def _current_user_text(prompt: str) -> str:
+    marker = "# 当前用户消息\n"
+    if marker in prompt:
+        current = prompt.rsplit(marker, 1)[1]
+        if "\n\n# 回复要求" in current:
+            current = current.split("\n\n# 回复要求", 1)[0]
+        return current.strip()
+    return prompt.strip()
+
+
+def _short_chat_fallback(prompt: str) -> str | None:
+    text = _current_user_text(prompt)
+    normalized = text.strip().lower()
+    simple_messages = {
+        "你好",
+        "您好",
+        "hello",
+        "hi",
+        "hey",
+        "ping",
+        "test",
+        "测试",
+        "在吗",
+        "在不在",
+    }
+    if normalized in simple_messages or normalized.isdigit():
+        return "收到，我在。"
+    if len(text) <= 12 and any(item in text for item in ("你好", "您好", "测试", "在吗")):
+        return "收到，我在。"
+    return None
+
+
+def _run_claude_command(command: list[str], workspace: Path, prompt: str, timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+    env = {key: value for key in SAFE_ENV_KEYS if (value := os.environ.get(key))}
+    return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+
+
+def _claude_command_with_budget(command: list[str], budget_usd: float) -> list[str]:
+    updated = list(command)
+    index = updated.index("--max-budget-usd")
+    updated[index + 1] = f"{max(0.0, budget_usd):.6f}".rstrip("0").rstrip(".") or "0"
+    return updated
+
+
+def _claude_recorded_cost(first_cost_usd: float | None, retry_cost_usd: float | None, retry_started: bool, reserved_usd: float) -> float | None:
+    if retry_started and (retry_cost_usd is None or retry_cost_usd <= 0):
+        return reserved_usd
+    if first_cost_usd is not None and retry_cost_usd is not None:
+        return first_cost_usd + retry_cost_usd
+    if retry_cost_usd is not None:
+        return retry_cost_usd
+    if first_cost_usd is not None:
+        return first_cost_usd
+    return None
+
+
+def _claude_output(result: subprocess.CompletedProcess[str]) -> tuple[dict[str, Any] | None, str]:
+    raw: dict[str, Any] | None = None
+    output_text = result.stdout
+    try:
+        raw = json.loads(result.stdout)
+        raw_output = raw.get("result")
+        if raw_output is None:
+            raw_output = raw.get("message")
+        output_text = str(raw_output or "")
+    except json.JSONDecodeError:
+        pass
+    if result.returncode != 0 and not output_text:
+        output_text = result.stderr or result.stdout
+    return raw, output_text
+
+
 def invoke_claude(
     prompt: str,
     workspace: Path,
@@ -262,30 +349,51 @@ def invoke_claude(
         command.extend(["--model", claude_model])
     if emit:
         emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "calling_model"})
-    env = {key: value for key in SAFE_ENV_KEYS if (value := os.environ.get(key))}
     try:
-        result = subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+        result = _run_claude_command(command, workspace, prompt, timeout_seconds)
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
         if emit:
             emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout"})
         return ProviderResult(actual_run_id, "claude-code", "timeout", "", None, -1)
-    raw: dict[str, Any] | None = None
-    output_text = result.stdout
-    try:
-        raw = json.loads(result.stdout)
-        raw_output = raw.get("result")
-        if raw_output is None:
-            raw_output = raw.get("message")
-        output_text = str(raw_output or "")
-    except json.JSONDecodeError:
-        pass
-    if result.returncode != 0 and not output_text:
-        output_text = result.stderr or result.stdout
+    raw, output_text = _claude_output(result)
+    first_cost_usd = _actual_cost_usd(raw)
+    retry_cost_usd: float | None = None
+    retry_started = False
+    if result.returncode == 0 and permission_scope == "chat" and not output_text.strip():
+        fallback = _short_chat_fallback(prompt)
+        if fallback:
+            output_text = fallback
+            if emit:
+                emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "warning", "public_message_zh": "模型返回空内容，已使用短消息安全回复。"})
+        remaining_budget_usd = reserved_usd - first_cost_usd if first_cost_usd is not None else 0.0
+        if not fallback and remaining_budget_usd > 0:
+            if emit:
+                emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "warning", "public_message_zh": "模型返回空内容，正在自动重试一次。"})
+            try:
+                retry_started = True
+                retry_result = _run_claude_command(_claude_command_with_budget(command, remaining_budget_usd), workspace, _claude_chat_retry_prompt(prompt), timeout_seconds)
+                retry_raw, retry_output = _claude_output(retry_result)
+                retry_cost_usd = _actual_cost_usd(retry_raw)
+                result = retry_result
+                raw = {"first_attempt": raw, "retry_attempt": retry_raw}
+                output_text = retry_output
+            except subprocess.TimeoutExpired:
+                ledger.complete(actual_run_id, _claude_recorded_cost(first_cost_usd, None, True, reserved_usd), status="timeout")
+                if emit:
+                    emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout_after_empty_retry"})
+                return ProviderResult(actual_run_id, "claude-code", "timeout", "", raw, -1)
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
-    ledger.complete(actual_run_id, _actual_cost_usd(raw), status="completed" if result.returncode == 0 else "failed")
-    status = "completed" if result.returncode == 0 else "failed"
+    if result.returncode == 0 and not output_text.strip():
+        output_text = "Claude Code 返回了空内容；runner 已按失败处理。请重试，或把问题描述得更具体。"
+        status = "empty_output"
+    else:
+        status = "completed" if result.returncode == 0 else "failed"
+    actual_cost_usd = _claude_recorded_cost(first_cost_usd, retry_cost_usd, retry_started, reserved_usd)
+    if actual_cost_usd is None:
+        actual_cost_usd = _actual_cost_usd(raw)
+    ledger.complete(actual_run_id, actual_cost_usd, status=status)
     if emit:
         event = {"run_id": actual_run_id, "provider": "claude-code", "phase": "done" if status == "completed" else "error"}
         if status != "completed":

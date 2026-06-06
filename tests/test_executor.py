@@ -141,6 +141,18 @@ class ExecutorTests(unittest.TestCase):
             context_file = runtime.state / "contexts" / "default.claude-code.json"
             self.assertTrue(context_file.exists())
 
+    def test_task_prompt_always_requests_visible_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "你好"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "收到", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                execute(parsed, {"request_id": "prompt1", "raw_text": "你好"}, runtime)
+            provider_prompt = invoke.call_args.args[0]
+            self.assertIn("# 当前用户消息", provider_prompt)
+            self.assertIn("你好", provider_prompt)
+            self.assertIn("不要返回空内容", provider_prompt)
+
     def test_task_run_default_budget_reservation_is_chat_sized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -161,6 +173,7 @@ class ExecutorTests(unittest.TestCase):
             provider_prompt = invoke.call_args.args[0]
             self.assertIn("remember alpha", provider_prompt)
             self.assertIn("alpha saved", provider_prompt)
+            self.assertIn("不要返回空内容", provider_prompt)
 
     def test_conversation_command_enables_long_memory_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -233,6 +246,41 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["data"]["provider"], "codex")
             invoke.assert_called_once()
 
+    def test_provider_switch_keeps_provider_specific_conversation_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 新对话"), {"request_id": "nc1", "raw_text": "/ai 新对话", "provider": "claude-code"}, runtime)
+            claude_id = runtime.load_policy()["provider_conversations"]["claude-code"]
+
+            execute(parse_command("/ai 提供商 使用 codex"), {"request_id": "ps-codex", "raw_text": "/ai 提供商 使用 codex"}, runtime)
+            execute(parse_command("/ai 新对话"), {"request_id": "nc2", "raw_text": "/ai 新对话"}, runtime)
+            policy = runtime.load_policy()
+            codex_id = policy["provider_conversations"]["codex"]
+            self.assertNotEqual(claude_id, codex_id)
+
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "continue"}, "requires_confirmation": False}
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake):
+                response = execute(parsed, {"request_id": "task-claude", "raw_text": "continue", "provider": "claude-code"}, runtime)
+            self.assertEqual(response["data"]["conversation_id"], claude_id)
+
+    def test_default_provider_conversation_is_initialized_before_other_provider_new_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "remember default"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake):
+                first = execute(parsed, {"request_id": "default-claude", "raw_text": "remember default", "provider": "claude-code"}, runtime)
+            self.assertEqual(first["data"]["conversation_id"], "default")
+            self.assertEqual(runtime.load_policy()["provider_conversations"]["claude-code"], "default")
+
+            execute(parse_command("/ai 提供商 使用 codex"), {"request_id": "ps-codex2", "raw_text": "/ai 提供商 使用 codex"}, runtime)
+            execute(parse_command("/ai 新对话"), {"request_id": "new-codex2", "raw_text": "/ai 新对话"}, runtime)
+
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake):
+                second = execute(parsed, {"request_id": "return-claude", "raw_text": "continue", "provider": "claude-code"}, runtime)
+            self.assertEqual(second["data"]["conversation_id"], "default")
+
     def test_workspace_selection_persists_and_drives_task_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -248,9 +296,9 @@ class ExecutorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
             execute(parse_command("/ai 自动压缩 开启"), {"request_id": "ac1", "raw_text": "/ai 自动压缩 开启"}, runtime)
-            old_state = runtime.contexts.load("default", "claude-code", limit=100)
-            old_state["context_used_tokens"] = 79
-            old_state["context_limit_tokens"] = 100
+            old_state = runtime.contexts.load("default", "claude-code", limit=1000)
+            old_state["context_used_tokens"] = 790
+            old_state["context_limit_tokens"] = 1000
             runtime.contexts.path("default", "claude-code").write_text(json.dumps(old_state), encoding="utf-8")
 
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "x"}, "requires_confirmation": False}
@@ -275,9 +323,9 @@ class ExecutorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
             runtime.save_policy({"policy": "new_each_request", "conversation_id": "default", "auto_compact_enabled": True, "permission_scope": "chat"})
-            old_state = runtime.contexts.load("default", "claude-code", limit=100)
-            old_state["context_used_tokens"] = 79
-            old_state["context_limit_tokens"] = 100
+            old_state = runtime.contexts.load("default", "claude-code", limit=1000)
+            old_state["context_used_tokens"] = 790
+            old_state["context_limit_tokens"] = 1000
             runtime.contexts.path("default", "claude-code").write_text(json.dumps(old_state), encoding="utf-8")
 
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "x"}, "requires_confirmation": False}

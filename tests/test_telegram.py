@@ -20,6 +20,13 @@ class FakeTelegramClient(TelegramClient):
         self.sent.append((chat_id, text))
 
 
+class FailingHeartbeatClient(FakeTelegramClient):
+    def send_message(self, chat_id: str, text: str) -> None:
+        if "仍在运行" in text:
+            raise RuntimeError("simulated send failure")
+        super().send_message(chat_id, text)
+
+
 class TelegramBotTests(unittest.TestCase):
     def test_default_reserved_budget_is_chat_sized(self) -> None:
         with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "token", "TELEGRAM_ALLOWED_CHAT_IDS": "123"}, clear=True):
@@ -93,6 +100,28 @@ class TelegramBotTests(unittest.TestCase):
             sent_text = "\n".join(text for _, text in client.sent)
             self.assertIn("仍在运行", sent_text)
             self.assertIn("slow ok", sent_text)
+
+    def test_heartbeat_send_failure_does_not_abort_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"})
+            client = FailingHeartbeatClient(config)
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            bot = TelegramBot(config, client, runtime, Path(tmp) / "state")
+            fake = ProviderResult("run", "claude-code", "completed", "still ok", None, 0)
+
+            def invoke(*args, **kwargs):
+                time.sleep(0.04)
+                return fake
+
+            with (
+                patch.dict("os.environ", {"TELEGRAM_STATUS_INTERVAL_SECONDS": "0.01"}, clear=False),
+                patch("ai_remote_runner.executor.invoke_claude", side_effect=invoke),
+            ):
+                handled = bot.handle_update({"message": {"chat": {"id": 123}, "text": "慢任务测试", "message_id": 12}})
+
+            self.assertTrue(handled)
+            self.assertIn("still ok", "\n".join(text for _, text in client.sent))
+            self.assertTrue((Path(tmp) / "state" / "telegram-send-failures.jsonl").exists())
 
     def test_confirmed_task_uses_status_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

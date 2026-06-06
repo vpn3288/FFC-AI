@@ -16,16 +16,21 @@ class ContextStore:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def provider_id(self, provider: str = "claude-code") -> str:
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", provider or "runner")
+
     def path(self, conversation_id: str, provider: str = "claude-code") -> Path:
-        provider_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", provider or "runner")
-        return self.root / f"{conversation_id}.{provider_id}.json"
+        return self.root / f"{conversation_id}.{self.provider_id(provider)}.json"
 
     def load(self, conversation_id: str, provider: str = "claude-code", limit: int = 200000) -> dict[str, Any]:
         path = self.path(conversation_id, provider)
         legacy_path = self.root / f"{conversation_id}.json"
         if not path.exists() and legacy_path.exists():
             legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
-            if legacy.get("provider", provider) == provider:
+            legacy_provider = legacy.get("provider")
+            if legacy_provider == provider or (legacy_provider is None and provider == "claude-code"):
+                legacy["provider"] = provider
+                atomic_write_json(path, legacy)
                 return legacy
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
@@ -74,7 +79,7 @@ class ContextStore:
     def compact(self, conversation_id: str, provider: str = "claude-code") -> dict[str, Any]:
         old = self.load(conversation_id, provider)
         new_id = str(uuid.uuid4())
-        summary_path = self.root / f"{conversation_id}-summary-{int(time.time())}.md"
+        summary_path = self.root / f"{conversation_id}.{self.provider_id(provider)}.{new_id}-summary-{int(time.time())}.md"
         lines = [
             "# Context Summary",
             "",

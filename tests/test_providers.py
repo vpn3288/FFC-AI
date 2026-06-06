@@ -119,6 +119,99 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(command[command.index("--tools") + 1], "")
             self.assertNotIn("--disallowedTools", command)
 
+    def test_invoke_claude_treats_empty_success_as_error(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": ""}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed):
+                result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.1)
+            self.assertEqual(result.status, "empty_output")
+            self.assertIn("空内容", result.output_text)
+            self.assertEqual(ledger.load()["runs"][result.run_id]["status"], "empty_output")
+
+    def test_invoke_claude_retries_empty_chat_output_once(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "", "total_cost_usd": 0.01}), stderr="")
+        ok = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "你好，我在。", "total_cost_usd": 0.02}), stderr="")
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, ok]) as run:
+                result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1, emit=events.append)
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.output_text, "你好，我在。")
+            self.assertEqual(run.call_count, 2)
+            self.assertIn("上一轮 Claude Code 返回了空字符串", run.call_args.kwargs["input"])
+            self.assertIn("收到，我在。", run.call_args.kwargs["input"])
+            retry_command = run.call_args.args[0]
+            self.assertEqual(retry_command[retry_command.index("--max-budget-usd") + 1], "0.09")
+            self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.03)
+            self.assertTrue(any(event.get("phase") == "warning" and "重试" in event.get("public_message_zh", "") for event in events))
+
+    def test_invoke_claude_short_empty_chat_uses_safe_fallback(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "", "total_cost_usd": 0.01}), stderr="")
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", return_value=empty) as run:
+                result = invoke_claude("你好", Path(tmp), "instructions", ledger, reserved_usd=0.1, emit=events.append)
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.output_text, "收到，我在。")
+            self.assertEqual(run.call_count, 1)
+            self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.01)
+            self.assertTrue(any("安全回复" in event.get("public_message_zh", "") for event in events))
+
+    def test_invoke_claude_does_not_retry_empty_output_without_cost_visibility(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": ""}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", return_value=empty) as run:
+                result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1)
+            self.assertEqual(result.status, "empty_output")
+            self.assertEqual(run.call_count, 1)
+
+    def test_invoke_claude_records_reserved_cost_when_retry_cost_missing(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "", "total_cost_usd": 0.01}), stderr="")
+        ok_without_cost = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "收到，我在。"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, ok_without_cost]):
+                result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1)
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.1)
+
+    def test_invoke_claude_records_reserved_cost_when_retry_times_out(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "", "total_cost_usd": 0.01}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, subprocess.TimeoutExpired(["claude"], 1)]):
+                result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1)
+            self.assertEqual(result.status, "timeout")
+            self.assertEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.1)
+
     def test_provider_probe_timeout_marks_unavailable(self) -> None:
         import subprocess
 

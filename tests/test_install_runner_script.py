@@ -293,6 +293,8 @@ PY
             )
             write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
             write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "node", "#!/usr/bin/env bash\nprintf 'v20.11.1\\n'\n")
+            write_executable(fakebin / "npm", "#!/usr/bin/env bash\nexit 0\n")
 
             env = os.environ.copy()
             env.update(
@@ -316,6 +318,120 @@ PY
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("npm install -g", npm_calls.read_text(encoding="utf-8"))
+
+    def test_old_node_uses_nodesource_before_codex_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            state = root / "state"
+            workspaces = root / "workspaces"
+            install = root / "install"
+            nodesource_marker = root / "nodesource-ran.txt"
+            npm_calls = root / "npm-calls.txt"
+            state.mkdir()
+            (state / "config.env").write_text("AI_BRIDGE_SHARED_SECRET=" + "A" * 43 + "\n", encoding="utf-8")
+
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  while [ "$#" -gt 0 ] && [[ "$1" == *=* ]]; do shift; done
+                  exec "$@"
+                fi
+                if [ "${1:-}" = "npm" ] && [ "${2:-}" = "install" ] && [ "${3:-}" = "-g" ]; then
+                  printf '%s\n' "$*" >> "${NPM_CALLS:?}"
+                  cat > "$(dirname "$0")/codex" <<'CODEX'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\n'; exit 0; fi
+if [ "${1:-}" = "exec" ]; then exit 0; fi
+exit 0
+CODEX
+                  chmod +x "$(dirname "$0")/codex"
+                  exit 0
+                fi
+                if [ "${1:-}" = "python3" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "venv" ]; then
+                  mkdir -p "$4/bin"
+                  cat > "$4/bin/python" <<'PY'
+#!/usr/bin/env bash
+exit 0
+PY
+                  chmod +x "$4/bin/python"
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pip" ]; then
+                  exit 0
+                fi
+                if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
+                  exit 0
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(
+                fakebin / "node",
+                """
+                #!/usr/bin/env bash
+                if [ -f "${NEW_NODE_MARKER:?}" ]; then
+                  printf 'v20.11.1\n'
+                else
+                  printf 'v12.22.9\n'
+                fi
+                """,
+            )
+            write_executable(
+                fakebin / "curl",
+                """
+                #!/usr/bin/env bash
+                output=''
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = "-o" ]; then output="$2"; shift 2; continue; fi
+                  shift
+                done
+                cat > "$output" <<'SETUP'
+#!/usr/bin/env bash
+set -e
+printf 'nodesource\n' > "${NODESOURCE_MARKER:?}"
+touch "${NEW_NODE_MARKER:?}"
+SETUP
+                exit 0
+                """,
+            )
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "npm", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REMOTE_STATE": str(state),
+                    "AI_WORKSPACE_ROOT": str(workspaces),
+                    "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_PROVIDERS": "codex",
+                    "AI_DEFAULT_PROVIDER": "codex",
+                    "FAKE_SYSTEMD_DIR": str(root),
+                    "NPM_CALLS": str(npm_calls),
+                    "NODESOURCE_MARKER": str(nodesource_marker),
+                    "NEW_NODE_MARKER": str(root / "new-node"),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-runner.sh")],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(nodesource_marker.exists())
+            self.assertIn("Node.js 20+ is required", result.stdout)
             self.assertIn("npm install -g", npm_calls.read_text(encoding="utf-8"))
 
     def test_default_provider_must_be_requested(self) -> None:

@@ -238,6 +238,24 @@ class BridgeHTTPTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_mattermost_cancel_response_includes_non_kill_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MATTERMOST_SLASH_TOKEN": "slash-secret"}):
+            server, _, url = self._server(tmp)
+            try:
+                body = urlencode({"token": "slash-secret", "command": "/ai", "text": "取消", "trigger_id": "cancel-1"}).encode("utf-8")
+                req = request.Request(
+                    f"{url}/bridge/command",
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                response = request.urlopen(req, timeout=10)
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertIn("不会强制终止", payload["text"])
+            finally:
+                server.shutdown()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

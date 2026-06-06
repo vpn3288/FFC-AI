@@ -72,13 +72,18 @@ class RunnerRuntime:
         default = {
             "policy": "continue",
             "conversation_id": "default",
+            "provider_conversations": {},
             "auto_compact_enabled": True,
             "auto_compact_threshold_percent": 80,
             "permission_scope": "chat",
         }
         if self.policy_path.exists():
-            return default | json.loads(self.policy_path.read_text(encoding="utf-8"))
-        return default
+            data = default | json.loads(self.policy_path.read_text(encoding="utf-8"))
+        else:
+            data = default
+        if not isinstance(data.get("provider_conversations"), dict):
+            data["provider_conversations"] = {}
+        return data
 
     def save_policy(self, policy: dict[str, Any]) -> None:
         atomic_write_json(self.policy_path, policy)
@@ -150,15 +155,40 @@ def _default_reserved_usd() -> float:
     return max(0.0, value)
 
 
+def _policy_conversation_id(policy: dict[str, Any], provider: str) -> str:
+    provider_map = policy.get("provider_conversations")
+    if isinstance(provider_map, dict):
+        value = provider_map.get(provider)
+        if value:
+            return str(value)
+    conversation_id = str(policy.get("conversation_id") or "default")
+    _set_policy_conversation_id(policy, provider, conversation_id)
+    return conversation_id
+
+
+def _set_policy_conversation_id(policy: dict[str, Any], provider: str, conversation_id: str) -> None:
+    provider_map = policy.setdefault("provider_conversations", {})
+    if not isinstance(provider_map, dict):
+        provider_map = {}
+        policy["provider_conversations"] = provider_map
+    provider_map[provider] = conversation_id
+    policy["conversation_id"] = conversation_id
+
+
 def _prompt_with_history(prompt: str, transcript: str) -> str:
+    current = (
+        "# 当前用户消息\n"
+        f"{prompt}\n\n"
+        "# 回复要求\n"
+        "请直接回复当前用户消息。即使用户只是发送问候、数字或测试消息，也要给出可见的简短回复；不要返回空内容。"
+    )
     if not transcript:
-        return prompt
+        return current
     return (
         "# 持续对话历史\n"
         "下面是同一个对话窗口中的最近公开问答，请在回答新问题时延续这些上下文和用户偏好。\n\n"
         f"{transcript}\n\n"
-        "# 当前用户消息\n"
-        f"{prompt}"
+        f"{current}"
     )
 
 
@@ -247,7 +277,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "context_status":
         policy = rt.load_policy()
         provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
-        conversation_id = envelope.get("conversation_id") or policy.get("conversation_id") or "default"
+        conversation_id = envelope.get("conversation_id") or _policy_conversation_id(policy, provider)
         existing = rt.contexts.load(conversation_id, provider)
         state = ContextState(
             conversation_id,
@@ -287,7 +317,8 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         elif policy.get("policy") == "new_each_request":
             conversation_id = str(uuid.uuid4())
         else:
-            conversation_id = policy.get("conversation_id") or "default"
+            conversation_id = _policy_conversation_id(policy, provider)
+            rt.save_policy(policy)
         existing = rt.contexts.load(conversation_id, provider)
         if existing.get("summary_artifact") and Path(existing["summary_artifact"]).exists():
             instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(existing['summary_artifact']).read_text(encoding='utf-8')}\n"
@@ -308,7 +339,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             if auto_compact_enabled:
                 compacted = rt.contexts.compact(conversation_id, provider)
                 conversation_id = compacted["new_conversation_id"]
-                policy["conversation_id"] = conversation_id
+                _set_policy_conversation_id(policy, provider, conversation_id)
                 rt.save_policy(policy)
                 instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(compacted['summary_artifact']).read_text(encoding='utf-8')}\n"
                 transcript = rt.contexts.transcript(conversation_id, provider)
@@ -350,9 +381,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         capabilities = _provider_capabilities(provider)
         if not (capabilities.get("new_conversation") or capabilities.get("continue_conversation")):
             return _error(request_id, "provider_compaction_unsupported", f"{provider} does not report new or continued conversation support")
-        conversation_id = envelope.get("conversation_id") or policy.get("conversation_id") or "default"
+        conversation_id = envelope.get("conversation_id") or _policy_conversation_id(policy, provider)
         compacted = rt.contexts.compact(conversation_id, provider)
-        policy["conversation_id"] = compacted["new_conversation_id"]
+        _set_policy_conversation_id(policy, provider, compacted["new_conversation_id"])
         rt.save_policy(policy)
         return _ok(request_id, run_id, "上下文已压缩", compacted)
     if action == "provider.list":
@@ -415,16 +446,18 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         data = rt.load_policy()
         data["policy"] = "continue"
         data["last_action"] = action
-        rt.save_policy(data)
         provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
-        context = rt.contexts.load(data.get("conversation_id") or "default", provider)
+        conversation_id = _policy_conversation_id(data, provider)
+        _set_policy_conversation_id(data, provider, conversation_id)
+        rt.save_policy(data)
+        context = rt.contexts.load(conversation_id, provider)
         return _ok(
             request_id,
             run_id,
             "长期对话已启用",
             {
                 "policy": data,
-                "conversation_id": data.get("conversation_id") or "default",
+                "conversation_id": conversation_id,
                 "provider": provider,
                 "context_used_tokens": context.get("context_used_tokens", 0),
                 "context_used_percent": context.get("context_used_percent", 0),
@@ -434,13 +467,15 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         )
     if action in {"new_conversation", "continue_conversation", "set_policy_new_each_request", "set_policy_continue"}:
         data = rt.load_policy()
+        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
         if action == "new_conversation":
-            data["conversation_id"] = str(uuid.uuid4())
+            _set_policy_conversation_id(data, provider, str(uuid.uuid4()))
             data["policy"] = "continue"
         elif action == "set_policy_new_each_request":
             data["policy"] = "new_each_request"
         elif action in {"set_policy_continue", "continue_conversation"}:
             data["policy"] = "continue"
+            _set_policy_conversation_id(data, provider, _policy_conversation_id(data, provider))
         data["last_action"] = action
         rt.save_policy(data)
         return _ok(request_id, run_id, "会话策略已更新", data)
@@ -459,7 +494,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "cancel":
         data = {"cancel_requested": True, "detail": "取消标记已记录；当前版本不会强制终止已经启动的 provider 进程。"}
         _write_json_state(rt.state / "cancel-request.json", data | {"time": run_id})
-        return _ok(request_id, run_id, "取消标记已记录", data)
+        return _ok(request_id, run_id, data["detail"], data)
     if action == "confirm":
         return _error(request_id, "confirmation_not_found", "没有找到可确认的待执行请求，或确认已过期。")
     if action == "workspace.list":
