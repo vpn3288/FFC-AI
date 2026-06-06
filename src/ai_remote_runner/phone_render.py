@@ -56,8 +56,14 @@ def render_event_text(event: dict[str, Any]) -> str | None:
     message = str(event.get("public_message_zh") or "")
     if phase == "queued":
         return f"已收到，正在排队。provider={provider}。"
+    if phase == "thinking":
+        return f"{provider} 正在推理和规划：{message or '模型正在分析任务。'}"
     if phase == "calling_model":
-        return f"正在调用 {provider}。状态：模型正在思考或工具正在运行。"
+        return f"正在调用 {provider}。状态：{message or '模型正在思考或工具正在运行。'}"
+    if phase == "running_command":
+        return f"{provider} 正在运行命令：{message or 'shell 命令执行中。'}"
+    if phase == "writing_files":
+        return f"{provider} 正在修改文件：{message or '文件写入中。'}"
     if phase == "running":
         return f"{provider} 仍在运行：{message or '模型思考、工具执行、联网等待或生成中；不是卡死。'}"
     if phase == "warning":

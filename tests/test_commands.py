@@ -63,6 +63,21 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(full["canonical_action"], "set_permission_full")
         self.assertFalse(full["requires_confirmation"])
 
+    def test_model_and_provider_config_commands_parse(self) -> None:
+        cases = {
+            "/ai 模型 列表": "model.list",
+            "/ai 模型 使用 vscode claude-opus-4-6": "model.select",
+            "/ai 密钥 设置 codex sk-testvalue1234567890": "provider_config.set_api_key",
+            "/ai 代理 设置 claude-code https://proxy.example": "provider_config.set_base_url",
+            "/ai 配置 查看": "provider_config.show",
+            "/ai 预算 设置 1.00": "budget.set_task_reserved",
+        }
+        for raw, action in cases.items():
+            with self.subTest(raw=raw):
+                parsed = parse_command(raw)
+                self.assertEqual(parsed["canonical_action"], action)
+                self.assertFalse(parsed["requires_confirmation"])
+
     def test_bare_slash_returns_command_index_when_enabled(self) -> None:
         result = parse_command("/", allow_bare=True)
         self.assertEqual(result["status"], "accepted")

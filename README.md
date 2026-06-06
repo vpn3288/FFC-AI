@@ -109,7 +109,9 @@ runner 机器需要：
 在 runner 安装时启用 Telegram：
 
 ```bash
-sudo scripts/install-runner.sh --enable-telegram
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+# 或：
+AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
 sudo scripts/pair-telegram.sh --telegram-id 你的TelegramID
 ```
 
@@ -120,7 +122,7 @@ ai-telegram-bot.service
 ```
 
 Telegram 和 Mattermost 使用同一套 `/ai` 命令表、同一套 provider 选择、同一套长对话/新对话策略、同一套全权限开关。
-配对完成后，`pair-telegram.sh` 会自动运行 `validate-core-ready.sh`，用真实 Claude Code/Codex full-access smoke 验证 root、网络、文件、venv/安装能力；不通过就不会把 `core_ready` 标记成 true。
+配对完成后，`pair-telegram.sh` 会自动运行 `validate-core-ready.sh`，只对本机启用的 provider 做真实 full-access smoke，验证 root、网络、文件、venv/安装能力；VSCode-only/management-only 机器只验证 runner 命令和 bridge loopback。不通过就不会把 `core_ready` 标记成 true。
 
 ### 方式 B：用本项目脚本部署 Mattermost
 
@@ -184,25 +186,28 @@ sudo scripts/install-communication-vps.sh --domain ai.example.com
 git clone https://github.com/vpn3288/FFC-AI.git
 cd FFC-AI
 
-scripts/install-runner.sh --dry-run
-sudo scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram scripts/install-runner.sh --dry-run
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
 ```
 
-如果你想让 Telegram 也能连到同一个 AI runner，安装时加上：
+现在脚本要求显式声明这台机器要装什么，避免一台机器意外装入多个 AI 工具。常用选择：
 
 ```bash
-sudo scripts/install-runner.sh --enable-telegram
+# Codex 专机，带 Telegram
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+
+# Claude Code 专机，带 Telegram
+AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
+
+# VSCode 专机，带 Telegram 管理机器人，不安装 AI provider
+AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
 ```
 
-这会额外安装 `ai-telegram-bot.service`。如果还没有 BotFather token，服务会先装好但不启动，后面配对时再启动。
+`all`、`full`、`core` 这类混装入口已默认拒绝。实验室部署按“一台 VM 一种 AI/工具”拆开：Codex 专机、Claude Code 专机、VSCode 专机分别安装，Telegram 可以加在任何一台上作为同等通信入口。
 
-安装脚本会安装/验证两个核心 provider：
+带 `telegram` 的安装会额外安装 `ai-telegram-bot.service`。如果还没有 BotFather token，服务会先装好但不启动，后面配对时再启动。
 
-```text
-claude-code,codex
-```
-
-同时会安装/验证 VSCode，并创建 root/full-access 包装器：
+VSCode 组件会安装/验证 VSCode，并创建 root/full-access 包装器：
 
 ```text
 /usr/local/bin/code-root
@@ -210,10 +215,10 @@ claude-code,codex
 
 `code-root` 会用 root 的 VSCode 数据目录和扩展目录启动 `code`，并传入 `--no-sandbox`、`--disable-workspace-trust`，用于这类专门创建的 VM/测试机。
 
-`AI_DEFAULT_PROVIDER` 只决定默认把任务发给谁，不会跳过另一个 provider 的安装/验证。例如默认使用 Codex：
+`AI_DEFAULT_PROVIDER` 只决定默认把任务发给谁，并且必须属于本机显式安装的 provider。例如 Codex 专机：
 
 ```bash
-AI_DEFAULT_PROVIDER=codex sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram AI_DEFAULT_PROVIDER=codex sudo -E scripts/install-runner.sh
 ```
 
 runner 默认目录：
@@ -523,7 +528,7 @@ sudo scripts/validate-core-ready.sh
 [validate-core-ready] core_ready=true
 ```
 
-`validate-core-ready.sh` 会实际调用 Claude Code 和 Codex 的 full-access smoke test。任一 provider 不能以 root/full-access 方式运行时，不会写入 `core_ready=true`。
+`validate-core-ready.sh` 会读取本机配置里的 `AI_RUNNER_PROVIDERS`，只实际调用本机启用 provider 的 full-access smoke test。Codex 专机只测 Codex，Claude Code 专机只测 Claude Code；VSCode-only/management-only 机器不会调用 AI provider，只验证 runner 命令和 bridge loopback。启用的 provider 不能以 root/full-access 方式运行时，不会写入 `core_ready=true`。
 
 这个脚本会检查：
 
@@ -561,7 +566,7 @@ sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 sudo env VALIDATE_MATTERMOST_BACKGROUND_TASK=true scripts/validate-integration.sh
 ```
 
-默认不打开这个开关，是为了避免普通集成检查消耗 provider 预算；`validate-core-ready.sh` 已经单独做 Claude Code/Codex 的 full-access 文件写读、网络、venv/安装能力 smoke。
+默认不打开这个开关，是为了避免普通集成检查消耗 provider 预算；`validate-core-ready.sh` 已经单独对本机启用的 provider 做 full-access 文件写读、网络、venv/安装能力 smoke。
 
 完整验证通过后，脚本会把：
 

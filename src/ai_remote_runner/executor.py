@@ -18,6 +18,15 @@ from .instructions import InstructionStore
 from .paths import state_root, workspace_root
 from .providers import provider_status
 from .providers import build_instruction_prompt, invoke_claude, invoke_codex
+from .runtime_config import (
+    apply_api_key,
+    apply_base_url,
+    apply_model,
+    apply_task_budget,
+    config_summary,
+    list_supported_models,
+    normalize_target,
+)
 from .storage import atomic_write_json
 
 
@@ -27,7 +36,7 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("anthropic_or_openai_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")),
     ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*(?!<|\\$|\\{)[A-Za-z0-9_-]{32,}\b")),
 )
-DEFAULT_TASK_RESERVED_USD = 0.05
+DEFAULT_TASK_RESERVED_USD = 0.20
 
 
 @dataclass
@@ -115,6 +124,31 @@ def _selected_provider(rt: RunnerRuntime) -> str | None:
     return _json_state(rt.state / "provider-selection.json").get("provider")
 
 
+def _configured_provider_names() -> list[str] | None:
+    raw = os.environ.get("AI_RUNNER_PROVIDERS")
+    if raw is None:
+        return None
+    providers = []
+    for item in raw.split(","):
+        provider = item.strip()
+        if provider:
+            providers.append("claude-code" if provider == "claude" else provider)
+    return providers
+
+
+def _default_provider(rt: RunnerRuntime) -> str | None:
+    selected = _selected_provider(rt)
+    configured = _configured_provider_names()
+    if configured is not None:
+        if selected in configured:
+            return selected
+        if len(configured) == 1:
+            return configured[0]
+        if not configured:
+            return None
+    return selected or "claude-code"
+
+
 def _provider_from_args(args: list[str]) -> str | None:
     provider = args[0] if args else None
     if provider == "claude":
@@ -122,6 +156,17 @@ def _provider_from_args(args: list[str]) -> str | None:
     if provider in {"claude-code", "codex"}:
         return provider
     return None
+
+
+def _config_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | None, list[str]]:
+    if args:
+        target = normalize_target(args[0])
+        if target:
+            return target, args[1:]
+    provider = _default_provider(rt)
+    if provider:
+        return provider, args
+    return "vscode", args
 
 
 def _valid_workspace_id(workspace_id: str) -> bool:
@@ -246,6 +291,8 @@ def _command_index_with_availability(items: list[dict[str, Any]], providers: lis
 
 def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
     manifest = _install_manifest(runtime)
+    configured_providers = _configured_provider_names()
+    default_provider = _default_provider(runtime)
     return {
         "core_ready": bool(manifest.get("core_ready", False)),
         "core_ready_status": manifest.get("core_ready_status", "unknown"),
@@ -253,10 +300,11 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "mattermost_command_validated": bool(manifest.get("mattermost_command_validated", False)),
         "integration_ready_status": manifest.get("integration_ready_status", "unknown"),
         "providers": provider_status(),
+        "configured_providers": configured_providers if configured_providers is not None else ["claude-code", "codex"],
         "budget": runtime.ledger.load(),
         "policy": runtime.load_policy(),
         "current_workspace": _selected_workspace(runtime) or "default",
-        "default_provider": _selected_provider(runtime) or "claude-code",
+        "default_provider": default_provider or "none",
         "default_workspace": _selected_workspace(runtime) or "default",
         "recent_runs": _recent_run_events(runtime),
         "state_root": str(runtime.state),
@@ -285,12 +333,15 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if not _valid_workspace_id(workspace_id):
         return _error(request_id, "invalid_workspace_id", "workspace_id must contain only letters, numbers, dash, or underscore")
     run_id = envelope.get("run_id") or str(uuid.uuid4())
-    initial_provider = envelope.get("provider") if action == "task.run" else "runner"
-    rt.events.emit(status_event(run_id, "queued", "正在排队", str(initial_provider or "runner")))
+
+    def emit_queued(provider: str = "runner") -> None:
+        rt.events.emit(status_event(run_id, "queued", "正在排队", provider))
 
     if action == "status":
+        emit_queued()
         return _ok(request_id, run_id, "状态已生成", current_status(rt))
     if action in {"command_index", "feature_index"}:
+        emit_queued()
         providers = provider_status()
         manifest = _install_manifest(rt)
         feature_data: dict[str, Any] = {"items": _command_index_with_availability(command_index(), providers), "providers": providers}
@@ -304,10 +355,14 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             feature_data["codex_remediation_zh"] = "Codex 当前不可用；请重新运行 runner 安装脚本，确保 Node.js/npm、网络和版本锁可用。"
         return _ok(request_id, run_id, "索引已生成", feature_data)
     if action == "budget_status":
+        emit_queued()
         return _ok(request_id, run_id, "预算已生成", rt.ledger.load())
     if action == "context_status":
         policy = rt.load_policy()
-        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        provider = envelope.get("provider") or _default_provider(rt)
+        if not provider:
+            return _error(request_id, "ai_provider_not_configured", "这台机器没有配置 Claude Code 或 Codex；只能使用状态、帮助、功能等管理命令。")
+        emit_queued(provider)
         conversation_id = envelope.get("conversation_id") or _policy_conversation_id(policy, provider)
         existing = rt.contexts.load(conversation_id, provider)
         state = ContextState(
@@ -322,11 +377,17 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         return _ok(request_id, run_id, "上下文状态已生成", state.__dict__ | {"context_used_percent": state.context_used_percent, "policy": policy})
     if action == "task.run":
         prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
-        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        provider = envelope.get("provider") or _default_provider(rt)
+        if not provider:
+            return _error(request_id, "ai_provider_not_configured", "这台机器没有配置 Claude Code 或 Codex；请把 AI 任务发送到安装了对应 AI 的 Telegram bot。")
+        configured = _configured_provider_names()
+        if configured is not None and provider not in configured:
+            return _error(request_id, "ai_provider_not_configured", f"{provider} 没有配置在这台机器上；当前配置: {','.join(configured) or 'none'}")
         reserved_usd = float(envelope.get("reserved_usd", _default_reserved_usd()))
         budget_ok, budget_reason = rt.ledger.can_reserve(reserved_usd)
         if not budget_ok:
             return _error(request_id, budget_reason, f"Budget preflight failed before provider start: {budget_reason}")
+        emit_queued(provider)
         instruction_prompt = build_instruction_prompt(rt.instructions, workspace_id)
         secret_findings = _secret_findings(instruction_prompt)
         if secret_findings:
@@ -416,7 +477,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         )
     if action == "compact_context":
         policy = rt.load_policy()
-        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        provider = envelope.get("provider") or _default_provider(rt)
+        if not provider:
+            return _error(request_id, "ai_provider_not_configured", "这台机器没有配置 Claude Code 或 Codex，无法压缩 AI 对话上下文。")
         capabilities = _provider_capabilities(provider)
         if not (capabilities.get("new_conversation") or capabilities.get("continue_conversation")):
             return _error(request_id, "provider_compaction_unsupported", f"{provider} does not report new or continued conversation support")
@@ -431,8 +494,58 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         provider = _provider_from_args(args)
         if provider is None:
             return _error(request_id, "invalid_provider", "provider must be claude-code or codex")
+        configured = _configured_provider_names()
+        if configured is not None and provider not in configured:
+            return _error(request_id, "ai_provider_not_configured", f"{provider} 没有配置在这台机器上；当前配置: {','.join(configured) or 'none'}")
         _write_json_state(rt.state / "provider-selection.json", {"provider": provider})
         return _ok(request_id, run_id, "提供商已选择", {"provider": provider})
+    if action == "model.list":
+        target, rest = _config_target_from_args(rt, args)
+        if target is None:
+            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+        if rest:
+            normalized = normalize_target(rest[0])
+            if normalized:
+                target = normalized
+        return _ok(request_id, run_id, "模型列表已生成", list_supported_models(target))
+    if action == "model.select":
+        target, rest = _config_target_from_args(rt, args)
+        if target is None:
+            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+        if not rest:
+            return _error(request_id, "missing_model", "usage: /ai 模型 使用 [claude-code|codex|vscode] <model>")
+        model = " ".join(rest).strip()
+        if not model:
+            return _error(request_id, "missing_model", "model is required")
+        return _ok(request_id, run_id, "模型已更新", apply_model(rt.state, target, model))
+    if action == "provider_config.set_api_key":
+        target, rest = _config_target_from_args(rt, args)
+        if target is None:
+            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+        if not rest:
+            return _error(request_id, "missing_api_key", "usage: /ai 密钥 设置 [claude-code|codex|vscode] <api_key>")
+        return _ok(request_id, run_id, "API key 已更新", apply_api_key(rt.state, target, "".join(rest).strip()))
+    if action == "provider_config.set_base_url":
+        target, rest = _config_target_from_args(rt, args)
+        if target is None:
+            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+        if not rest:
+            return _error(request_id, "missing_base_url", "usage: /ai 代理 设置 [claude-code|codex|vscode] <base_url>")
+        return _ok(request_id, run_id, "第三方代理地址已更新", apply_base_url(rt.state, target, " ".join(rest).strip()))
+    if action == "provider_config.show":
+        targets = [normalize_target(item) for item in args] if args else ["claude-code", "codex", "vscode"]
+        valid_targets = [target for target in targets if target]
+        if not valid_targets:
+            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+        return _ok(request_id, run_id, "配置已读取", {"targets": [config_summary(target) for target in valid_targets]})
+    if action == "budget.set_task_reserved":
+        if not args:
+            return _error(request_id, "missing_budget", "usage: /ai 预算 设置 <usd>")
+        try:
+            reserved_usd = float(args[0])
+        except ValueError:
+            return _error(request_id, "invalid_budget", "budget must be a number, for example 1.00")
+        return _ok(request_id, run_id, "单次任务预算已更新", apply_task_budget(rt.state, reserved_usd))
     if action == "credential.list":
         return _ok(request_id, run_id, "凭据列表已生成", {"credentials": rt.credentials.list_public()})
     if action == "credential.add":
@@ -490,7 +603,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action.endswith(".apply"):
         scope = "global" if action.startswith("global_") else "project"
         shown = rt.instructions.show(scope, workspace_id)
-        return _ok(request_id, run_id, "指令已应用", {"scope": scope, "workspace_id": workspace_id, "sha256": shown["sha256"], "provider": _selected_provider(rt) or "claude-code"})
+        return _ok(request_id, run_id, "指令已应用", {"scope": scope, "workspace_id": workspace_id, "sha256": shown["sha256"], "provider": _default_provider(rt) or "none"})
     if action.endswith(".set"):
         scope = "global" if action.startswith("global_") else "project"
         text = " ".join(args)
@@ -499,7 +612,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         data = rt.load_policy()
         data["policy"] = "continue"
         data["last_action"] = action
-        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        provider = envelope.get("provider") or _default_provider(rt)
+        if not provider:
+            return _error(request_id, "ai_provider_not_configured", "这台机器没有配置 Claude Code 或 Codex，无法创建 AI 对话。")
         conversation_id = _policy_conversation_id(data, provider)
         _set_policy_conversation_id(data, provider, conversation_id)
         rt.save_policy(data)
@@ -520,7 +635,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         )
     if action in {"new_conversation", "continue_conversation", "set_policy_new_each_request", "set_policy_continue"}:
         data = rt.load_policy()
-        provider = envelope.get("provider") or _selected_provider(rt) or "claude-code"
+        provider = envelope.get("provider") or _default_provider(rt)
+        if not provider:
+            return _error(request_id, "ai_provider_not_configured", "这台机器没有配置 Claude Code 或 Codex，无法更新 AI 会话策略。")
         if action == "new_conversation":
             _set_policy_conversation_id(data, provider, str(uuid.uuid4()))
             data["policy"] = "continue"

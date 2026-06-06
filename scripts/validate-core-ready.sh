@@ -13,16 +13,47 @@ fi
 export AI_REMOTE_STATE="$STATE_ROOT"
 export AI_WORKSPACE_ROOT="$WORKSPACE_ROOT"
 export PYTHONPATH="${PYTHONPATH:-$ROOT/src}"
-AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-claude-code,codex}"
+AI_VALIDATE_PROVIDER_RESERVED_USD="${AI_VALIDATE_PROVIDER_RESERVED_USD:-0.50}"
+AI_VALIDATE_PROVIDER_TIMEOUT_SECONDS="${AI_VALIDATE_PROVIDER_TIMEOUT_SECONDS:-300}"
 SMOKE_TOKEN="FFC_FULL_ACCESS_SMOKE_$(date +%s)_$$"
 SMOKE_WORKSPACE="$WORKSPACE_ROOT/provider-smoke"
 SMOKE_TMP="/tmp/ffc-ai-full-access-smoke-$SMOKE_TOKEN"
+CLAUDE_FILE_PROMPT="$SMOKE_TMP/claude-file-prompt.txt"
+CLAUDE_NET_PROMPT="$SMOKE_TMP/claude-net-prompt.txt"
+CLAUDE_VENV_PROMPT="$SMOKE_TMP/claude-venv-prompt.txt"
+CODEX_FILE_PROMPT="$SMOKE_TMP/codex-file-prompt.txt"
+CODEX_NET_PROMPT="$SMOKE_TMP/codex-net-prompt.txt"
+CODEX_VENV_PROMPT="$SMOKE_TMP/codex-venv-prompt.txt"
 if [ -f "$STATE_ROOT/config.env" ]; then
   set -a
   # shellcheck disable=SC1091
   . "$STATE_ROOT/config.env"
   set +a
 fi
+if [ -z "${AI_RUNNER_PROVIDERS+x}" ] && [ -f "$STATE_ROOT/install-manifest.json" ]; then
+  if manifest_providers="$(python3 - "$STATE_ROOT/install-manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+if "configured_providers" in data:
+    print(data.get("configured_providers") or "")
+else:
+    raise SystemExit(3)
+PY
+  )"; then
+    AI_RUNNER_PROVIDERS="$manifest_providers"
+  fi
+fi
+if [ -z "${AI_RUNNER_PROVIDERS+x}" ]; then
+  printf '[validate-core-ready] AI_RUNNER_PROVIDERS is not configured; run install-runner.sh with explicit AI_RUNNER_COMPONENTS before validation\n' >&2
+  exit 2
+fi
+export AI_RUNNER_PROVIDERS
 
 python3 -m ai_remote_runner.cli providers >/dev/null
 python3 -m ai_remote_runner.cli index >/dev/null
@@ -30,6 +61,11 @@ python3 -m ai_remote_runner.cli index >/dev/null
 rm -rf "$SMOKE_TMP"
 mkdir -p "$SMOKE_TMP/localpkg/full_access_smoke_pkg"
 printf 'VALUE = "%s"\n' "$SMOKE_TOKEN" > "$SMOKE_TMP/localpkg/full_access_smoke_pkg/__init__.py"
+cat > "$SMOKE_TMP/localpkg/setup.py" <<'EOF'
+from setuptools import setup
+
+setup(name="full-access-smoke-pkg", version="0.0.0", packages=["full_access_smoke_pkg"])
+EOF
 cat > "$SMOKE_TMP/localpkg/pyproject.toml" <<'EOF'
 [build-system]
 requires = ["setuptools"]
@@ -39,15 +75,76 @@ build-backend = "setuptools.build_meta"
 name = "full-access-smoke-pkg"
 version = "0.0.0"
 EOF
+for provider in claude codex; do
+  cat > "$SMOKE_TMP/$provider-file-tmp.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' '$SMOKE_TOKEN' > '$SMOKE_WORKSPACE/full-access-smoke-$provider.txt'
+printf '%s\n' '$SMOKE_TOKEN' > '$SMOKE_TMP/$provider-tmp.txt'
+grep -q '$SMOKE_TOKEN' '$SMOKE_TMP/$provider-tmp.txt'
+EOF
+  cat > "$SMOKE_TMP/$provider-net.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+python3 -c 'from urllib import request; from pathlib import Path; status=request.urlopen("https://example.com", timeout=15).status; Path("$SMOKE_WORKSPACE/full-access-smoke-$provider-net.txt").write_text(str(status), encoding="utf-8")'
+test -s '$SMOKE_WORKSPACE/full-access-smoke-$provider-net.txt'
+EOF
+  cat > "$SMOKE_TMP/$provider-venv.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+python3 -m venv '$SMOKE_TMP/$provider-venv'
+'$SMOKE_TMP/$provider-venv/bin/python' -m pip install --no-index --no-build-isolation '$SMOKE_TMP/localpkg'
+'$SMOKE_TMP/$provider-venv/bin/python' -c 'import full_access_smoke_pkg; assert full_access_smoke_pkg.VALUE == "$SMOKE_TOKEN"'
+EOF
+  chmod +x "$SMOKE_TMP/$provider-file-tmp.sh" "$SMOKE_TMP/$provider-net.sh" "$SMOKE_TMP/$provider-venv.sh"
+done
+cat > "$CLAUDE_FILE_PROMPT" <<EOF
+请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
+bash $SMOKE_TMP/claude-file-tmp.sh
+成功后只回复：$SMOKE_TOKEN FILE_TMP_OK
+EOF
+cat > "$CLAUDE_NET_PROMPT" <<EOF
+请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
+bash $SMOKE_TMP/claude-net.sh
+成功后只回复：$SMOKE_TOKEN NETWORK_OK
+EOF
+cat > "$CLAUDE_VENV_PROMPT" <<EOF
+请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
+bash $SMOKE_TMP/claude-venv.sh
+成功后只回复：$SMOKE_TOKEN VENV_INSTALL_OK
+EOF
+cat > "$CODEX_FILE_PROMPT" <<EOF
+Use the shell to run this exact command. Do not merely explain it:
+bash $SMOKE_TMP/codex-file-tmp.sh
+After success, reply only: $SMOKE_TOKEN FILE_TMP_OK
+EOF
+cat > "$CODEX_NET_PROMPT" <<EOF
+Use the shell to run this exact command. Do not merely explain it:
+bash $SMOKE_TMP/codex-net.sh
+After success, reply only: $SMOKE_TOKEN NETWORK_OK
+EOF
+cat > "$CODEX_VENV_PROMPT" <<EOF
+Use the shell to run this exact command. Do not merely explain it:
+bash $SMOKE_TMP/codex-venv.sh
+After success, reply only: $SMOKE_TOKEN VENV_INSTALL_OK
+EOF
+
+run_provider_smoke_step() {
+  local provider="$1"
+  local prompt_file="$2"
+  local label="$3"
+  python3 -m ai_remote_runner.cli provider-smoke --provider "$provider" --workspace "$SMOKE_WORKSPACE" \
+    --prompt-file "$prompt_file" \
+    --reserved-usd "$AI_VALIDATE_PROVIDER_RESERVED_USD" \
+    --timeout-seconds "$AI_VALIDATE_PROVIDER_TIMEOUT_SECONDS" >/dev/null || {
+    printf '[validate-core-ready] %s full-access smoke step failed: %s\n' "$provider" "$label" >&2
+    exit 1
+  }
+}
 if [[ ",$AI_RUNNER_PROVIDERS," == *",claude-code,"* ]]; then
   command -v claude >/dev/null 2>&1 || { printf '[validate-core-ready] claude is required for requested provider claude-code\n' >&2; exit 1; }
   claude auth status --json >/dev/null
-  python3 -m ai_remote_runner.cli provider-smoke --provider claude-code --workspace "$SMOKE_WORKSPACE" \
-    --prompt "执行真实 full-access smoke。必须使用 shell 命令完成：1) 在当前工作目录创建 full-access-smoke-claude.txt，内容为 $SMOKE_TOKEN；2) 在 $SMOKE_TMP/claude-tmp.txt 写入 $SMOKE_TOKEN 并读取确认；3) 用 Python/urllib 或 curl 请求 https://example.com 并把 HTTP 状态或页面标题写入 full-access-smoke-claude-net.txt；4) 创建 venv $SMOKE_TMP/claude-venv，并从 $SMOKE_TMP/localpkg 安装本地包 full-access-smoke-pkg，然后 import full_access_smoke_pkg 验证 VALUE；5) 最终回复必须包含 $SMOKE_TOKEN、NETWORK_OK、VENV_INSTALL_OK。" \
-    --expect-contains "$SMOKE_TOKEN" >/dev/null || {
-    printf '[validate-core-ready] Claude Code full-access smoke failed\n' >&2
-    exit 1
-  }
+  run_provider_smoke_step claude-code "$CLAUDE_FILE_PROMPT" file-tmp
   grep -q "$SMOKE_TOKEN" "$SMOKE_WORKSPACE/full-access-smoke-claude.txt" || {
     printf '[validate-core-ready] Claude Code did not prove file/tool full access in smoke workspace\n' >&2
     exit 1
@@ -56,10 +153,12 @@ if [[ ",$AI_RUNNER_PROVIDERS," == *",claude-code,"* ]]; then
     printf '[validate-core-ready] Claude Code did not prove broad /tmp file access\n' >&2
     exit 1
   }
+  run_provider_smoke_step claude-code "$CLAUDE_NET_PROMPT" network
   [ -s "$SMOKE_WORKSPACE/full-access-smoke-claude-net.txt" ] || {
     printf '[validate-core-ready] Claude Code did not prove network access\n' >&2
     exit 1
   }
+  run_provider_smoke_step claude-code "$CLAUDE_VENV_PROMPT" venv-install
   [ -x "$SMOKE_TMP/claude-venv/bin/python" ] || {
     printf '[validate-core-ready] Claude Code did not prove venv/install capability\n' >&2
     exit 1
@@ -71,12 +170,7 @@ if [[ ",$AI_RUNNER_PROVIDERS," == *",claude-code,"* ]]; then
 fi
 if [[ ",$AI_RUNNER_PROVIDERS," == *",codex,"* ]]; then
   command -v codex >/dev/null 2>&1 || { printf '[validate-core-ready] codex is required for requested provider codex\n' >&2; exit 1; }
-  python3 -m ai_remote_runner.cli provider-smoke --provider codex --workspace "$SMOKE_WORKSPACE" \
-    --prompt "Run a real full-access smoke using shell commands. You must: 1) create full-access-smoke-codex.txt in the current working directory containing $SMOKE_TOKEN; 2) write $SMOKE_TOKEN to $SMOKE_TMP/codex-tmp.txt and read it back; 3) fetch https://example.com with Python urllib or curl and write the HTTP status or title to full-access-smoke-codex-net.txt; 4) create venv $SMOKE_TMP/codex-venv, install the local package at $SMOKE_TMP/localpkg, and import full_access_smoke_pkg to verify VALUE; 5) final reply must contain $SMOKE_TOKEN, NETWORK_OK, and VENV_INSTALL_OK." \
-    --expect-contains "$SMOKE_TOKEN" >/dev/null || {
-    printf '[validate-core-ready] Codex full-access smoke failed\n' >&2
-    exit 1
-  }
+  run_provider_smoke_step codex "$CODEX_FILE_PROMPT" file-tmp
   grep -q "$SMOKE_TOKEN" "$SMOKE_WORKSPACE/full-access-smoke-codex.txt" || {
     printf '[validate-core-ready] Codex did not prove file/tool full access in smoke workspace\n' >&2
     exit 1
@@ -85,10 +179,12 @@ if [[ ",$AI_RUNNER_PROVIDERS," == *",codex,"* ]]; then
     printf '[validate-core-ready] Codex did not prove broad /tmp file access\n' >&2
     exit 1
   }
+  run_provider_smoke_step codex "$CODEX_NET_PROMPT" network
   [ -s "$SMOKE_WORKSPACE/full-access-smoke-codex-net.txt" ] || {
     printf '[validate-core-ready] Codex did not prove network access\n' >&2
     exit 1
   }
+  run_provider_smoke_step codex "$CODEX_VENV_PROMPT" venv-install
   [ -x "$SMOKE_TMP/codex-venv/bin/python" ] || {
     printf '[validate-core-ready] Codex did not prove venv/install capability\n' >&2
     exit 1
@@ -97,6 +193,9 @@ if [[ ",$AI_RUNNER_PROVIDERS," == *",codex,"* ]]; then
     printf '[validate-core-ready] Codex local package install proof failed\n' >&2
     exit 1
   }
+fi
+if [ -z "$AI_RUNNER_PROVIDERS" ]; then
+  printf '[validate-core-ready] no AI provider configured; validating management-only runner commands and bridge loopback\n'
 fi
 
 python3 - "$BRIDGE_COMMAND_URL" "$AI_BRIDGE_SHARED_SECRET" <<'PY' >/dev/null
@@ -124,17 +223,20 @@ if payload.get("status") != "accepted":
     raise SystemExit(f"bridge loopback failed: {payload}")
 PY
 
-python3 - "$STATE_ROOT/install-manifest.json" <<'PY'
+python3 - "$STATE_ROOT/install-manifest.json" "$AI_RUNNER_PROVIDERS" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+providers = [item.strip() for item in sys.argv[2].split(",") if item.strip()]
 data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 data["core_ready"] = True
 data["core_ready_status"] = "validated"
 data["core_ready_validated_at"] = "manual-smoke"
-data["provider_full_access_smoke_validated"] = True
+data["provider_full_access_smoke_validated"] = bool(providers)
+if not providers:
+    data["core_ready_note"] = "management-only Telegram runner; no AI provider configured on this machine"
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 PY
 

@@ -4,6 +4,7 @@ import shutil
 import json
 import os
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from .instructions import InstructionStore
 
 PROBE_TIMEOUT_SECONDS = 30
 AUTH_PROBE_TIMEOUT_SECONDS = 60
+CODEX_EXEC_HELP_COMMAND = ["codex", "exec", "--help"]
 
 
 def _run_probe(command: list[str], timeout_seconds: int = PROBE_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str] | None:
@@ -53,6 +55,10 @@ def _help_has(command: list[str], *needles: str) -> bool:
     return result.returncode == 0 and all(needle in haystack for needle in needles)
 
 
+def _codex_exec_help_has(*needles: str) -> bool:
+    return _help_has(CODEX_EXEC_HELP_COMMAND, *needles)
+
+
 def _claude_auth_ready() -> bool:
     if not shutil.which("claude"):
         return False
@@ -71,6 +77,7 @@ def _claude_auth_ready() -> bool:
 def discover_claude() -> dict[str, Any]:
     base = _version("claude")
     auth_check = _claude_auth_ready()
+    root_safe_full_access = _help_has(["claude", "-p", "--help"], "acceptEdits", "--add-dir", "--tools", "--allowedTools")
     base["provider"] = "claude-code"
     base["capabilities"] = {
         "new_conversation": True,
@@ -81,7 +88,9 @@ def discover_claude() -> dict[str, Any]:
         "status_events": True,
         "file_edits": True,
         "shell_commands": True,
-        "full_access_available": _help_has(["claude", "-p", "--help"], "--dangerously-skip-permissions", "bypassPermissions"),
+        "full_access_available": root_safe_full_access,
+        "root_safe_full_access_available": root_safe_full_access,
+        "dangerously_skip_permissions_available": _help_has(["claude", "-p", "--help"], "--dangerously-skip-permissions"),
         "auth_check_available": auth_check,
         "print_json_available": base["available"],
         "bare_flag_available": _help_has(["claude", "-p", "--help"], "--bare"),
@@ -92,14 +101,21 @@ def discover_claude() -> dict[str, Any]:
 
 def discover_codex() -> dict[str, Any]:
     base = _version("codex")
-    exec_available = _returns_ok(["codex", "exec", "--help"])
+    exec_available = _returns_ok(CODEX_EXEC_HELP_COMMAND)
     approval_config_available = _returns_ok(["codex", "exec", "-c", 'approval_policy="never"', "--help"])
-    sandbox_available = _help_has(["codex", "exec", "--help"], "--sandbox")
-    bypass_available = _help_has(["codex", "exec", "--help"], "--dangerously-bypass-approvals-and-sandbox")
+    sandbox_available = _codex_exec_help_has("--sandbox")
+    bypass_available = _codex_exec_help_has("--dangerously-bypass-approvals-and-sandbox")
+    output_last_message_available = _codex_exec_help_has("--output-last-message")
+    json_available = _codex_exec_help_has("--json")
+    cd_available = _codex_exec_help_has("--cd")
+    add_dir_available = _codex_exec_help_has("--add-dir")
+    skip_git_repo_check_available = _codex_exec_help_has("--skip-git-repo-check")
+    full_access_available = bypass_available or sandbox_available
     base["provider"] = "codex"
+    base["available"] = bool(base["available"] and exec_available and json_available and output_last_message_available and cd_available and full_access_available)
     base["capabilities"] = {
         "new_conversation": True,
-        "continue_conversation": False,
+        "continue_conversation": _returns_ok(["codex", "exec", "resume", "--help"]),
         "manual_compact": False,
         "auto_compact": False,
         "context_usage": "estimated",
@@ -110,13 +126,56 @@ def discover_codex() -> dict[str, Any]:
         "approval_config_available": approval_config_available,
         "sandbox_available": sandbox_available,
         "bypass_approvals_and_sandbox_available": bypass_available,
-        "full_access_available": bypass_available or sandbox_available,
+        "full_access_available": full_access_available,
+        "output_last_message_available": output_last_message_available,
+        "json_available": json_available,
+        "cd_available": cd_available,
+        "add_dir_available": add_dir_available,
+        "skip_git_repo_check_available": skip_git_repo_check_available,
+        "ephemeral_available": _codex_exec_help_has("--ephemeral"),
+        "dangerously_bypass_hook_trust_available": _codex_exec_help_has("--dangerously-bypass-hook-trust"),
+        "ignore_rules_available": _codex_exec_help_has("--ignore-rules"),
     }
     return base
 
 
 def provider_status() -> list[dict[str, Any]]:
-    return [discover_claude(), discover_codex()]
+    configured_raw = os.environ.get("AI_RUNNER_PROVIDERS")
+    if configured_raw is None:
+        configured = None
+    else:
+        configured = {("claude-code" if item.strip() == "claude" else item.strip()) for item in configured_raw.split(",") if item.strip()}
+    if configured is None:
+        return [discover_claude(), discover_codex()]
+
+    providers: list[dict[str, Any]] = []
+    for name, discover in (("claude-code", discover_claude), ("codex", discover_codex)):
+        if name in configured:
+            provider = discover()
+            provider["configured"] = True
+        else:
+            provider = {
+                "provider": name,
+                "available": False,
+                "configured": False,
+                "path": None,
+                "version": None,
+                "status": "not_configured_on_this_machine",
+                "remediation_zh": "这台机器按单机单 AI/工具模式安装，没有启用该 provider。",
+                "capabilities": {
+                    "new_conversation": False,
+                    "continue_conversation": False,
+                    "manual_compact": False,
+                    "auto_compact": False,
+                    "context_usage": "none",
+                    "status_events": False,
+                    "file_edits": False,
+                    "shell_commands": False,
+                    "full_access_available": False,
+                },
+            }
+        providers.append(provider)
+    return providers
 
 
 CLAUDE_CHAT_ONLY_TEMPLATE = [
@@ -167,10 +226,11 @@ CLAUDE_FULL_ACCESS_TEMPLATE = [
     "--add-dir",
     "/",
     "--permission-mode",
-    "bypassPermissions",
-    "--dangerously-skip-permissions",
+    "acceptEdits",
     "--tools",
-    "default",
+    "Bash,Read,Write,Edit,Grep,Glob",
+    "--allowedTools",
+    "Bash(*)",
 ]
 
 
@@ -323,6 +383,159 @@ def _claude_output(result: subprocess.CompletedProcess[str]) -> tuple[dict[str, 
     return raw, output_text
 
 
+def _codex_jsonl_last_agent_message(output: str) -> str:
+    last_message = ""
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item")
+        if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str):
+                last_message = text
+    return last_message
+
+
+def _codex_item_label(item: dict[str, Any]) -> str:
+    item_type = str(item.get("type") or "item")
+    if item_type == "command_execution":
+        command = item.get("command")
+        return f"运行命令：{str(command)[:160]}" if command else "正在运行命令。"
+    if item_type == "file_change":
+        path = item.get("path") or item.get("file")
+        return f"正在修改文件：{path}" if path else "正在修改文件。"
+    if item_type == "reasoning":
+        return "正在推理和规划。"
+    if item_type == "mcp_tool_call":
+        name = item.get("name") or item.get("tool")
+        return f"正在调用 MCP 工具：{name}" if name else "正在调用 MCP 工具。"
+    if item_type == "web_search":
+        return "正在联网检索。"
+    if item_type == "plan_update":
+        return "正在更新执行计划。"
+    if item_type == "agent_message":
+        return "正在生成回复。"
+    return f"正在处理 {item_type}。"
+
+
+def _codex_event_phase(item: dict[str, Any]) -> str:
+    item_type = str(item.get("type") or "")
+    if item_type == "command_execution":
+        return "running_command"
+    if item_type == "file_change":
+        return "writing_files"
+    if item_type == "reasoning":
+        return "thinking"
+    if item_type == "web_search":
+        return "calling_model"
+    return "running"
+
+
+def _emit_codex_jsonl_events(output: str, run_id: str, emit: Callable[[dict[str, Any]], None] | None) -> None:
+    if not emit:
+        return
+    last_fingerprint = ""
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "turn.started":
+            emit({"run_id": run_id, "provider": "codex", "phase": "thinking", "public_message_zh": "Codex 已开始处理任务。"})
+            continue
+        if event_type == "turn.completed":
+            usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+            message = "Codex 本轮已完成。"
+            if usage:
+                message = (
+                    "Codex 本轮已完成。"
+                    f"input={usage.get('input_tokens', '?')} "
+                    f"output={usage.get('output_tokens', '?')} "
+                    f"reasoning={usage.get('reasoning_output_tokens', '?')}"
+                )
+            emit({"run_id": run_id, "provider": "codex", "phase": "running", "public_message_zh": message})
+            continue
+        if event_type == "turn.failed":
+            emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("error") or "turn_failed")})
+            continue
+        if event_type == "error":
+            emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("message") or event.get("error") or "codex_error")})
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict):
+            continue
+        fingerprint = f"{event_type}:{item.get('id')}:{item.get('status')}:{item.get('type')}"
+        if fingerprint == last_fingerprint:
+            continue
+        last_fingerprint = fingerprint
+        if event_type in {"item.started", "item.completed", "item.updated"}:
+            label = _codex_item_label(item)
+            if event_type == "item.completed":
+                label = f"{label} 已完成。"
+            emit({"run_id": run_id, "provider": "codex", "phase": _codex_event_phase(item), "public_message_zh": label})
+
+
+def _run_codex_command(
+    command: list[str],
+    workspace: Path,
+    prompt: str,
+    timeout_seconds: int,
+    run_id: str,
+    emit: Callable[[dict[str, Any]], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if emit is None:
+        return subprocess.run(command, cwd=workspace, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    process = subprocess.Popen(command, cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def read_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            stdout_lines.append(line)
+            _emit_codex_jsonl_events(line, run_id, emit)
+
+    def read_stderr() -> None:
+        assert process.stderr is not None
+        for line in process.stderr:
+            stderr_lines.append(line)
+
+    stdout_thread = threading.Thread(target=read_stdout, name=f"codex-stdout-{run_id}", daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, name=f"codex-stderr-{run_id}", daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    try:
+        try:
+            process.stdin.write(prompt)
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
+        process.wait(timeout=timeout_seconds)
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+        return subprocess.CompletedProcess(command, int(process.returncode or 0), "".join(stdout_lines), "".join(stderr_lines))
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+        raise subprocess.TimeoutExpired(command, timeout_seconds, output="".join(stdout_lines), stderr="".join(stderr_lines))
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        raise
+
+
 def invoke_claude(
     prompt: str,
     workspace: Path,
@@ -417,8 +630,17 @@ def invoke_claude(
     return ProviderResult(actual_run_id, "claude-code", status, output_text, raw, result.returncode)
 
 
+def _codex_effective_prompt(prompt: str, instruction_prompt: str = "") -> str:
+    return f"{instruction_prompt}\n\n# User Task\n{prompt}" if instruction_prompt else prompt
+
+
 def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_prompt: str = "") -> list[str]:
-    effective_prompt = f"{instruction_prompt}\n\n# User Task\n{prompt}" if instruction_prompt else prompt
+    if not _codex_exec_help_has("--json"):
+        raise RuntimeError("codex_json_unavailable")
+    if not _codex_exec_help_has("--cd"):
+        raise RuntimeError("codex_cd_unavailable")
+    if not _codex_exec_help_has("--output-last-message"):
+        raise RuntimeError("codex_output_last_message_unavailable")
     command = [
         *CODEX_EXEC_TEMPLATE,
         "--cd",
@@ -426,21 +648,23 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
         "--output-last-message",
         str(output_file),
         "--",
-        effective_prompt,
+        "-",
     ]
-    if _help_has(["codex", "exec", "--help"], "--dangerously-bypass-approvals-and-sandbox"):
+    if _codex_exec_help_has("--ephemeral"):
+        command.insert(command.index("--cd"), "--ephemeral")
+    if _codex_exec_help_has("--dangerously-bypass-approvals-and-sandbox"):
         command.insert(command.index("--cd"), "--dangerously-bypass-approvals-and-sandbox")
-    elif _help_has(["codex", "exec", "--help"], "--sandbox"):
+    elif _codex_exec_help_has("--sandbox"):
         command[command.index("--cd") : command.index("--cd")] = ["--sandbox", "danger-full-access"]
     else:
         raise RuntimeError("codex_full_access_unavailable")
-    if _help_has(["codex", "exec", "--help"], "--dangerously-bypass-hook-trust"):
+    if _codex_exec_help_has("--dangerously-bypass-hook-trust"):
         command.insert(command.index("--cd"), "--dangerously-bypass-hook-trust")
-    if _help_has(["codex", "exec", "--help"], "--ignore-rules"):
+    if _codex_exec_help_has("--ignore-rules"):
         command.insert(command.index("--cd"), "--ignore-rules")
-    if _help_has(["codex", "exec", "--help"], "--add-dir"):
+    if _codex_exec_help_has("--add-dir"):
         command[command.index("--cd") : command.index("--cd")] = ["--add-dir", "/"]
-    if _help_has(["codex", "exec", "--help"], "--skip-git-repo-check"):
+    if _codex_exec_help_has("--skip-git-repo-check"):
         command.insert(command.index("--cd"), "--skip-git-repo-check")
     return command
 
@@ -458,7 +682,8 @@ def invoke_codex(
 ) -> ProviderResult:
     actual_run_id = run_id or str(uuid.uuid4())
     ledger.reserve(actual_run_id, "codex", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
-    output_file = workspace / ".ai-remote-codex-last-message.txt"
+    output_file = workspace / f".ai-remote-codex-{actual_run_id}-last-message.txt"
+    output_file.unlink(missing_ok=True)
     try:
         command = codex_command(prompt, workspace, output_file, instruction_prompt)
     except RuntimeError as exc:
@@ -476,23 +701,30 @@ def invoke_codex(
             }
         )
     try:
-        result = subprocess.run(command, cwd=workspace, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+        result = _run_codex_command(command, workspace, _codex_effective_prompt(prompt, instruction_prompt), timeout_seconds, actual_run_id, emit)
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
         if emit:
             emit({"run_id": actual_run_id, "provider": "codex", "phase": "error", "error": "timeout"})
         return ProviderResult(actual_run_id, "codex", "timeout", "", None, -1)
+    raw: dict[str, Any] | None = None
     if output_file.exists():
         output_text = output_file.read_text(encoding="utf-8")
     else:
-        output_text = result.stdout or result.stderr
+        output_text = _codex_jsonl_last_agent_message(result.stdout) or result.stderr or result.stdout
+    if result.stdout.strip():
+        raw = {"stdout_jsonl": result.stdout}
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
-    status = "completed" if result.returncode == 0 else "failed"
+    if result.returncode == 0 and not output_text.strip():
+        output_text = "Codex 返回了空内容；runner 已按失败处理。请重试，或把问题描述得更具体。"
+        status = "empty_output"
+    else:
+        status = "completed" if result.returncode == 0 else "failed"
     ledger.complete(actual_run_id, None, status=status)
     if emit:
         event = {"run_id": actual_run_id, "provider": "codex", "phase": "done" if status == "completed" else "error"}
         if status != "completed":
             event["error"] = output_text or f"returncode={result.returncode}"
         emit(event)
-    return ProviderResult(actual_run_id, "codex", status, output_text, None, result.returncode)
+    return ProviderResult(actual_run_id, "codex", status, output_text, raw, result.returncode)

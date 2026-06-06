@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -13,11 +14,13 @@ from .commands import parse_command
 from .executor import RunnerRuntime, execute
 from .events import status_event
 from .phone_render import render_response_text
+from .runtime_config import redact_secret
 from .security import NonceStore, verify_header_preamble, verify_headers
 from .storage import atomic_write_json
 
 
 MAX_BODY_BYTES = int(os.environ.get("AI_BRIDGE_MAX_BODY_BYTES", str(10 * 1024 * 1024)))
+SECRET_VALUE_RE = re.compile(r"\b(?:sk-(?:ant-)?[A-Za-z0-9_-]{12,}|[0-9]{8,}:[A-Za-z0-9_-]{20,})\b")
 
 
 class BridgeState:
@@ -149,18 +152,50 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _mattermost_response_text(self, response: dict) -> str:
         return render_response_text(response, platform="mattermost", max_chars=3500)
 
-    def _mattermost_task_provider(self, item: dict) -> str:
+    def _redact_command_log_item(self, item: dict) -> dict:
+        redacted = json.loads(json.dumps(item, ensure_ascii=False))
+        raw_text = str(redacted.get("raw_text") or "")
+        redacted["raw_text"] = SECRET_VALUE_RE.sub(lambda match: redact_secret(match.group(0)), raw_text)
+        args = redacted.get("args")
+        if isinstance(args, dict):
+            tail = args.get("tail")
+            if isinstance(tail, list):
+                args["tail"] = [redact_secret(str(value)) if SECRET_VALUE_RE.fullmatch(str(value)) else value for value in tail]
+        return redacted
+
+    def _configured_provider_names(self) -> list[str] | None:
+        raw = os.environ.get("AI_RUNNER_PROVIDERS")
+        if raw is None:
+            return None
+        providers: list[str] = []
+        for item in raw.split(","):
+            provider = item.strip()
+            if provider == "claude":
+                provider = "claude-code"
+            if provider:
+                providers.append(provider)
+        return providers
+
+    def _mattermost_task_provider(self, item: dict) -> str | None:
+        configured = self._configured_provider_names()
         if item.get("provider"):
-            return str(item["provider"])
+            provider = str(item["provider"])
+            if configured is not None and provider not in configured:
+                return None
+            return provider
         path = self.state.root / "provider-selection.json"
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 provider = data.get("provider")
-                if provider in {"claude-code", "codex"}:
+                if provider in {"claude-code", "codex"} and (configured is None or provider in configured):
                     return str(provider)
             except json.JSONDecodeError:
                 pass
+        if configured is not None:
+            if len(configured) == 1:
+                return configured[0]
+            return None
         return "claude-code"
 
     def _run_mattermost_task_background(self, parsed: dict, item: dict) -> None:
@@ -215,7 +250,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _start_mattermost_task_background(self, parsed: dict, item: dict) -> dict:
         request_id = item.get("request_id") or str(uuid.uuid4())
         item["run_id"] = item.get("run_id") or str(uuid.uuid4())
-        item["provider"] = self._mattermost_task_provider(item)
+        provider = self._mattermost_task_provider(item)
+        if provider is None:
+            response = execute(parsed, item, self.state.runtime)
+            self.state.save_response(request_id, response)
+            return response
+        item["provider"] = provider
         thread = threading.Thread(target=self._run_mattermost_task_background, args=(parsed, item), name=f"mattermost-task-{request_id}", daemon=True)
         thread.start()
         response = {
@@ -271,7 +311,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         item.pop("confirmed", None)
         item.update(parsed)
         item["request_id"] = request_id
-        self.state.append_jsonl(self.state.commands_path, item)
+        self.state.append_jsonl(self.state.commands_path, self._redact_command_log_item(item))
         if payload.get("platform") == "mattermost" and parsed.get("canonical_action") == "task.run" and not item.get("confirmed"):
             return self._start_mattermost_task_background(parsed, item)
         response = execute(parsed, item, self.state.runtime)

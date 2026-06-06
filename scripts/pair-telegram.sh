@@ -12,6 +12,7 @@ CHAT_IDS=""
 DISCOVER_CHAT_ID=false
 API_BASE=""
 RESERVED_USD=""
+VERIFY_TELEGRAM="${PAIR_TELEGRAM_VERIFY_API:-true}"
 
 usage() {
   printf 'usage: %s [--bot-token TOKEN|--bot-token-file PATH|--bot-token-stdin] [--telegram-id ID|--chat-id ID[,ID...]|--discover-chat-id] [--api-base URL] [--reserved-usd USD]\n' "$0"
@@ -122,6 +123,58 @@ PY
   fi
 fi
 
+telegram_api_base="${API_BASE:-https://api.telegram.org}"
+telegram_api_base="${telegram_api_base%/}"
+if [ "$VERIFY_TELEGRAM" = true ]; then
+  printf '[pair-telegram] verifying Telegram bot token with getMe\n'
+  python3 - "$telegram_api_base" "$BOT_TOKEN" <<'PY'
+import json
+import sys
+from urllib import error, request
+
+api_base, token = sys.argv[1:3]
+try:
+    req = request.Request(
+        f"{api_base}/bot{token}/getMe",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    data = json.loads(request.urlopen(req, timeout=15).read().decode("utf-8"))
+except Exception as exc:
+    raise SystemExit(f"Telegram getMe failed: {exc}")
+if not data.get("ok"):
+    raise SystemExit(f"Telegram getMe rejected token: {data}")
+PY
+  if [ "$DISCOVER_CHAT_ID" != true ]; then
+    printf '[pair-telegram] sending Telegram pairing test message\n'
+    python3 - "$telegram_api_base" "$BOT_TOKEN" "$CHAT_IDS" <<'PY'
+import json
+import sys
+from urllib import request
+
+api_base, token, chat_ids = sys.argv[1:4]
+for chat_id in [item for item in chat_ids.split(",") if item]:
+    payload = {
+        "chat_id": chat_id,
+        "text": "AI runner Telegram 配对测试成功。接下来可以发送 /ai 状态。",
+        "disable_web_page_preview": True,
+    }
+    req = request.Request(
+        f"{api_base}/bot{token}/sendMessage",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    data = json.loads(request.urlopen(req, timeout=15).read().decode("utf-8"))
+    if not data.get("ok"):
+        raise SystemExit(f"Telegram sendMessage failed for chat_id={chat_id}: {data}")
+PY
+  fi
+else
+  printf '[pair-telegram] Telegram API verification skipped by PAIR_TELEGRAM_VERIFY_API=false\n'
+fi
+
 sudo mkdir -p "$STATE_ROOT"
 if [ -f "$STATE_ROOT/config.env" ]; then
   TMP_CONFIG="$(mktemp)"
@@ -149,6 +202,21 @@ fi
 sudo chmod 0600 "$STATE_ROOT/config.env"
 
 printf '[pair-telegram] Telegram pairing config written\n'
+if [ -f "$STATE_ROOT/install-manifest.json" ]; then
+  sudo env STATE_ROOT="$STATE_ROOT" DISCOVER_CHAT_ID="$DISCOVER_CHAT_ID" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["STATE_ROOT"]) / "install-manifest.json"
+data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+data["telegram_enabled"] = True
+data["telegram_status"] = "discovery" if os.environ.get("DISCOVER_CHAT_ID") == "true" else "paired"
+data["telegram_paired"] = os.environ.get("DISCOVER_CHAT_ID") != "true"
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  sudo chmod 0600 "$STATE_ROOT/install-manifest.json"
+fi
 if [ "$DISCOVER_CHAT_ID" = true ]; then
   printf '[pair-telegram] discovery mode enabled; send any message to the bot and it will reply with chat_id without running AI commands\n'
 fi

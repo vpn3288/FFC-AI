@@ -134,6 +134,9 @@ PY
             self.assertTrue(manifest["isolation"]["private_outputs_outside_run_dir"])
             self.assertTrue(manifest["isolation"]["residual_same_os_user_full_access_risk"])
             self.assertIn("full-access tools", manifest["isolation"]["residual_risk_accepted_reason"])
+            self.assertEqual(manifest["budget_controls"]["claude_max_budget_usd"], "0.50")
+            self.assertEqual(manifest["budget_controls"]["codex_max_budget_usd"], "0.50")
+            self.assertEqual(manifest["budget_controls"]["codex_timeout_seconds"], "900")
             self.assertTrue((run_dir / "snapshots" / "claude-repo" / "src" / "ai_remote_runner" / "bridge.py").exists())
             self.assertTrue((run_dir / "snapshots" / "claude-repo" / "src" / "ai_remote_runner" / "cli.py").exists())
             self.assertTrue((run_dir / "snapshots" / "claude-repo" / "src" / "ai_remote_runner" / "events.py").exists())
@@ -148,13 +151,18 @@ PY
             self.assertIn("--bare", claude_args)
             self.assertIn("--no-session-persistence", claude_args)
             self.assertIn("--permission-mode", claude_args)
-            self.assertIn("bypassPermissions", claude_args)
-            self.assertIn("--dangerously-skip-permissions", claude_args)
+            self.assertIn("acceptEdits", claude_args)
+            self.assertIn("Bash,Read,Write,Edit,Grep,Glob", claude_args)
+            self.assertIn("--max-budget-usd", claude_args)
+            self.assertEqual(claude_args[claude_args.index("--max-budget-usd") + 1], "0.50")
+            self.assertNotIn("bypassPermissions", claude_args)
+            self.assertNotIn("--dangerously-skip-permissions", claude_args)
             self.assertIn("--dangerously-bypass-approvals-and-sandbox", codex_args)
             self.assertIn("--dangerously-bypass-hook-trust", codex_args)
             self.assertIn("--ignore-rules", codex_args)
             self.assertIn("--add-dir", codex_args)
             self.assertIn(str(run_dir / "snapshots" / "codex-repo"), codex_args)
+            self.assertNotIn("--max-budget-usd", codex_args)
 
     def test_codex_review_base_url_override_replaces_placeholder_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -277,6 +285,71 @@ PY
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             observed = json.loads(observed_auth.read_text(encoding="utf-8"))
             self.assertEqual(observed["OPENAI_API_KEY"], "review-api-key-fixture")
+
+    def test_codex_native_budget_flag_is_used_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            review_root = root / "reviews"
+            fakebin.mkdir()
+            calls = root / "calls.jsonl"
+            write_executable(
+                fakebin / "claude",
+                """
+                #!/usr/bin/env bash
+                printf '{"result":"%s"}\\n' "${PASSING_REVIEW_JSON:?}"
+                """,
+            )
+            write_executable(
+                fakebin / "codex",
+                """
+                #!/usr/bin/env bash
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
+                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--add-dir] [--max-budget-usd]\\n'
+                  exit 0
+                fi
+                printf '{"args":%s}\\n' "$(python3 - "$@" <<'PY'
+import json, sys
+print(json.dumps(sys.argv[1:]))
+PY
+)" >> "${CALLS:?}"
+                last=''
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = "--output-last-message" ]; then last="$2"; shift 2; continue; fi
+                  shift
+                done
+                printf '%s' "${PASSING_REVIEW:?}" > "$last"
+                printf '{}\\n'
+                """,
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REVIEW_ROOT": str(review_root),
+                    "AI_REVIEW_RUN_ID": "codex-budget-review",
+                    "CODEX_HOME": "",
+                    "CODEX_REVIEW_MAX_BUDGET_USD": "0.17",
+                    "CLAUDE_REVIEW_AUTH_TOKEN": "review-token",
+                    "PASSING_REVIEW": PASSING_REVIEW,
+                    "PASSING_REVIEW_JSON": PASSING_REVIEW.replace("\\", "\\\\").replace("\n", "\\n"),
+                    "CALLS": str(calls),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "run-independent-review.sh"), "--user-requirements", "full access"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            args = json.loads(calls.read_text(encoding="utf-8").splitlines()[0])["args"]
+            self.assertIn("--max-budget-usd", args)
+            self.assertEqual(args[args.index("--max-budget-usd") + 1], "0.17")
+            manifest = json.loads((review_root / "codex-budget-review" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["budget_controls"]["codex_max_budget_usd"], "0.17")
 
     def test_review_failure_exits_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

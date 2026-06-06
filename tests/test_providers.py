@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_remote_runner.providers import CLAUDE_MODEL_FALLBACKS, codex_command, invoke_claude, invoke_codex
+from ai_remote_runner.providers import CLAUDE_MODEL_FALLBACKS, codex_command, invoke_claude, invoke_codex, provider_status
+from ai_remote_runner.providers import _emit_codex_jsonl_events
 from ai_remote_runner.providers import discover_codex
 from ai_remote_runner.budget import BudgetLedger
 
@@ -18,6 +19,10 @@ class ProviderTests(unittest.TestCase):
                 "--ignore-rules",
                 "--add-dir",
                 "--skip-git-repo-check",
+                "--output-last-message",
+                "--ephemeral",
+                "--cd",
+                "--json",
             }
             return all(needle in flags for needle in needles)
 
@@ -39,7 +44,8 @@ class ProviderTests(unittest.TestCase):
     def test_codex_command_includes_instruction_prompt(self) -> None:
         with patch("ai_remote_runner.providers._help_has", return_value=True):
             command = codex_command("do work", Path("/tmp/work"), Path("/tmp/out.txt"), "# Global Instructions\nBe careful")
-        self.assertIn("# Global Instructions\nBe careful\n\n# User Task\ndo work", command)
+        self.assertNotIn("# Global Instructions\nBe careful\n\n# User Task\ndo work", command)
+        self.assertEqual(command[-1], "-")
 
     def test_claude_model_fallbacks_are_configured(self) -> None:
         self.assertIn("claude-opus-4-7", CLAUDE_MODEL_FALLBACKS)
@@ -50,15 +56,49 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("approval_config_available", capabilities)
         self.assertIn("sandbox_available", capabilities)
         self.assertIn("full_access_available", capabilities)
+        self.assertIn("output_last_message_available", capabilities)
+
+    def test_provider_status_marks_unconfigured_provider_unavailable(self) -> None:
+        with (
+            patch.dict("os.environ", {"AI_RUNNER_PROVIDERS": "codex"}, clear=False),
+            patch("ai_remote_runner.providers.discover_claude") as discover_claude,
+            patch("ai_remote_runner.providers.discover_codex", return_value={"provider": "codex", "available": True}),
+        ):
+            status = provider_status()
+        discover_claude.assert_not_called()
+        claude = next(item for item in status if item["provider"] == "claude-code")
+        codex = next(item for item in status if item["provider"] == "codex")
+        self.assertFalse(claude["available"])
+        self.assertFalse(claude["configured"])
+        self.assertEqual(claude["status"], "not_configured_on_this_machine")
+        self.assertTrue(codex["available"])
+        self.assertTrue(codex["configured"])
+
+    def test_provider_status_does_not_probe_any_provider_in_management_only_mode(self) -> None:
+        with (
+            patch.dict("os.environ", {"AI_RUNNER_PROVIDERS": ""}, clear=False),
+            patch("ai_remote_runner.providers.discover_claude") as discover_claude,
+            patch("ai_remote_runner.providers.discover_codex") as discover_codex,
+        ):
+            status = provider_status()
+        discover_claude.assert_not_called()
+        discover_codex.assert_not_called()
+        self.assertFalse(any(item["available"] for item in status))
+        self.assertFalse(any(item["configured"] for item in status))
 
     def test_codex_command_fails_when_full_access_flag_unavailable(self) -> None:
-        with patch("ai_remote_runner.providers._help_has", return_value=False):
+        def no_full_access(_: list[str], *needles: str) -> bool:
+            supported = {"--json", "--cd", "--output-last-message"}
+            return all(needle in supported for needle in needles)
+
+        with patch("ai_remote_runner.providers._help_has", side_effect=no_full_access):
             with self.assertRaisesRegex(RuntimeError, "codex_full_access_unavailable"):
                 codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
 
     def test_codex_command_uses_danger_full_access_when_bypass_flag_unavailable(self) -> None:
         def sandbox_only(_: list[str], *needles: str) -> bool:
-            return all(needle == "--sandbox" for needle in needles)
+            supported = {"--json", "--sandbox", "--cd", "--output-last-message"}
+            return all(needle in supported for needle in needles)
 
         with patch("ai_remote_runner.providers._help_has", side_effect=sandbox_only):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
@@ -71,6 +111,36 @@ class ProviderTests(unittest.TestCase):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
         self.assertIn("--skip-git-repo-check", command)
         self.assertLess(command.index("--skip-git-repo-check"), command.index("--cd"))
+
+    def test_codex_command_requires_json_events(self) -> None:
+        def without_json(_: list[str], *needles: str) -> bool:
+            supported = {"--dangerously-bypass-approvals-and-sandbox", "--cd", "--output-last-message"}
+            return all(needle in supported for needle in needles)
+
+        with patch("ai_remote_runner.providers._help_has", side_effect=without_json):
+            with self.assertRaisesRegex(RuntimeError, "codex_json_unavailable"):
+                codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
+
+    def test_codex_jsonl_events_emit_realtime_status(self) -> None:
+        events: list[dict[str, object]] = []
+        output = "\n".join(
+            [
+                '{"type":"turn.started"}',
+                '{"type":"item.started","item":{"id":"cmd1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}',
+                '{"type":"item.completed","item":{"id":"file1","type":"file_change","path":"src/app.py","status":"completed"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5,"reasoning_output_tokens":2}}',
+            ]
+        )
+
+        _emit_codex_jsonl_events(output, "run-1", events.append)
+
+        phases = [event["phase"] for event in events]
+        messages = [str(event.get("public_message_zh") or "") for event in events]
+        self.assertIn("thinking", phases)
+        self.assertIn("running_command", phases)
+        self.assertIn("writing_files", phases)
+        self.assertTrue(any("bash -lc ls" in message for message in messages))
+        self.assertTrue(any("src/app.py" in message for message in messages))
 
     def test_invoke_codex_returns_stderr_when_last_message_missing(self) -> None:
         import subprocess
@@ -86,6 +156,48 @@ class ProviderTests(unittest.TestCase):
                 result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.output_text, "not inside a trusted directory")
+
+    def test_invoke_codex_sends_prompt_on_stdin(self) -> None:
+        import subprocess
+        import tempfile
+
+        completed = subprocess.CompletedProcess(["codex"], 0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                Path(command[command.index("--output-last-message") + 1]).write_text("ok", encoding="utf-8")
+                self.assertEqual(command[-1], "-")
+                self.assertNotIn("do work", command)
+                self.assertEqual(kwargs["input"], "# Global Instructions\nBe careful\n\n# User Task\ndo work")
+                return completed
+
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.subprocess.run", side_effect=run),
+            ):
+                result = invoke_codex(
+                    "do work",
+                    Path(tmp),
+                    BudgetLedger(Path(tmp) / "ledger.json"),
+                    instruction_prompt="# Global Instructions\nBe careful",
+                    timeout_seconds=1,
+                    reserved_usd=0.01,
+                )
+        self.assertEqual(result.status, "completed")
+
+    def test_invoke_codex_falls_back_to_jsonl_agent_message(self) -> None:
+        import subprocess
+        import tempfile
+
+        stdout = '{"type":"item.completed","item":{"type":"agent_message","text":"jsonl final"}}\n'
+        completed = subprocess.CompletedProcess(["codex"], 0, stdout=stdout, stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed),
+            ):
+                result = invoke_codex("noop", Path(tmp), BudgetLedger(Path(tmp) / "ledger.json"), timeout_seconds=1, reserved_usd=0.01)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.output_text, "jsonl final")
 
     def test_invoke_codex_timeout_releases_run(self) -> None:
         import tempfile
@@ -133,12 +245,32 @@ class ProviderTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(result.status, "completed")
             self.assertIn("--permission-mode", command)
-            self.assertEqual(command[command.index("--permission-mode") + 1], "bypassPermissions")
-            self.assertIn("--dangerously-skip-permissions", command)
+            self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
+            self.assertNotIn("--dangerously-skip-permissions", command)
             self.assertIn("--add-dir", command)
             self.assertEqual(command[command.index("--add-dir") + 1], "/")
-            self.assertEqual(command[command.index("--tools") + 1], "default")
+            self.assertEqual(command[command.index("--tools") + 1], "Bash,Read,Write,Edit,Grep,Glob")
+            self.assertIn("--allowedTools", command)
+            self.assertEqual(command[command.index("--allowedTools") + 1], "Bash(*)")
             self.assertNotIn("--no-session-persistence", command)
+
+    def test_claude_root_full_access_template_avoids_root_rejected_flag(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1, permission_scope="full")
+            command = run.call_args.args[0]
+            self.assertIn("acceptEdits", command)
+            self.assertNotIn("bypassPermissions", command)
+            self.assertIn("--add-dir", command)
+            self.assertIn("/", command)
+            self.assertIn("--tools", command)
+            self.assertIn("Bash,Read,Write,Edit,Grep,Glob", command)
+            self.assertNotIn("--dangerously-skip-permissions", command)
 
     def test_invoke_claude_uses_model_only_when_explicitly_configured(self) -> None:
         import tempfile

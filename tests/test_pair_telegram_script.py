@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -56,6 +57,7 @@ class PairTelegramScriptTests(unittest.TestCase):
             service = root / "ai-telegram-bot.service"
             token_file = root / "telegram-token"
             state.mkdir()
+            (state / "install-manifest.json").write_text(json.dumps({"telegram_status": "pending_pairing"}), encoding="utf-8")
             service.write_text("[Service]\n", encoding="utf-8")
             token = "test-token:ABC_def"
             token_file.write_text(token + "\n", encoding="utf-8")
@@ -67,6 +69,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
                     "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
@@ -94,6 +97,9 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertIn(f"TELEGRAM_BOT_TOKEN={token}\n", config)
             self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=123\n", config)
             self.assertIn("TELEGRAM_RESERVED_USD=0.25\n", config)
+            manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["telegram_status"], "paired")
+            self.assertTrue(manifest["telegram_paired"])
             self.assertIn("systemctl enable --now ai-telegram-bot.service", calls.read_text(encoding="utf-8"))
 
     def test_discover_chat_id_mode_does_not_require_chat_id(self) -> None:
@@ -113,6 +119,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
                     "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
@@ -152,6 +159,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
                     "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
@@ -192,6 +200,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
                     "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
                 }
             )
@@ -235,6 +244,7 @@ class PairTelegramScriptTests(unittest.TestCase):
                     "AI_REMOTE_STATE": str(state),
                     "CALLS": str(calls),
                     "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
                     "VALIDATE_CORE_READY_SCRIPT": str(validate),
                     "VALIDATE_CALLS": str(validate_calls),
                 }
@@ -257,6 +267,66 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("running core readiness validation", result.stdout)
             self.assertIn(f"validate {state}", validate_calls.read_text(encoding="utf-8"))
+
+    def test_pair_telegram_verifies_bot_token_and_chat_id_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            service = root / "ai-telegram-bot.service"
+            fakebin, calls = self.make_fakebin(root)
+            api_calls = root / "telegram-api-calls.log"
+            state.mkdir()
+            service.write_text("[Service]\n", encoding="utf-8")
+            fakebin.joinpath("python3").write_text(
+                textwrap.dedent(
+                    f"""
+                    #!/usr/bin/env bash
+                    script="$(cat)"
+                    if printf '%s' "$script" | grep -q 'urlopen'; then
+                      if printf '%s' "$script" | grep -q 'sendMessage'; then
+                        printf 'sendMessage %s %s\\n' "$3" "${{4:-}}" >> "{api_calls}"
+                      else
+                        printf 'getMe %s\\n' "$3" >> "{api_calls}"
+                      fi
+                      exit 0
+                    fi
+                    exec /usr/bin/python3 - "$@"
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            (fakebin / "python3").chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--bot-token",
+                    "test-token:ABC_def",
+                    "--chat-id",
+                    "123",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("verifying Telegram bot token with getMe", result.stdout)
+            self.assertIn("sending Telegram pairing test message", result.stdout)
+            api_log = api_calls.read_text(encoding="utf-8")
+            self.assertIn("getMe test-token:ABC_def", api_log)
+            self.assertIn("sendMessage test-token:ABC_def 123", api_log)
 
     def test_rejects_invalid_chat_id_before_writing_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

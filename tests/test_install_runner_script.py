@@ -18,8 +18,17 @@ def write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def clean_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith("ANTHROPIC_") or key.startswith("CODEX_") or key.startswith("CLAUDE_CODE_"):
+            env.pop(key, None)
+    env.pop("OPENAI_API_KEY", None)
+    return env
+
+
 class InstallRunnerScriptTests(unittest.TestCase):
-    def test_install_always_requires_both_core_providers_and_defaults_full_root(self) -> None:
+    def test_codex_runner_defaults_full_root_and_preserves_platform_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fakebin = root / "bin"
@@ -107,11 +116,11 @@ PY
                   exit 0
                 fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--sandbox]\\n'
+                  printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\\n'
                   exit 0
                 fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "-c" ]; then
-                  printf 'usage: codex exec [--sandbox]\\n'
+                  printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\\n'
                   exit 0
                 fi
                 exit 0
@@ -146,13 +155,14 @@ PY
                 """,
             )
 
-            env = os.environ.copy()
+            env = clean_env()
             env.update(
                 {
                     "PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_REMOTE_STATE": str(state),
                     "AI_WORKSPACE_ROOT": str(workspaces),
                     "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_COMPONENTS": "codex,telegram",
                     "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_TOOL_HOME": str(root_home),
                     "AI_VSCODE_ROOT_WRAPPER": str(vscode_wrapper),
@@ -165,9 +175,6 @@ PY
                     "RUNNER_PYTHON_CALLS": str(runner_python_calls),
                 }
             )
-            env.pop("ANTHROPIC_AUTH_TOKEN", None)
-            env.pop("ANTHROPIC_BASE_URL", None)
-
             result = subprocess.run(
                 ["bash", str(ROOT / "scripts" / "install-runner.sh")],
                 text=True,
@@ -177,11 +184,11 @@ PY
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("stage 03: install or verify requested Claude Code provider", result.stdout)
+            self.assertIn("stage 03: skip Claude Code provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
             self.assertIn("stage 04: install or verify requested Codex CLI provider", result.stdout)
-            self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
+            self.assertIn("stage 05: skip VSCode because AI_RUNNER_COMPONENTS does not request it", result.stdout)
             config = (state / "config.env").read_text(encoding="utf-8")
-            self.assertIn("AI_RUNNER_PROVIDERS=claude-code,codex\n", config)
+            self.assertIn("AI_RUNNER_PROVIDERS=codex\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
@@ -209,14 +216,10 @@ PY
             self.assertIn("dangerously_bypass_approvals_and_sandbox = true", codex_config)
             self.assertIn('inherit = "all"', codex_config)
             self.assertIn("disable_response_storage = false", codex_config)
-            self.assertTrue(vscode_wrapper.exists())
-            vscode_script = vscode_wrapper.read_text(encoding="utf-8")
-            self.assertIn("--no-sandbox", vscode_script)
-            self.assertIn("--disable-workspace-trust", vscode_script)
-            self.assertIn(str(vscode_root), vscode_script)
+            self.assertFalse(vscode_wrapper.exists())
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
-            self.assertTrue(manifest["vscode_ready"])
-            self.assertEqual(manifest["vscode_root_wrapper"], str(vscode_wrapper))
+            self.assertFalse(manifest["vscode_ready"])
+            self.assertEqual(manifest["configured_providers"], "codex")
 
     def test_enable_telegram_installs_service_without_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -269,7 +272,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\\n'; exit 0; fi
-                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--sandbox]\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\\n'; exit 0; fi
                 exit 0
                 """,
             )
@@ -283,17 +286,17 @@ PY
                 """,
             )
             write_executable(fakebin / "code", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"--version\" ]; then printf '1.100.0\\n'; fi\nexit 0\n")
-            env = os.environ.copy()
+            env = clean_env()
             env.update(
                 {
                     "PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_REMOTE_STATE": str(state),
                     "AI_WORKSPACE_ROOT": str(workspaces),
                     "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_COMPONENTS": "codex,telegram",
                     "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_VSCODE_ROOT_WRAPPER": str(vscode_wrapper),
                     "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
-                    "AI_RUNNER_PROVIDERS": "codex",
                     "AI_DEFAULT_PROVIDER": "codex",
                     "FAKE_SYSTEMD_DIR": str(root),
                 }
@@ -345,7 +348,7 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--sandbox]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX
@@ -387,17 +390,17 @@ PY
             )
             write_executable(fakebin / "code", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"--version\" ]; then printf '1.100.0\\n'; fi\nexit 0\n")
 
-            env = os.environ.copy()
+            env = clean_env()
             env.update(
                 {
                     "PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_REMOTE_STATE": str(state),
                     "AI_WORKSPACE_ROOT": str(workspaces),
                     "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_COMPONENTS": "codex",
                     "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_VSCODE_ROOT_WRAPPER": str(root / "code-root"),
                     "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
-                    "AI_RUNNER_PROVIDERS": "codex",
                     "AI_DEFAULT_PROVIDER": "codex",
                     "FAKE_SYSTEMD_DIR": str(root),
                     "NPM_CALLS": str(npm_calls),
@@ -441,7 +444,7 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--sandbox]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX
@@ -511,17 +514,17 @@ SETUP
             )
             write_executable(fakebin / "code", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"--version\" ]; then printf '1.100.0\\n'; fi\nexit 0\n")
 
-            env = os.environ.copy()
+            env = clean_env()
             env.update(
                 {
                     "PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_REMOTE_STATE": str(state),
                     "AI_WORKSPACE_ROOT": str(workspaces),
                     "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_COMPONENTS": "codex",
                     "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_VSCODE_ROOT_WRAPPER": str(root / "code-root"),
                     "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
-                    "AI_RUNNER_PROVIDERS": "codex",
                     "AI_DEFAULT_PROVIDER": "codex",
                     "FAKE_SYSTEMD_DIR": str(root),
                     "NPM_CALLS": str(npm_calls),
@@ -542,9 +545,8 @@ SETUP
             self.assertIn("Node.js 20+ is required", result.stdout)
             self.assertIn("npm install -g", npm_calls.read_text(encoding="utf-8"))
 
-    def test_default_provider_can_select_any_core_provider(self) -> None:
-        env = os.environ.copy()
-        env.update({"AI_RUNNER_PROVIDERS": "claude-code", "AI_DEFAULT_PROVIDER": "codex"})
+    def test_components_are_required_by_default(self) -> None:
+        env = clean_env()
         result = subprocess.run(
             ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
             text=True,
@@ -552,12 +554,51 @@ SETUP
             env=env,
             check=False,
         )
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("AI_RUNNER_PROVIDERS=claude-code ignored; core install requires claude-code,codex", result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("AI_RUNNER_COMPONENTS is required", result.stdout + result.stderr)
 
-    def test_single_requested_provider_is_ignored_for_core_install(self) -> None:
-        env = os.environ.copy()
-        env.update({"AI_RUNNER_PROVIDERS": "codex"})
+    def test_default_provider_must_match_requested_provider(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "claude-code", "AI_DEFAULT_PROVIDER": "codex"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("AI_DEFAULT_PROVIDER=codex must be included in AI_RUNNER_PROVIDERS=claude-code", result.stdout + result.stderr)
+
+    def test_all_full_core_aliases_are_rejected(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "all", "AI_RUNNER_PROVIDERS": "codex"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("AI_RUNNER_COMPONENTS=all/full/core is disabled", result.stdout + result.stderr)
+
+    def test_mixed_primary_tools_are_rejected(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "codex,vscode,telegram"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must select exactly one primary tool per VM", result.stdout + result.stderr)
+
+    def test_explicit_codex_telegram_components_skip_claude_and_vscode(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "codex,telegram"})
         result = subprocess.run(
             ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
             text=True,
@@ -566,8 +607,225 @@ SETUP
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("AI_RUNNER_PROVIDERS=codex ignored; core install requires claude-code,codex", result.stdout + result.stderr)
-        self.assertNotIn("skip Claude Code install; provider not requested", result.stdout)
+        self.assertIn("skip Claude Code provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
+        self.assertIn("stage 04: install or verify requested Codex CLI provider", result.stdout)
+        self.assertIn("skip VSCode because AI_RUNNER_COMPONENTS does not request it", result.stdout)
+        self.assertIn("AI_RUNNER_PROVIDERS=codex", result.stdout)
+        self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
+
+    def test_explicit_vscode_component_skips_runner_services(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "vscode"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stage 03: skip Claude Code provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
+        self.assertIn("stage 04: skip Codex CLI provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
+        self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
+        self.assertIn("runner bridge/provider service install skipped", result.stdout)
+        self.assertNotIn("stage 06: create runner directories", result.stdout)
+
+    def test_explicit_vscode_telegram_installs_management_bot_without_ai_providers(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "vscode,telegram"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("telegram selected without an AI provider; installing management-only runner commands", result.stdout)
+        self.assertIn("stage 03: skip Claude Code provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
+        self.assertIn("stage 04: skip Codex CLI provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
+        self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
+        self.assertIn("AI_RUNNER_PROVIDERS=", result.stdout)
+        self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
+        self.assertNotIn("enabling both claude-code and codex", result.stdout)
+
+    def test_vscode_only_does_not_write_unrequested_ai_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            root_home = root / "root-home"
+            (root_home / ".claude").mkdir(parents=True)
+            (root_home / ".codex").mkdir(parents=True)
+            (root_home / ".claude" / "settings.json").write_text('{"env":{"ANTHROPIC_AUTH_TOKEN":"old"}}\n', encoding="utf-8")
+            (root_home / ".anthropic-api-key").write_text("old\n", encoding="utf-8")
+            (root_home / ".codex" / "config.toml").write_text('model = "old"\n', encoding="utf-8")
+            (root_home / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY":"old"}\n', encoding="utf-8")
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  exec env "$@"
+                fi
+                if [ "${1:-}" = "-E" ]; then
+                  shift
+                  exec "$@"
+                fi
+                if [ "${1:-}" = "python3" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "venv" ]; then
+                  mkdir -p "$4/bin"
+                  cat > "$4/bin/python" <<'PY'
+#!/usr/bin/env bash
+exit 0
+PY
+                  chmod +x "$4/bin/python"
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pip" ]; then
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "ai_remote_runner.cli" ]; then
+                  exit 0
+                fi
+                if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
+                  exit 0
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+            write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "code", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"--version\" ]; then printf '1.100.0\\n'; fi\nexit 0\n")
+            env = clean_env()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REMOTE_STATE": str(root / "state"),
+                    "AI_RUNNER_COMPONENTS": "vscode",
+                    "AI_TOOL_HOME": str(root_home),
+                    "AI_VSCODE_ROOT_WRAPPER": str(root / "code-root"),
+                    "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
+                    "ANTHROPIC_BASE_URL": "https://example.invalid",
+                    "ANTHROPIC_AUTH_TOKEN": "fixture-token",
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                    "AI_WRITE_CLAUDE_SETTINGS": "true",
+                    "OPENAI_API_KEY": "openai-fixture",
+                    "CODEX_BASE_URL": "https://codex.example.invalid/v1",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-runner.sh")],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            settings = json.loads((root_home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "claude-opus-4-6")
+            self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://example.invalid")
+            self.assertEqual(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "fixture-token")
+            self.assertFalse((root_home / ".anthropic-api-key").exists())
+            self.assertFalse((root_home / ".codex" / "config.toml").exists())
+            self.assertFalse((root_home / ".codex" / "auth.json").exists())
+            self.assertIn("write VSCode Claude model/API settings", result.stdout)
+            self.assertIn("skip Codex config/auth because Codex is not requested", result.stdout)
+            self.assertIn("preserve root Claude settings because VSCode is configured to use Claude model/API settings", result.stdout)
+
+    def test_claude_settings_are_written_for_requested_claude_root_tool_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            root_home = root / "root-home"
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  exec env "$@"
+                fi
+                if [ "${1:-}" = "-E" ]; then
+                  shift
+                  exec "$@"
+                fi
+                if [ "${1:-}" = "python3" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "venv" ]; then
+                  mkdir -p "$4/bin"
+                  cat > "$4/bin/python" <<'PY'
+#!/usr/bin/env bash
+exit 0
+PY
+                  chmod +x "$4/bin/python"
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pip" ]; then
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "ai_remote_runner.cli" ]; then
+                  exit 0
+                fi
+                if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
+                  exit 0
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+            write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(
+                fakebin / "claude",
+                """
+                #!/usr/bin/env bash
+                if [ "${1:-}" = "--version" ]; then printf 'claude-code 1.0.0\\n'; exit 0; fi
+                if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi
+                exit 0
+                """,
+            )
+            env = clean_env()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REMOTE_STATE": str(root / "state"),
+                    "AI_WORKSPACE_ROOT": str(root / "workspaces"),
+                    "AI_REMOTE_INSTALL_ROOT": str(root / "install"),
+                    "AI_RUNNER_COMPONENTS": "claude-code",
+                    "AI_TOOL_HOME": str(root_home),
+                    "FAKE_SYSTEMD_DIR": str(root),
+                    "ANTHROPIC_BASE_URL": "https://example.invalid",
+                    "ANTHROPIC_AUTH_TOKEN": "fixture-token",
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-runner.sh")],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            settings = json.loads((root_home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://example.invalid")
+            self.assertEqual(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "fixture-token")
+            self.assertEqual(settings["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
+            self.assertEqual(settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"], "0")
+            config = (root / "state" / "config.env").read_text(encoding="utf-8")
+            self.assertIn("ANTHROPIC_AUTH_TOKEN=fixture-token", config)
+            self.assertNotIn("OPENAI_API_KEY=", config)
 
     def test_dry_run_does_not_execute_real_provider_or_runner_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -577,12 +835,13 @@ SETUP
             write_executable(fakebin / "python3", "#!/usr/bin/env bash\nprintf 'python3 should not run in dry-run\\n' >&2\nexit 99\n")
             write_executable(fakebin / "claude", "#!/usr/bin/env bash\nprintf 'claude should not run in dry-run\\n' >&2\nexit 99\n")
             write_executable(fakebin / "codex", "#!/usr/bin/env bash\nprintf 'codex should not run in dry-run\\n' >&2\nexit 99\n")
-            env = os.environ.copy()
+            env = clean_env()
             env.update(
                 {
                     "PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
                     "AI_REMOTE_INSTALL_ROOT": str(root / "install"),
+                    "AI_RUNNER_COMPONENTS": "codex,telegram",
                 }
             )
             result = subprocess.run(

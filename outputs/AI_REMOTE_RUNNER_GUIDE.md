@@ -57,16 +57,17 @@ VPS communication server MUST NOT require AI provider secrets for core operation
 
 ## 3. Core Runner Installer Scope
 
-The core runner installer MUST install or verify every core runtime component required for phone-controlled Claude Code/Codex operation.
+The core runner installer MUST install or verify every explicitly requested runtime component required for phone-controlled Claude Code/Codex/VSCode operation. Lab deployments MUST use one AI/tool per VM and MUST pass `AI_RUNNER_COMPONENTS` explicitly, for example `codex,telegram`, `claude-code,telegram`, or `vscode,telegram`. Mixed primary tool selections such as `all`, `full`, `core`, `claude-code,codex`, or `codex,vscode` MUST be rejected by default.
 
 Core runner installer MUST execute these stages:
 
 ```text
 stage 01: detect OS, WSL, architecture, systemd availability, shell, PATH
+stage 01b: remove stale provider configs for unrequested AI tools
 stage 02: install system packages required by runner
-stage 03: install or verify Claude Code
-stage 04: install or verify Codex CLI
-stage 05: install or verify VSCode root/full-access tool wrapper
+stage 03: install or verify requested Claude Code provider
+stage 04: install or verify requested Codex CLI provider
+stage 05: install or verify requested VSCode root/full-access tool wrapper
 stage 06: create runner directories
 stage 07: create runner configuration files
 stage 08: create credential broker storage backend
@@ -79,7 +80,7 @@ stage 13: report core_ready or failed
 
 Claude Code installation requirement:
 
-- installer MUST install Claude Code if `claude` is missing;
+- installer MUST install Claude Code if `claude-code` is requested and `claude` is missing;
 - installer MUST verify `claude --version`;
 - installer MUST verify `claude auth status --json` command exists;
 - installer MUST verify `claude -p --output-format json` works after authentication/API configuration;
@@ -90,7 +91,7 @@ Claude Code installation requirement:
 
 Codex installation requirement:
 
-- installer MUST install Codex CLI globally if `codex` is missing;
+- installer MUST install Codex CLI globally if `codex` is requested and missing;
 - installer MUST verify `codex --version`;
 - installer MUST verify `codex exec` exists;
 - installer MUST verify remote adapter can call Codex non-interactively with full VM access;
@@ -98,7 +99,7 @@ Codex installation requirement:
 
 VSCode installation requirement:
 
-- installer MUST install or verify Visual Studio Code with `code --version`;
+- installer MUST install or verify Visual Studio Code with `code --version` when `vscode` is requested;
 - Debian/Ubuntu installer SHOULD use Microsoft apt repository so fresh installs receive the current stable `code` package;
 - installer MUST create a root wrapper named `code-root` by default at `/usr/local/bin/code-root`;
 - `code-root` MUST re-exec through sudo when needed and run VSCode with root user-data/extensions directories, `--no-sandbox`, and `--disable-workspace-trust`;
@@ -212,9 +213,9 @@ project_md_append
 context_status
 ```
 
-`core_ready` requires Claude Code ready, Codex ready, real full-access provider smoke tests, communication bridge ready, phone commands ready, credential broker ready, and instruction files ready. `validate-core-ready.sh` MUST NOT write `core_ready=true` unless both enabled providers can complete their full-access smoke tests.
+`core_ready` requires every enabled provider on this machine to pass real full-access smoke tests, plus communication bridge readiness, phone command readiness, credential broker readiness, and instruction file readiness. `validate-core-ready.sh` MUST NOT write `core_ready=true` unless all enabled providers can complete their full-access smoke tests. A `vscode,telegram` management-only machine has no enabled AI provider and MUST validate runner commands plus bridge loopback without probing Claude Code or Codex.
 
-`codex_ready=true` is required for `core_ready`.
+`codex_ready=true` is required for `core_ready` only on machines where Codex is explicitly requested.
 
 `full_ready` requires `core_ready=true`, `codex_ready=true`, and selected optional bundle items installed.
 
@@ -269,8 +270,10 @@ Verified local Claude Code CLI facts:
 - `--output-format stream-json` streams events.
 - `--max-budget-usd` limits per-call spend in print mode.
 - `--max-turns` limits turns.
-- `--permission-mode bypassPermissions` bypasses tool permission prompts.
-- `--dangerously-skip-permissions` bypasses all Claude Code permission checks.
+- `--permission-mode acceptEdits` is the root-compatible full-access permission mode under the current Claude Code CLI.
+- `--allowedTools Bash(*)` is required with the full-access template so non-interactive root runs can execute arbitrary Bash commands/scripts without a per-command approval prompt.
+- `--permission-mode bypassPermissions` can bypass tool permission prompts but current Claude Code treats it like dangerous skip mode under root/sudo and rejects it.
+- `--dangerously-skip-permissions` bypasses all Claude Code permission checks but current Claude Code rejects this flag when run as root/sudo; root full-access runner commands MUST NOT include it by default.
 - `--tools default` enables default built-in tools.
 - `--add-dir /` allows the provider to access the full VM filesystem.
 - `--continue` and `--resume` require session persistence and MUST NOT be used for independent reviewer runs.
@@ -286,9 +289,9 @@ claude -p \
   --add-dir / \
   --max-turns "$CLAUDE_MAX_TURNS" \
   --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" \
-  --permission-mode bypassPermissions \
-  --dangerously-skip-permissions \
-  --tools default \
+  --permission-mode acceptEdits \
+  --tools Bash,Read,Write,Edit,Grep,Glob \
+  --allowedTools 'Bash(*)' \
   --append-system-prompt "$RUNNER_INSTRUCTION_PROMPT" \
   -- \
   "$PROMPT"
@@ -951,7 +954,7 @@ Core-ready requires:
 - `/ai 凭据 添加` creates handle.
 - credential handle can run approved SSH test.
 - AI prompt never receives secret plaintext.
-- Claude Code adapter uses `--tools`, not `--allowedTools`, for restriction.
+- Claude Code adapter uses `--tools` to declare available built-in tools and `--allowedTools Bash(*)` to auto-allow full-access Bash execution in the dedicated VM.
 - Claude Code and Codex run in root/full VM access by default.
 - VSCode `code-root` exists and starts VSCode with root/full-access settings.
 - Codex adapter reports unsupported native features.

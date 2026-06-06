@@ -73,7 +73,14 @@ class BridgeHTTPTests(unittest.TestCase):
         return json.loads(response.read().decode("utf-8"))
 
     def test_signed_command_and_auth_failures(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "AI_TOOL_HOME": str(Path(tmp) / "root-home"),
+                "CODEX_HOME": str(Path(tmp) / "root-home" / ".codex"),
+            },
+            clear=False,
+        ):
             server, secret, url = self._server(tmp)
             try:
                 body = json.dumps({"request_id": "r1", "raw_text": "/ai 状态"}, ensure_ascii=False).encode("utf-8")
@@ -272,6 +279,41 @@ class BridgeHTTPTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_mattermost_management_only_text_does_not_start_background_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "MATTERMOST_SLASH_TOKEN": "slash-secret",
+                "AI_WORKSPACE_ROOT": str(Path(tmp) / "workspaces"),
+                "AI_RUNNER_PROVIDERS": "",
+            },
+        ):
+            server, _, url = self._server(tmp)
+            try:
+                body = urlencode({"token": "slash-secret", "command": "/ai", "text": "reply with hi", "trigger_id": "task-management-only"}).encode("utf-8")
+                req = request.Request(
+                    f"{url}/bridge/command",
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                with patch("ai_remote_runner.executor.invoke_claude") as invoke:
+                    response = request.urlopen(req, timeout=10)
+                    payload = json.loads(response.read().decode("utf-8"))
+                ai_response = payload["props"]["ai_remote_response"]
+                self.assertEqual(ai_response["status"], "error")
+                self.assertEqual(ai_response["error"]["code"], "ai_provider_not_configured")
+                self.assertIn("没有配置 Claude Code 或 Codex", payload["text"])
+                self.assertNotIn("后台运行", payload["text"])
+                invoke.assert_not_called()
+                events_path = Path(tmp) / "state" / "events.jsonl"
+                if events_path.exists():
+                    events = events_path.read_text(encoding="utf-8")
+                    self.assertNotIn('"provider": "claude-code"', events)
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_mattermost_background_task_emits_running_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             "os.environ",
@@ -384,6 +426,30 @@ class BridgeHTTPTests(unittest.TestCase):
                 response = request.urlopen(req, timeout=10)
                 payload = json.loads(response.read().decode("utf-8"))
                 self.assertIn("不会强制终止", payload["text"])
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_sensitive_provider_config_command_is_redacted_in_command_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "AI_TOOL_HOME": str(Path(tmp) / "root-home"),
+                "CODEX_HOME": str(Path(tmp) / "root-home" / ".codex"),
+            },
+            clear=False,
+        ):
+            server, secret, url = self._server(tmp)
+            try:
+                secret_key = "sk-" + "a" * 24
+                body = json.dumps({"request_id": "secret-cmd", "raw_text": f"/ai 密钥 设置 codex {secret_key}"}, ensure_ascii=False).encode("utf-8")
+                status, payload = self._post(url, secret, body, nonce="secret-command")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["status"], "accepted")
+                commands_log = (Path(tmp) / "state" / "bridge-commands.jsonl").read_text(encoding="utf-8")
+                self.assertNotIn(secret_key, commands_log)
+                self.assertNotIn(secret_key, json.dumps(payload, ensure_ascii=False))
+                self.assertIn("sk-a", commands_log)
             finally:
                 server.shutdown()
                 server.server_close()

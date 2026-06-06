@@ -26,7 +26,9 @@ CLAUDE_REVIEW_BASE_URL="${CLAUDE_REVIEW_BASE_URL:-${ANTHROPIC_BASE_URL:-}}"
 RUN_CLAUDE_REVIEW="${RUN_CLAUDE_REVIEW:-true}"
 RUN_CODEX_REVIEW="${RUN_CODEX_REVIEW:-true}"
 CLAUDE_REVIEW_TIMEOUT_SECONDS="${CLAUDE_REVIEW_TIMEOUT_SECONDS:-1800}"
-CODEX_REVIEW_TIMEOUT_SECONDS="${CODEX_REVIEW_TIMEOUT_SECONDS:-1800}"
+CODEX_REVIEW_TIMEOUT_SECONDS="${CODEX_REVIEW_TIMEOUT_SECONDS:-900}"
+CLAUDE_REVIEW_MAX_BUDGET_USD="${CLAUDE_REVIEW_MAX_BUDGET_USD:-0.50}"
+CODEX_REVIEW_MAX_BUDGET_USD="${CODEX_REVIEW_MAX_BUDGET_USD:-0.50}"
 
 usage() {
   printf 'usage: %s [--user-requirements-file PATH] [--user-requirements TEXT]\n' "$0"
@@ -187,15 +189,17 @@ Do not inspect the parent repository work/reviews directory, sibling snapshots, 
 Each reviewer is launched with a fresh HOME. Codex is launched with a fresh CODEX_HOME containing only copied auth/config files when available. Claude Code receives only explicit reviewer API env/auth inputs and must not use resume/continue state.
 
 Current user requirements to verify:
-- Installer must install/verify Claude Code and Codex globally for root usage.
-- Runner and Telegram services must run as root unless explicitly overridden.
-- Claude Code and Codex must default to full access inside the VM: network access, shell access, file access, install-anything capability.
-- VSCode must be installed or verified during runner install and must be usable as a root/full-access tool through the root wrapper.
+	- Installer must require explicit AI_RUNNER_COMPONENTS and must reject mixed primary tools by default. Lab deployments use one AI/tool per VM: codex,telegram OR claude-code,telegram OR vscode,telegram.
+	- Installer must install/verify only the explicitly requested provider/tool globally for root usage and must clean stale unrequested provider config files when a VM is re-role-installed.
+	- Runner and Telegram services must run as root unless explicitly overridden.
+	- Claude Code and Codex must default to full access inside the VM: network access, shell access, file access, install-anything capability.
+	- VSCode must be installed or verified during runner install and must be usable as a root/full-access tool through the root wrapper.
 - Telegram and Mattermost must be equal first-class phone communication channels. Telegram may be the user's primary daily phone entrypoint because it is simpler and faster.
 - Telegram commands and status messages must be aligned with the runner command table, including visible queued/calling/running heartbeat states while AI tasks are active.
 - Mattermost must preserve parity with Telegram for the same command table, status vocabulary, provider selection, long-conversation policy, and full-access controls.
 - Do not add extra sandbox/privacy/safety boundaries beyond the VM boundary, credential-not-in-Git, credential-not-in-prompts, and budget controls that already exist.
-- Master-writer and reviewer AIs must be separate. Reviewers must run in fresh new conversations with no context pollution and must not simply be the master-writer reviewing itself.
+	- Master-writer and reviewer AIs must be separate. Reviewers must run in fresh new conversations with no context pollution and must not simply be the master-writer reviewing itself.
+	- Reviewer runs must have explicit spend controls. Claude uses --max-budget-usd. Codex currently has no native dollar cap in this CLI, so the script must enforce a hard timeout and record CODEX_REVIEW_MAX_BUDGET_USD as the operator-approved budget ceiling.
 
 Report sections exactly:
 P0
@@ -231,12 +235,13 @@ cat > "$CODEX_PROMPT" <<EOF
 $(cat "$COMMON_REQUIREMENTS")
 
 Codex/GPT reviewer focus:
-- Verify Codex exec invocation uses full access or dangerous bypass when supported.
-- Verify root/global installation and service environment alignment.
-- Verify VSCode root/full-access installation and wrapper behavior.
-- Verify Telegram status/heartbeat behavior makes queued, thinking/running, and stuck-vs-running states visible to phone users.
-- Verify command UX can switch to full access and default policy is full.
-- Verify independent reviewer workflow is script-enforced rather than only documented.
+	- Verify Codex exec invocation uses full access or dangerous bypass when supported.
+	- Verify root/global installation and service environment alignment.
+	- Verify VSCode root/full-access installation and wrapper behavior.
+	- Verify Telegram status/heartbeat behavior makes queued, thinking/running, and stuck-vs-running states visible to phone users.
+	- Verify command UX can switch to full access and default policy is full.
+	- Verify independent reviewer workflow is script-enforced rather than only documented.
+	- Treat CODEX_REVIEW_MAX_BUDGET_USD=$CODEX_REVIEW_MAX_BUDGET_USD and timeout=$CODEX_REVIEW_TIMEOUT_SECONDS seconds as this run's Codex spend guard unless this Codex CLI exposes a native budget flag.
 
 Isolated repository snapshot: $CODEX_REPO
 User requirements:
@@ -265,7 +270,7 @@ run_claude_review() {
     printf 'claude reviewer requires CLAUDE_REVIEW_API_KEY, ANTHROPIC_API_KEY, CLAUDE_REVIEW_AUTH_TOKEN, or ANTHROPIC_AUTH_TOKEN because fresh HOME + --bare cannot rely on original-home OAuth/keychain auth\n' > "$output"
     return 2
   fi
-  local cmd=(env "${env_args[@]}" claude -p --bare --no-session-persistence --output-format json --permission-mode bypassPermissions --dangerously-skip-permissions --tools default --add-dir "$CLAUDE_REPO" --append-system-prompt "$(cat "$CLAUDE_PROMPT")")
+  local cmd=(env "${env_args[@]}" claude -p --bare --no-session-persistence --output-format json --permission-mode acceptEdits --tools Bash,Read,Write,Edit,Grep,Glob --add-dir "$CLAUDE_REPO" --max-budget-usd "$CLAUDE_REVIEW_MAX_BUDGET_USD" --append-system-prompt "$(cat "$CLAUDE_PROMPT")")
   if [ -n "$CLAUDE_REVIEWER_MODEL" ]; then
     cmd+=(--model "$CLAUDE_REVIEWER_MODEL")
   fi
@@ -337,7 +342,10 @@ PY
   if [ -n "$CODEX_REVIEWER_MODEL" ]; then
     cmd+=(--model "$CODEX_REVIEWER_MODEL")
   fi
-  cmd+=(--cd "$CODEX_REPO" --output-last-message "$last_message" -- "$(cat "$CODEX_PROMPT")")
+  if codex exec --help 2>&1 | grep -q -- '--max-budget-usd'; then
+    cmd+=(--max-budget-usd "$CODEX_REVIEW_MAX_BUDGET_USD")
+  fi
+	  cmd+=(--cd "$CODEX_REPO" --output-last-message "$last_message" -- "$(cat "$CODEX_PROMPT")")
   timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" "${cmd[@]}" > "$CODEX_PRIVATE_DIR/review.raw.jsonl" 2> "$CODEX_PRIVATE_DIR/review.stderr" || return $?
   if [ -f "$last_message" ]; then
     cp "$last_message" "$output"
@@ -401,7 +409,7 @@ else
 fi
 
 gate_exit=0
-python3 - "$RUN_DIR" "$claude_status" "$codex_status" "$PRIVATE_ROOT" "$review_exit" <<'PY' || gate_exit=$?
+python3 - "$RUN_DIR" "$claude_status" "$codex_status" "$PRIVATE_ROOT" "$review_exit" "$CLAUDE_REVIEW_MAX_BUDGET_USD" "$CLAUDE_REVIEW_TIMEOUT_SECONDS" "$CODEX_REVIEW_MAX_BUDGET_USD" "$CODEX_REVIEW_TIMEOUT_SECONDS" <<'PY' || gate_exit=$?
 import json
 import re
 import sys
@@ -411,9 +419,17 @@ run_dir = Path(sys.argv[1])
 manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 private_root = Path(sys.argv[4])
 process_failed = int(sys.argv[5]) != 0
+claude_budget, claude_timeout, codex_budget, codex_timeout = sys.argv[6:10]
 manifest["reviewers"] = {
     "claude-code": {"status": sys.argv[2], "output": str(private_root / "claude" / "review.md")},
     "codex": {"status": sys.argv[3], "output": str(private_root / "codex" / "review.md")},
+}
+manifest["budget_controls"] = {
+    "claude_max_budget_usd": claude_budget,
+    "claude_timeout_seconds": claude_timeout,
+    "codex_max_budget_usd": codex_budget,
+    "codex_timeout_seconds": codex_timeout,
+    "codex_native_budget_flag_used_when_available": True,
 }
 private_root_str = str(private_root.resolve())
 run_dir_str = str(run_dir.resolve())

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .budget import BudgetLedger
@@ -12,6 +13,20 @@ from .executor import RunnerRuntime, current_status, execute
 from .instructions import InstructionStore
 from .paths import ensure_runtime_dirs, state_root, workspace_root
 from .providers import invoke_claude, invoke_codex, provider_status
+
+
+def load_config_env() -> None:
+    path = state_root() / "config.env"
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def print_json(data: object) -> None:
@@ -32,9 +47,10 @@ def main() -> int:
     smoke_p.add_argument("--provider", choices=["claude-code", "codex"], required=True)
     smoke_p.add_argument("--workspace", default=None)
     smoke_p.add_argument("--prompt", default="Return exactly: ok")
+    smoke_p.add_argument("--prompt-file", default="")
     smoke_p.add_argument("--expect-contains", default="")
     smoke_p.add_argument("--timeout-seconds", type=int, default=180)
-    smoke_p.add_argument("--reserved-usd", type=float, default=0.05)
+    smoke_p.add_argument("--reserved-usd", type=float, default=0.20)
     budget_p = sub.add_parser("budget")
     budget_p.add_argument("--reserve-run")
     budget_p.add_argument("--provider", default="claude-code")
@@ -57,6 +73,7 @@ def main() -> int:
     sub.add_parser("telegram")
     args = parser.parse_args()
 
+    load_config_env()
     ensure_runtime_dirs()
     if args.cmd == "status":
         print_json(current_status(RunnerRuntime.default()))
@@ -73,9 +90,10 @@ def main() -> int:
         workspace = Path(args.workspace) if args.workspace else workspace_root() / "provider-smoke"
         workspace.mkdir(parents=True, exist_ok=True)
         ledger = BudgetLedger(state_root() / "budget" / "ledger.json")
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
         if args.provider == "codex":
             result = invoke_codex(
-                args.prompt,
+                prompt,
                 workspace,
                 ledger,
                 instruction_prompt="Provider smoke test. Use full VM access configuration.",
@@ -84,7 +102,7 @@ def main() -> int:
             )
         else:
             result = invoke_claude(
-                args.prompt,
+                prompt,
                 workspace,
                 "Provider smoke test. Use full VM access configuration.",
                 ledger,
