@@ -63,7 +63,7 @@ root_env_run() {
     AI_PERMISSION_SCOPE="$AI_PERMISSION_SCOPE"
     AI_REQUIRE_SHELL_CONFIRMATION="$AI_REQUIRE_SHELL_CONFIRMATION"
   )
-  if [ "${REQUEST_CLAUDE:-false}" = true ]; then
+  if [ "${REQUEST_CLAUDE:-false}" = true ] || [ "${REQUEST_VSCODE_CLAUDE_BACKEND:-false}" = true ]; then
     env_args+=(
       ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}"
       ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
@@ -343,6 +343,7 @@ done
 REQUEST_CLAUDE=false
 REQUEST_CODEX=false
 REQUEST_VSCODE=false
+REQUEST_VSCODE_CLAUDE_BACKEND=false
 REQUEST_RUNNER=false
 REQUEST_TELEGRAM=false
 if [ -z "$AI_RUNNER_COMPONENTS" ]; then
@@ -389,8 +390,8 @@ case "$AI_RUNNER_COMPONENTS" in
           ;;
       esac
     done
-    if [ "$REQUEST_RUNNER" = true ] && [ "$REQUEST_CLAUDE" != true ] && [ "$REQUEST_CODEX" != true ]; then
-      log 'runner/telegram selected without an AI provider; installing management-only runner commands without Claude Code or Codex'
+    if [ "$REQUEST_RUNNER" = true ] && [ "$REQUEST_CLAUDE" != true ] && [ "$REQUEST_CODEX" != true ] && [ "$REQUEST_VSCODE" != true ]; then
+      log 'runner/telegram selected without an AI provider; installing management-only runner commands without Claude Code, Codex, or VSCode backend'
     fi
     ;;
 esac
@@ -402,8 +403,17 @@ if [ "$PRIMARY_TOOL_COUNT" -gt 1 ]; then
   log 'AI_RUNNER_COMPONENTS must select exactly one primary tool per VM: codex, claude-code, or vscode. Telegram may be added as a communication channel.'
   exit 2
 fi
+if [ "$REQUEST_VSCODE" = true ] && [ "$REQUEST_RUNNER" = true ]; then
+  REQUEST_VSCODE_CLAUDE_BACKEND=true
+  if [ -z "$CLAUDE_MODEL" ]; then
+    CLAUDE_MODEL="$VSCODE_CLAUDE_MODEL"
+  fi
+fi
 AI_RUNNER_PROVIDERS=""
 if [ "$REQUEST_CLAUDE" = true ]; then
+  AI_RUNNER_PROVIDERS="claude-code"
+fi
+if [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
   AI_RUNNER_PROVIDERS="claude-code"
 fi
 if [ "$REQUEST_CODEX" = true ]; then
@@ -456,13 +466,15 @@ else
 fi
 if should_write_claude_settings; then
   write_claude_settings
+elif [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
+  log 'stage 02b: defer Claude environment settings to VSCode Claude backend writer'
 elif [ -n "${ANTHROPIC_BASE_URL:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_ATTRIBUTION_HEADER:-}" ]; then
   log 'stage 02b: skip Claude environment settings because Claude Code is not requested'
 fi
 
-log 'stage 03: install or verify requested Claude Code provider'
+log 'stage 03: install or verify requested Claude Code provider/backend'
 CLAUDE_READY=false
-if [ "$REQUEST_CLAUDE" = true ]; then
+if [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
   if root_has_command claude; then
     root_env_run claude --version
     CLAUDE_READY=true
@@ -673,7 +685,7 @@ EOF
   if [ "$REQUEST_VSCODE" = true ]; then
     printf 'VSCODE_CLAUDE_MODEL=%s\n' "$VSCODE_CLAUDE_MODEL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
-  if [ "$REQUEST_CLAUDE" = true ]; then
+  if [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
     if [ -n "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC+x}" ]; then
       printf 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=%s\n' "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-0}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     fi
@@ -859,7 +871,7 @@ fi
 
 log 'stage 11: run provider CLI/auth preflight; full-access smoke is enforced by validate-core-ready.sh'
 runner_cli providers
-if [ "$DRY_RUN" = false ] && [ "$REQUEST_CLAUDE" = true ]; then
+if [ "$DRY_RUN" = false ] && { [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; }; then
   root_has_command claude || { log 'claude is required before core_ready for requested provider claude-code'; exit 1; }
   root_env_run claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready for requested provider claude-code'; exit 1; }
 fi

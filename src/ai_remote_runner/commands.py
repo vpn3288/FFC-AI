@@ -108,6 +108,13 @@ def parse_command(raw_text: str, allow_bare: bool = False) -> dict[str, Any]:
     elif allow_bare and text.startswith("/"):
         rest = text[1:].strip()
     else:
+        if allow_bare and text:
+            return {
+                "status": "accepted",
+                "canonical_action": "task.run",
+                "args": {"prompt": text, "tail": []},
+                "requires_confirmation": False,
+            }
         return {"status": "rejected", "error": "command_must_start_with_/ai"}
 
     parts = tuple(part for part in rest.split() if part)

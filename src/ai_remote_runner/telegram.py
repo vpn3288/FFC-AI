@@ -298,6 +298,8 @@ class TelegramBot:
 
     def parsed_for_text(self, text: str) -> dict[str, Any]:
         parsed = parse_command(text, allow_bare=True)
+        if parsed.get("canonical_action") == "task.run" and not self.ai_providers_configured():
+            return {"status": "rejected", "error": "ai_provider_not_configured"}
         if parsed.get("status") == "rejected" and parsed.get("error") == "command_must_start_with_/ai" and not text.startswith("/"):
             if not self.ai_providers_configured():
                 return {"status": "rejected", "error": "ai_provider_not_configured"}

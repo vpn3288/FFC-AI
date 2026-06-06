@@ -630,7 +630,7 @@ SETUP
         self.assertIn("runner bridge/provider service install skipped", result.stdout)
         self.assertNotIn("stage 06: create runner directories", result.stdout)
 
-    def test_explicit_vscode_telegram_installs_management_bot_without_ai_providers(self) -> None:
+    def test_explicit_vscode_telegram_installs_claude_backend_provider(self) -> None:
         env = clean_env()
         env.update({"AI_RUNNER_COMPONENTS": "vscode,telegram"})
         result = subprocess.run(
@@ -641,11 +641,13 @@ SETUP
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("telegram selected without an AI provider; installing management-only runner commands", result.stdout)
-        self.assertIn("stage 03: skip Claude Code provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
+        self.assertIn("stage 03: install or verify requested Claude Code provider/backend", result.stdout)
+        self.assertIn("root env PATH=", result.stdout)
+        self.assertIn("command -v claude", result.stdout)
         self.assertIn("stage 04: skip Codex CLI provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
         self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
-        self.assertIn("AI_RUNNER_PROVIDERS=", result.stdout)
+        self.assertIn("AI_RUNNER_PROVIDERS=claude-code", result.stdout)
+        self.assertIn("VSCode Claude model=claude-opus-4-6", result.stdout)
         self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
         self.assertNotIn("enabling both claude-code and codex", result.stdout)
 
