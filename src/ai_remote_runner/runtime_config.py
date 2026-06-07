@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
+from .model_aliases import normalize_model_name
 from .storage import atomic_write_text
 
 
@@ -31,12 +32,43 @@ TARGET_ALIASES = {
     "code": "vscode",
     "vs-code": "vscode",
 }
+MULTI_TOKEN_TARGET_ALIASES = {
+    ("claude", "code"): "claude-code",
+    ("vs", "code"): "vscode",
+    ("visual", "studio", "code"): "vscode",
+}
 
 
 def normalize_target(value: str | None) -> str | None:
     if not value:
         return None
     return TARGET_ALIASES.get(value.strip().lower())
+
+
+def split_target_args(args: list[str]) -> tuple[str | None, list[str]]:
+    lowered = [arg.strip().lower() for arg in args]
+    for size in (3, 2):
+        if len(lowered) >= size:
+            target = MULTI_TOKEN_TARGET_ALIASES.get(tuple(lowered[:size]))
+            if target:
+                return target, args[size:]
+    if args:
+        target = normalize_target(args[0])
+        if target:
+            return target, args[1:]
+    return None, args
+
+
+def model_id_from_args(args: list[str]) -> str:
+    parts = [part.strip() for part in args if part.strip()]
+    _, stripped_parts = split_target_args(parts)
+    if len(stripped_parts) < len(parts) and stripped_parts:
+        parts = stripped_parts
+    if not parts:
+        raise ValueError("missing_model")
+    if len(parts) != 1 or any(char.isspace() for char in parts[0]):
+        raise ValueError("model_must_be_single_token")
+    return parts[0]
 
 
 def redact_secret(value: str) -> str:
@@ -222,19 +254,25 @@ def _write_claude_env(updates: dict[str, str]) -> None:
 
 
 def apply_model(state: Path, target: str, model: str) -> dict[str, Any]:
+    requested_model = " ".join(str(model).strip().split())
+    effective_model = normalize_model_name(target, requested_model)
     updates: dict[str, str]
     if target == "codex":
         text = _read_codex_config()
-        text = _replace_or_prepend_toml_key(text, "model", model)
+        text = _replace_or_prepend_toml_key(text, "model", effective_model)
         _write_codex_config(text)
-        updates = {"CODEX_MODEL": model}
+        updates = {"CODEX_MODEL": effective_model}
     elif target == "vscode":
-        updates = {"VSCODE_CLAUDE_MODEL": model}
+        updates = {"VSCODE_CLAUDE_MODEL": effective_model}
     else:
-        _write_claude_env({"CLAUDE_MODEL": model})
-        updates = {"CLAUDE_MODEL": model}
+        _write_claude_env({"CLAUDE_MODEL": effective_model})
+        updates = {"CLAUDE_MODEL": effective_model}
     apply_config_env(state, updates)
-    return {"target": target, "model": model}
+    result: dict[str, Any] = {"target": target, "model": effective_model}
+    if requested_model != effective_model:
+        result["requested_model"] = requested_model
+        result["normalized_model"] = effective_model
+    return result
 
 
 def apply_api_key(state: Path, target: str, api_key: str) -> dict[str, Any]:

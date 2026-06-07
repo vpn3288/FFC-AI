@@ -36,7 +36,9 @@ from .runtime_config import (
     apply_task_budget,
     config_summary,
     list_supported_models,
+    model_id_from_args,
     normalize_target,
+    split_target_args,
 )
 from .storage import atomic_write_json
 
@@ -172,10 +174,9 @@ def _provider_from_value(value: object) -> str | None:
 
 
 def _config_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | None, list[str]]:
-    if args:
-        target = normalize_target(args[0])
-        if target:
-            return target, args[1:]
+    target, rest = split_target_args(args)
+    if target:
+        return target, rest
     provider = _default_provider(rt)
     if provider:
         return provider, args
@@ -183,10 +184,9 @@ def _config_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | 
 
 
 def _claude_control_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | None, list[str]]:
-    if args:
-        target = normalize_target(args[0])
-        if target in CLAUDE_BACKEND_PROVIDER_NAMES:
-            return target, args[1:]
+    target, rest = split_target_args(args)
+    if target in CLAUDE_BACKEND_PROVIDER_NAMES:
+        return target, rest
     provider = _default_provider(rt)
     if provider in CLAUDE_BACKEND_PROVIDER_NAMES:
         return provider, args
@@ -683,11 +683,13 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         target, rest = _config_target_from_args(rt, args)
         if target is None:
             return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
-        if not rest:
-            return _error(request_id, "missing_model", "usage: /ai 模型 使用 [claude-code|codex|vscode] <model>")
-        model = " ".join(rest).strip()
-        if not model:
-            return _error(request_id, "missing_model", "model is required")
+        try:
+            model = model_id_from_args(rest)
+        except ValueError as exc:
+            code = str(exc)
+            if code == "missing_model":
+                return _error(request_id, "missing_model", "usage: /ai 模型 使用 [claude-code|codex|vscode] <model>")
+            return _error(request_id, "invalid_model", "model must be one model id without spaces; put claude-code/vscode/codex before the model id")
         return _ok(request_id, run_id, "模型已更新", apply_model(rt.state, target, model))
     if action == "provider_config.set_api_key":
         target, rest = _config_target_from_args(rt, args)

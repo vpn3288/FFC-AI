@@ -833,6 +833,7 @@ PY
                     "FAKE_SYSTEMD_DIR": str(root),
                     "ANTHROPIC_BASE_URL": "https://example.invalid",
                     "ANTHROPIC_AUTH_TOKEN": "fixture-token",
+                    "CLAUDE_MODEL": "claude",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
                 }
@@ -853,6 +854,7 @@ PY
             self.assertEqual(settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"], "0")
             config = (root / "state" / "config.env").read_text(encoding="utf-8")
             self.assertIn("ANTHROPIC_AUTH_TOKEN=fixture-token", config)
+            self.assertIn("CLAUDE_MODEL=opus\n", config)
             self.assertIn("CLAUDE_MAX_TURNS=0\n", config)
             self.assertIn("CLAUDE_API_RETRY_ATTEMPTS=3\n", config)
             self.assertIn("CLAUDE_API_RETRY_SLEEP_SECONDS=12\n", config)

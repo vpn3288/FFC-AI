@@ -57,6 +57,54 @@ normalize_provider() {
   esac
 }
 
+normalize_model_alias() {
+  local raw="$1"
+  local -a parts
+  read -r -a parts <<<"$raw"
+  local first="${parts[0]:-}"
+  local second="${parts[1]:-}"
+  local third="${parts[2]:-}"
+  if [ "${#parts[@]}" -gt 1 ]; then
+    case "${first,,} ${second,,} ${third,,}" in
+      "visual studio code") parts=("${parts[@]:3}") ;;
+    esac
+  fi
+  if [ "${#parts[@]}" -gt 1 ]; then
+    first="${parts[0]:-}"
+    second="${parts[1]:-}"
+    case "${first,,} ${second,,}" in
+      "claude code"|"vs code") parts=("${parts[@]:2}") ;;
+    esac
+  fi
+  if [ "${#parts[@]}" -gt 1 ]; then
+    first="${parts[0]:-}"
+    case "${first,,}" in
+      anthropic|claude|claude-code|claudecode|code|codex|openai|vs-code|vscode) parts=("${parts[@]:1}") ;;
+    esac
+  fi
+  raw="${parts[*]}"
+  if [[ "$raw" == *" "* ]]; then
+    printf ''
+    return 0
+  fi
+  local normalized
+  normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    anthropic|claude|claude-opus) printf 'opus' ;;
+    claude-sonnet) printf 'sonnet' ;;
+    gpt|gpt5|gpt-5|gpt5.5|openai) printf 'gpt-5.5' ;;
+    codex) printf 'gpt-5.3-codex' ;;
+    *) printf '%s' "$raw" ;;
+  esac
+}
+
+if [ -n "$CLAUDE_MODEL" ]; then
+  CLAUDE_MODEL="$(normalize_model_alias "$CLAUDE_MODEL")"
+fi
+if [ -n "$VSCODE_CLAUDE_MODEL" ]; then
+  VSCODE_CLAUDE_MODEL="$(normalize_model_alias "$VSCODE_CLAUDE_MODEL")"
+fi
+
 run() {
   if [ "$DRY_RUN" = true ]; then
     printf '[dry-run] %s\n' "$*"

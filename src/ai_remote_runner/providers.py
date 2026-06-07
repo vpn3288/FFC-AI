@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from .budget import BudgetLedger
 from .instructions import InstructionStore
+from .model_aliases import normalize_model_name
 
 
 PROBE_TIMEOUT_SECONDS = 30
@@ -482,10 +483,19 @@ CLAUDE_TRANSIENT_API_ERROR_MARKERS = (
 )
 CLAUDE_PERMANENT_API_ERROR_MARKERS = (
     "invalid api key",
+    "invalid model",
     "unauthorized",
     "forbidden",
     "permission denied",
     "authentication",
+    "model not found",
+    "model_not_found",
+    "model is not",
+    "unsupported model",
+    "unknown model",
+    "does not exist",
+    "bad request",
+    "http 400",
     "http 401",
     "http 403",
 )
@@ -912,7 +922,7 @@ def _invoke_claude_backend(
         instruction_prompt,
     ]
     command = _claude_command_with_budget(command, reserved_usd)
-    claude_model = _claude_adapter_env(provider_id, "CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL).strip()
+    claude_model = normalize_model_name(provider_id, _claude_adapter_env(provider_id, "CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL)).strip()
     if claude_model:
         command.extend(["--model", claude_model])
     if emit:

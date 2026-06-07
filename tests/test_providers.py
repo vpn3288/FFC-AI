@@ -376,6 +376,53 @@ class ProviderTests(unittest.TestCase):
             self.assertIn("--model", command)
             self.assertEqual(command[command.index("--model") + 1], "sonnet")
 
+    def test_invoke_claude_normalizes_legacy_short_model_alias(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict("os.environ", {"CLAUDE_MODEL": "claude"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+            ):
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+            command = run.call_args.args[0]
+            self.assertIn("--model", command)
+            self.assertEqual(command[command.index("--model") + 1], "opus")
+
+    def test_invoke_claude_strips_legacy_provider_prefix_from_model_env(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict("os.environ", {"CLAUDE_MODEL": "code claude-opus-4-8"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+            ):
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+            command = run.call_args.args[0]
+            self.assertIn("--model", command)
+            self.assertEqual(command[command.index("--model") + 1], "claude-opus-4-8")
+            self.assertNotIn("code claude-opus-4-8", command)
+
+    def test_invoke_claude_omits_invalid_multi_token_model_env(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict("os.environ", {"CLAUDE_MODEL": "bad model"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+            ):
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+            self.assertNotIn("--model", run.call_args.args[0])
+
     def test_invoke_claude_omits_max_turns_by_default(self) -> None:
         import tempfile
         import subprocess
@@ -501,6 +548,27 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(result.status, "failed")
             self.assertEqual(run.call_count, 1)
             self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 2.0)
+
+    def test_invoke_claude_does_not_retry_invalid_model_gateway_error(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        invalid_model = subprocess.CompletedProcess(
+            ["claude"],
+            1,
+            stdout=json.dumps({"type": "result", "is_error": True, "total_cost_usd": 0.0}),
+            stderr="API Error: Bad Request (HTTP 400): unsupported model: claude",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch.dict("os.environ", {"CLAUDE_API_RETRY_ATTEMPTS": "2", "CLAUDE_API_RETRY_SLEEP_SECONDS": "0"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=invalid_model) as run,
+            ):
+                result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.0)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(run.call_count, 1)
 
     def test_invoke_claude_omits_native_budget_when_unlimited(self) -> None:
         import tempfile

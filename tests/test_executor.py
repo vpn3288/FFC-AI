@@ -407,6 +407,68 @@ class ExecutorTests(unittest.TestCase):
             auth = json.loads((root / "root-home" / ".codex" / "auth.json").read_text(encoding="utf-8"))
             self.assertEqual(auth["OPENAI_API_KEY"], fake_key)
 
+    def test_model_select_normalizes_short_model_aliases_per_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            env = {
+                "AI_TOOL_HOME": str(root / "root-home"),
+                "CODEX_HOME": str(root / "root-home" / ".codex"),
+            }
+            with patch.dict("os.environ", env, clear=False):
+                claude = execute(parse_command("/ai 模型 使用 claude claude"), {"request_id": "model-claude", "raw_text": "/ai 模型 使用 claude claude"}, runtime)
+                vscode = execute(parse_command("/ai 模型 使用 vscode gpt"), {"request_id": "model-vscode", "raw_text": "/ai 模型 使用 vscode gpt"}, runtime)
+                codex = execute(parse_command("/ai 模型 使用 codex codex"), {"request_id": "model-codex", "raw_text": "/ai 模型 使用 codex codex"}, runtime)
+
+            self.assertEqual(claude["status"], "accepted")
+            self.assertEqual(claude["data"]["target"], "claude-code")
+            self.assertEqual(claude["data"]["requested_model"], "claude")
+            self.assertEqual(claude["data"]["model"], "opus")
+            self.assertEqual(vscode["data"]["model"], "gpt-5.5")
+            self.assertEqual(codex["data"]["model"], "gpt-5.3-codex")
+            config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("CLAUDE_MODEL=opus", config_env)
+            self.assertIn("VSCODE_CLAUDE_MODEL=gpt-5.5", config_env)
+            self.assertIn("CODEX_MODEL=gpt-5.3-codex", config_env)
+            settings = json.loads((root / "root-home" / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "opus")
+
+    def test_model_select_handles_split_provider_aliases_without_polluting_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            env = {
+                "AI_TOOL_HOME": str(root / "root-home"),
+                "AI_REMOTE_STATE": str(runtime.state),
+            }
+            with patch.dict("os.environ", env, clear=False):
+                split_claude = execute(
+                    parse_command("/ai 模型 使用 claude code claude-opus-4-8"),
+                    {"request_id": "model-split-claude", "raw_text": "/ai 模型 使用 claude code claude-opus-4-8"},
+                    runtime,
+                )
+                legacy_prefix = execute(
+                    parse_command("/ai 模型 使用 claude-code code claude-opus-4-8"),
+                    {"request_id": "model-legacy-prefix", "raw_text": "/ai 模型 使用 claude-code code claude-opus-4-8"},
+                    runtime,
+                )
+                invalid = execute(
+                    parse_command("/ai 模型 使用 claude-code bad model"),
+                    {"request_id": "model-invalid", "raw_text": "/ai 模型 使用 claude-code bad model"},
+                    runtime,
+                )
+
+            self.assertEqual(split_claude["status"], "accepted")
+            self.assertEqual(split_claude["data"]["target"], "claude-code")
+            self.assertEqual(split_claude["data"]["model"], "claude-opus-4-8")
+            self.assertEqual(legacy_prefix["status"], "accepted")
+            self.assertEqual(legacy_prefix["data"]["model"], "claude-opus-4-8")
+            self.assertEqual(invalid["status"], "error")
+            self.assertEqual(invalid["error"]["code"], "invalid_model")
+            config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("CLAUDE_MODEL=claude-opus-4-8", config_env)
+            self.assertNotIn("CLAUDE_MODEL=code claude-opus-4-8", config_env)
+
     def test_vscode_provider_selection_invokes_vscode_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
