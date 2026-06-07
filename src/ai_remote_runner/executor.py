@@ -22,6 +22,7 @@ from .providers import build_instruction_prompt, invoke_claude, invoke_codex
 from .runtime_config import (
     apply_api_key,
     apply_base_url,
+    apply_claude_max_turns,
     apply_model,
     apply_task_budget,
     config_summary,
@@ -686,6 +687,14 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if parse_reserved_usd(reserved_usd, -1.0) < 0:
             return _error(request_id, "invalid_budget", "budget must be a number, 0, unlimited, or 无限")
         return _ok(request_id, run_id, "单次任务预算已更新", apply_task_budget(rt.state, reserved_usd))
+    if action == "claude.max_turns.set":
+        if not args:
+            return _error(request_id, "missing_max_turns", "usage: /ai 轮数 设置 <正整数|0|无限>")
+        max_turns = args[0].strip()
+        try:
+            return _ok(request_id, run_id, "Claude Code 最大轮数已更新", apply_claude_max_turns(rt.state, max_turns))
+        except ValueError:
+            return _error(request_id, "invalid_max_turns", "max_turns must be 0/unlimited/无限 or a positive integer")
     if action == "credential.list":
         return _ok(request_id, run_id, "凭据列表已生成", {"credentials": rt.credentials.list_public()})
     if action == "credential.add":

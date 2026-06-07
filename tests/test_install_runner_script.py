@@ -21,7 +21,7 @@ def write_executable(path: Path, content: str) -> None:
 def clean_env() -> dict[str, str]:
     env = os.environ.copy()
     for key in list(env):
-        if key.startswith("ANTHROPIC_") or key.startswith("CODEX_") or key.startswith("CLAUDE_CODE_") or key.startswith("TELEGRAM_"):
+        if key.startswith("ANTHROPIC_") or key.startswith("CODEX_") or key.startswith("CLAUDE_") or key.startswith("TELEGRAM_"):
             env.pop(key, None)
     env.pop("OPENAI_API_KEY", None)
     env.pop("AI_BRIDGE_SHARED_SECRET", None)
@@ -841,6 +841,7 @@ PY
             self.assertEqual(settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"], "0")
             config = (root / "state" / "config.env").read_text(encoding="utf-8")
             self.assertIn("ANTHROPIC_AUTH_TOKEN=fixture-token", config)
+            self.assertIn("CLAUDE_MAX_TURNS=0\n", config)
             self.assertNotIn("OPENAI_API_KEY=", config)
 
     def test_dry_run_does_not_execute_real_provider_or_runner_commands(self) -> None:

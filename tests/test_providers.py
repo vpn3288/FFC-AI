@@ -298,6 +298,34 @@ class ProviderTests(unittest.TestCase):
             self.assertIn("--model", command)
             self.assertEqual(command[command.index("--model") + 1], "sonnet")
 
+    def test_invoke_claude_omits_max_turns_by_default(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.0)
+            command = run.call_args.args[0]
+            self.assertNotIn("--max-turns", command)
+
+    def test_invoke_claude_uses_explicit_positive_max_turns(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict("os.environ", {"CLAUDE_MAX_TURNS": "40"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+            ):
+                invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.0)
+            command = run.call_args.args[0]
+            self.assertIn("--max-turns", command)
+            self.assertEqual(command[command.index("--max-turns") + 1], "40")
+
     def test_invoke_claude_chat_template_disables_all_tools_when_requested(self) -> None:
         import tempfile
         import subprocess

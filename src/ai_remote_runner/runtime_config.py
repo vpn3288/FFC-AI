@@ -76,6 +76,7 @@ def apply_config_env(state: Path, updates: dict[str, str]) -> dict[str, str]:
         "PATH",
         "CLAUDE_MODEL",
         "VSCODE_CLAUDE_MODEL",
+        "CLAUDE_MAX_TURNS",
         "CODEX_MODEL",
         "AI_TASK_RESERVED_USD",
         "TELEGRAM_RESERVED_USD",
@@ -274,6 +275,22 @@ def apply_task_budget(state: Path, reserved_usd: float | str) -> dict[str, Any]:
     return {"task_reserved_usd": parsed, "telegram_reserved_usd": parsed, "budget_unlimited": unlimited}
 
 
+def _claude_max_turns_value(max_turns: int | str) -> tuple[str, int, bool]:
+    raw = str(max_turns).strip()
+    if raw.lower() in UNLIMITED_BUDGET_VALUES:
+        return "0", 0, True
+    parsed = int(raw)
+    if parsed < 0:
+        raise ValueError("max_turns must be 0/unlimited or a positive integer")
+    return str(parsed), parsed, parsed == 0
+
+
+def apply_claude_max_turns(state: Path, max_turns: int | str) -> dict[str, Any]:
+    value, parsed, unlimited = _claude_max_turns_value(max_turns)
+    apply_config_env(state, {"CLAUDE_MAX_TURNS": value})
+    return {"claude_max_turns": parsed, "max_turns_unlimited": unlimited}
+
+
 def _toml_string_value(text: str, key: str) -> str:
     match = re.search(rf'(?m)^{re.escape(key)}\s*=\s*"([^"]*)"', text)
     return match.group(1) if match else ""
@@ -298,6 +315,7 @@ def config_summary(target: str) -> dict[str, Any]:
         "model": os.environ.get(model_key) or os.environ.get("CLAUDE_MODEL") or env.get("CLAUDE_MODEL", ""),
         "base_url": os.environ.get("ANTHROPIC_BASE_URL") or env.get("ANTHROPIC_BASE_URL", ""),
         "api_key_configured": bool(os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY")),
+        "claude_max_turns": os.environ.get("CLAUDE_MAX_TURNS") or load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))).get("CLAUDE_MAX_TURNS", "0"),
         "config_file": str(claude_settings_path()),
     }
 

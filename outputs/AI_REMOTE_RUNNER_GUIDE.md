@@ -269,7 +269,7 @@ Verified local Claude Code CLI facts:
 - `--output-format json` returns single result JSON.
 - `--output-format stream-json` streams events.
 - `--max-budget-usd` limits per-call spend in print mode.
-- `--max-turns` limits turns.
+- `--max-turns` limits turns; the runner omits it by default and only adds it when `CLAUDE_MAX_TURNS` is a positive integer.
 - `--permission-mode acceptEdits` is the root-compatible full-access permission mode under the current Claude Code CLI.
 - `--allowedTools Bash(*)` is required with the full-access template so non-interactive root runs can execute arbitrary Bash commands/scripts without a per-command approval prompt.
 - `--permission-mode bypassPermissions` can bypass tool permission prompts but current Claude Code treats it like dangerous skip mode under root/sudo and rejects it.
@@ -287,7 +287,6 @@ cd "$RUNNER_WORKSPACE"
 claude -p \
   --output-format json \
   --add-dir / \
-  --max-turns "$CLAUDE_MAX_TURNS" \
   --max-budget-usd "$CLAUDE_MAX_BUDGET_USD" \
   --permission-mode acceptEdits \
   --tools Bash,Read,Write,Edit,Grep,Glob \

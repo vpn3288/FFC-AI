@@ -271,6 +271,8 @@ export CODEX_BASE_URL="https://api.openai.com/v1"
 
 脚本默认按 root/global 模式配置 AI 工具：systemd 服务显式以 root 运行，`HOME=/root`，`CODEX_HOME=/root/.codex`，Codex 配置启用 `approval_policy="never"`、`sandbox_mode="danger-full-access"`、`openai_base_url` 和 `[sandbox_workspace_write].network_access=true`。如果你显式设置 `AI_TOOL_HOME` 或 `AI_CODEX_HOME`，才会写到自定义目录。
 
+Claude Code 默认不传原生 `--max-turns` 和 `--max-budget-usd` 限制，`CLAUDE_MAX_TURNS=0`、`AI_TASK_RESERVED_USD=0`、`TELEGRAM_RESERVED_USD=0` 都表示无限/不由 runner 限制。需要主动限轮时，显式设置 `CLAUDE_MAX_TURNS=<正整数>`，或在 Telegram 里执行 `/ai 轮数 设置 <正整数>`；恢复无限可执行 `/ai 轮数 设置 无限`。
+
 ### VSCode
 
 脚本会检查 `code --version`。如果没有安装，并且系统支持 apt，会通过 Microsoft apt repository 安装最新 `code` 包。安装后会写入 `/usr/local/bin/code-root`，方便在 VM 内以 root/full-access 方式启动 VSCode。

@@ -373,6 +373,23 @@ def _claude_command_with_budget(command: list[str], budget_usd: float) -> list[s
     return updated
 
 
+CLAUDE_UNLIMITED_MAX_TURN_VALUES = {"", "0", "none", "false", "off", "unlimited", "infinite", "inf", "无限", "不限"}
+
+
+def _claude_max_turn_args(raw: object | None = None) -> list[str]:
+    value = os.environ.get("CLAUDE_MAX_TURNS", "0") if raw is None else str(raw)
+    normalized = str(value).strip()
+    if normalized.lower() in CLAUDE_UNLIMITED_MAX_TURN_VALUES:
+        return []
+    try:
+        parsed = int(normalized)
+    except ValueError:
+        return []
+    if parsed <= 0:
+        return []
+    return ["--max-turns", str(parsed)]
+
+
 def _claude_recorded_cost(first_cost_usd: float | None, retry_cost_usd: float | None, retry_started: bool, reserved_usd: float) -> float | None:
     if retry_started and (retry_cost_usd is None or retry_cost_usd <= 0):
         return first_cost_usd if reserved_usd <= 0 else reserved_usd
@@ -626,8 +643,7 @@ def invoke_claude(
     }.get(permission_scope, CLAUDE_FULL_ACCESS_TEMPLATE)
     command = [
         *template,
-        "--max-turns",
-        os.environ.get("CLAUDE_MAX_TURNS", "12"),
+        *_claude_max_turn_args(),
         "--append-system-prompt",
         instruction_prompt,
     ]

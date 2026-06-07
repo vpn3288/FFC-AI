@@ -76,6 +76,7 @@ class CommandTests(unittest.TestCase):
             "/ai 代理 设置 claude-code https://proxy.example": "provider_config.set_base_url",
             "/ai 配置 查看": "provider_config.show",
             "/ai 预算 设置 1.00": "budget.set_task_reserved",
+            "/ai 轮数 设置 无限": "claude.max_turns.set",
         }
         for raw, action in cases.items():
             with self.subTest(raw=raw):
