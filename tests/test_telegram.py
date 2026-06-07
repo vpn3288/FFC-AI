@@ -396,6 +396,8 @@ class TelegramBotTests(unittest.TestCase):
 
             self.assertTrue(client.deleted_webhook)
             self.assertIn({"command": "ai", "description": "运行 AI 或管理 runner"}, client.commands)
+            self.assertIn({"command": "gptmodel", "description": "切换 GPT 模型"}, client.commands)
+            self.assertIn({"command": "claudemodel", "description": "切换 Claude 模型"}, client.commands)
 
     def test_startup_command_sync_can_be_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -481,6 +483,22 @@ class TelegramBotTests(unittest.TestCase):
             self.assertEqual(invoke.call_args.kwargs["run_id"] is not None, True)
             visible_text = "\n".join([text for _, text in client.sent] + [text for _, _, text in client.edits])
             self.assertIn("provider: codex", visible_text)
+
+    def test_model_shortcut_switches_gpt_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"})
+            client = FakeTelegramClient(config)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            bot = TelegramBot(config, client, runtime, root / "state")
+            with patch.dict("os.environ", {"AI_TOOL_HOME": str(root / "root-home"), "CODEX_HOME": str(root / "root-home" / ".codex")}, clear=False):
+                bot.handle_update({"message": {"chat": {"id": 123}, "text": "/gptmodel vscode gpt", "message_id": 33}})
+
+            visible_text = "\n".join([text for _, text in client.sent] + [text for _, _, text in client.edits])
+            self.assertIn("GPT 模型已更新", visible_text)
+            self.assertIn("config_key: VSCODE_CLAUDE_MODEL", visible_text)
+            config_env = (root / "state" / "config.env").read_text(encoding="utf-8")
+            self.assertIn("VSCODE_CLAUDE_MODEL=gpt-5.5", config_env)
 
     def test_shell_shortcut_runs_local_exec_in_background(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

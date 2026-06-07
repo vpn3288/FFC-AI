@@ -32,6 +32,20 @@ def render_response_text(response: dict[str, Any], platform: str = "telegram", m
         return _limit(str(output), max_chars)
 
     message = str(response.get("message_zh") or response.get("status") or "OK")
+    if isinstance(data, dict) and data.get("model_family") in {"gpt", "claude"} and data.get("model"):
+        family = "GPT" if data.get("model_family") == "gpt" else "Claude"
+        lines = [
+            f"{family} 模型已更新",
+            f"target: {data.get('target')}",
+            f"model: {data.get('model')}",
+            f"config_key: {data.get('config_key')}",
+        ]
+        if data.get("requested_model") and data.get("normalized_model"):
+            lines.append(f"normalized: {data.get('requested_model')} -> {data.get('normalized_model')}")
+        if data.get("note_zh"):
+            lines.append(str(data.get("note_zh")))
+        return _limit("\n".join(lines), max_chars)
+
     if isinstance(data, dict) and "items" in data:
         lines = [message]
         for item in data.get("items", []):

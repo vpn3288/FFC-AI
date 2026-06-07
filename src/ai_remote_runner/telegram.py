@@ -391,6 +391,8 @@ class TelegramBot:
             {"command": "codex", "description": "切换到 Codex 或直接让 Codex 执行任务"},
             {"command": "vscode", "description": "切换到 VSCode 或直接让 VSCode 执行任务"},
             {"command": "claude", "description": "切换到 Claude Code 或直接让 Claude Code 执行任务"},
+            {"command": "gptmodel", "description": "切换 GPT 模型"},
+            {"command": "claudemodel", "description": "切换 Claude 模型"},
             {"command": "shell", "description": "执行本机 shell 命令"},
         ]
 
@@ -433,6 +435,16 @@ class TelegramBot:
             if head.startswith("/claude@"):
                 tail = tail.strip()
                 return "/claude " + tail if tail else "/ai 提供商 使用 claude-code"
+        if stripped.startswith("/gptmodel@"):
+            head, _, tail = stripped.partition(" ")
+            if head.startswith("/gptmodel@"):
+                tail = tail.strip()
+                return "/ai GPT模型 设置 " + tail if tail else "/ai 帮助"
+        if stripped.startswith("/claudemodel@"):
+            head, _, tail = stripped.partition(" ")
+            if head.startswith("/claudemodel@"):
+                tail = tail.strip()
+                return "/ai Claude模型 设置 " + tail if tail else "/ai 帮助"
         if stripped.startswith("/shell@"):
             head, _, tail = stripped.partition(" ")
             if head.startswith("/shell@"):
@@ -473,6 +485,14 @@ class TelegramBot:
             return "/ai 提供商 使用 claude-code"
         if stripped.startswith("/claude "):
             return stripped
+        if stripped == "/gptmodel":
+            return "/ai 帮助"
+        if stripped.startswith("/gptmodel "):
+            return "/ai GPT模型 设置 " + stripped.removeprefix("/gptmodel ").strip()
+        if stripped == "/claudemodel":
+            return "/ai 帮助"
+        if stripped.startswith("/claudemodel "):
+            return "/ai Claude模型 设置 " + stripped.removeprefix("/claudemodel ").strip()
         if stripped.startswith("/shell "):
             return stripped
         return stripped
@@ -704,7 +724,7 @@ class TelegramBot:
         mode = self.config.group_mode
         if mode in {"all", "any"}:
             return text
-        if text.startswith(("/ai", "/codex", "/vscode", "/claude", "/shell", "/status", "/features", "/help", "/start")):
+        if text.startswith(("/ai", "/codex", "/vscode", "/claude", "/gptmodel", "/claudemodel", "/shell", "/status", "/features", "/help", "/start")):
             return text
         stripped, mentioned = self._strip_bot_mention(text)
         if mode in {"mention", "mentions"} and (mentioned or self._message_replies_to_bot(message)):

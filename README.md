@@ -275,9 +275,18 @@ export CODEX_BASE_URL="https://api.openai.com/v1"
 
 Claude 后端默认不传原生 `--max-turns` 和 `--max-budget-usd` 限制，`CLAUDE_MAX_TURNS=0`、`VSCODE_CLAUDE_MAX_TURNS=0`、`AI_TASK_RESERVED_USD=0`、`TELEGRAM_RESERVED_USD=0` 都表示无限/不由 runner 限制；单次任务预算为 `0` 时也不会触发 runner 的 daily/monthly budget preflight。需要主动限轮时，显式设置对应 adapter 的 max-turns，或在 Telegram 里执行 `/ai 轮数 设置 [claude-code|vscode] <正整数>`；恢复无限可执行 `/ai 轮数 设置 [claude-code|vscode] 无限`。
 
+模型切换分为两条命令，避免 GPT/Claude 的别名和网关配置互相污染：
+
+```text
+/ai GPT模型 设置 [codex|claude-code|vscode] gpt-5.5
+/ai Claude模型 设置 [codex|claude-code|vscode] claude-opus-4-8
+```
+
+`codex` 会写 `CODEX_MODEL` 和 `~/.codex/config.toml`；`claude-code` 会写 `CLAUDE_MODEL`；`vscode` 会写 `VSCODE_CLAUDE_MODEL`。当 `codex` 使用 Claude 模型，或 Claude 后端使用 GPT 模型时，当前配置的 `CODEX_BASE_URL` 或 `ANTHROPIC_BASE_URL` 网关必须支持对应模型。旧 `/ai 模型 使用 ...` 仍保留兼容，但推荐改用上面两条明确命令。
+
 ### VSCode
 
-脚本会检查 `code --version`。如果没有安装，并且系统支持 apt，会通过 Microsoft apt repository 安装最新 `code` 包。安装后会写入 `/usr/local/bin/code-root`，方便在 VM 内以 root/full-access 方式启动 VSCode。带 Telegram/runner 安装时，VSCode 作为独立 `vscode` provider 出现在 `/ai 提供商`、`/vscode` 和 `/ai 模型 使用 vscode ...` 中，配置项使用 `VSCODE_CLAUDE_*`，不会和 `claude-code` provider 共用轮数、重试和模型变量。
+脚本会检查 `code --version`。如果没有安装，并且系统支持 apt，会通过 Microsoft apt repository 安装最新 `code` 包。安装后会写入 `/usr/local/bin/code-root`，方便在 VM 内以 root/full-access 方式启动 VSCode。带 Telegram/runner 安装时，VSCode 作为独立 `vscode` provider 出现在 `/ai 提供商`、`/vscode`、`/ai GPT模型 设置 vscode ...` 和 `/ai Claude模型 设置 vscode ...` 中，配置项使用 `VSCODE_CLAUDE_*`，不会和 `claude-code` provider 共用轮数、重试和模型变量。
 
 ## 6. 让 Mattermost 能访问 runner
 

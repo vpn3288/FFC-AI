@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
-from .model_aliases import normalize_model_name
+from .model_aliases import model_family_from_name, normalize_model_name
 from .storage import atomic_write_text
 
 
@@ -253,9 +253,47 @@ def _write_claude_env(updates: dict[str, str]) -> None:
     _write_json_private(path, data)
 
 
-def apply_model(state: Path, target: str, model: str) -> dict[str, Any]:
+def _model_config_metadata(state: Path, target: str) -> dict[str, str]:
+    if target == "codex":
+        return {
+            "config_key": "CODEX_MODEL",
+            "config_file": str(codex_home() / "config.toml"),
+            "config_surface": "codex_config_toml",
+            "state_config_file": str(state / "config.env"),
+        }
+    if target == "vscode":
+        return {
+            "config_key": "VSCODE_CLAUDE_MODEL",
+            "config_file": str(state / "config.env"),
+            "config_surface": "runner_config_env",
+        }
+    return {
+        "config_key": "CLAUDE_MODEL",
+        "config_file": str(claude_settings_path()),
+        "config_surface": "claude_settings_env",
+        "state_config_file": str(state / "config.env"),
+    }
+
+
+def _model_backend_note(target: str, model_family: str | None) -> str:
+    if not model_family:
+        return ""
+    if target == "codex" and model_family == "claude":
+        return "Codex 只写入 Codex CLI 的 model；当前 CODEX_BASE_URL/网关必须支持该 Claude 模型。"
+    if target in {"claude-code", "vscode"} and model_family == "gpt":
+        return "Claude 后端只写入对应 adapter 的模型变量；当前 ANTHROPIC_BASE_URL/网关必须支持该 GPT 模型。"
+    return ""
+
+
+def _apply_model(state: Path, target: str, model: str, model_family: str | None = None) -> dict[str, Any]:
     requested_model = " ".join(str(model).strip().split())
-    effective_model = normalize_model_name(target, requested_model)
+    if model_family:
+        inferred = model_family_from_name(requested_model)
+        if inferred and inferred != model_family:
+            raise ValueError(f"{model_family}_model_required")
+    effective_model = normalize_model_name(target, requested_model, model_family)
+    if not effective_model:
+        raise ValueError("model_must_be_single_token")
     updates: dict[str, str]
     if target == "codex":
         text = _read_codex_config()
@@ -268,11 +306,31 @@ def apply_model(state: Path, target: str, model: str) -> dict[str, Any]:
         _write_claude_env({"CLAUDE_MODEL": effective_model})
         updates = {"CLAUDE_MODEL": effective_model}
     apply_config_env(state, updates)
-    result: dict[str, Any] = {"target": target, "model": effective_model}
+    result: dict[str, Any] = {
+        "target": target,
+        "model": effective_model,
+        "model_family": model_family or model_family_from_name(effective_model) or "custom",
+        **_model_config_metadata(state, target),
+    }
     if requested_model != effective_model:
         result["requested_model"] = requested_model
         result["normalized_model"] = effective_model
+    note = _model_backend_note(target, model_family)
+    if note:
+        result["note_zh"] = note
     return result
+
+
+def apply_model(state: Path, target: str, model: str) -> dict[str, Any]:
+    return _apply_model(state, target, model)
+
+
+def apply_gpt_model(state: Path, target: str, model: str) -> dict[str, Any]:
+    return _apply_model(state, target, model, "gpt")
+
+
+def apply_claude_model(state: Path, target: str, model: str) -> dict[str, Any]:
+    return _apply_model(state, target, model, "claude")
 
 
 def apply_api_key(state: Path, target: str, api_key: str) -> dict[str, Any]:

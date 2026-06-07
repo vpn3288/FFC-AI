@@ -19,6 +19,8 @@ RUNNER_PYTHON="$INSTALL_ROOT/.venv/bin/python"
 CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 CLAUDE_API_RETRY_ATTEMPTS="${CLAUDE_API_RETRY_ATTEMPTS:-}"
 CLAUDE_API_RETRY_SLEEP_SECONDS="${CLAUDE_API_RETRY_SLEEP_SECONDS:-}"
+CODEX_MODEL="${CODEX_MODEL:-}"
+CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
 VSCODE_CLAUDE_MODEL="${VSCODE_CLAUDE_MODEL:-${VSCODE_MODEL:-gpt-5.5}}"
 VSCODE_CLAUDE_MAX_TURNS="${VSCODE_CLAUDE_MAX_TURNS:-}"
 VSCODE_CLAUDE_API_RETRY_ATTEMPTS="${VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-}"
@@ -57,7 +59,7 @@ normalize_provider() {
   esac
 }
 
-normalize_model_alias() {
+strip_model_target_prefix() {
   local raw="$1"
   local -a parts
   read -r -a parts <<<"$raw"
@@ -87,19 +89,60 @@ normalize_model_alias() {
     printf ''
     return 0
   fi
+  printf '%s' "$raw"
+}
+
+normalize_gpt_model_alias() {
+  local raw
+  raw="$(strip_model_target_prefix "$1")"
+  if [ -z "$raw" ]; then
+    printf ''
+    return 0
+  fi
   local normalized
   normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
   case "$normalized" in
-    anthropic|claude|claude-opus) printf 'opus' ;;
-    claude-sonnet) printf 'sonnet' ;;
     gpt|gpt5|gpt-5|gpt5.5|openai) printf 'gpt-5.5' ;;
     codex) printf 'gpt-5.3-codex' ;;
     *) printf '%s' "$raw" ;;
   esac
 }
 
+normalize_claude_model_alias() {
+  local raw
+  raw="$(strip_model_target_prefix "$1")"
+  if [ -z "$raw" ]; then
+    printf ''
+    return 0
+  fi
+  local normalized
+  normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    anthropic|claude|claude-opus) printf 'opus' ;;
+    claude-sonnet) printf 'sonnet' ;;
+    *) printf '%s' "$raw" ;;
+  esac
+}
+
+normalize_model_alias() {
+  local raw normalized
+  raw="$(strip_model_target_prefix "$1")"
+  normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    anthropic|claude|claude-opus|claude-sonnet|claude*|opus|sonnet|haiku) normalize_claude_model_alias "$raw" ;;
+    gpt|gpt5|gpt-5|gpt5.5|gpt*|openai|codex|*codex*) normalize_gpt_model_alias "$raw" ;;
+    *) printf '%s' "$raw" ;;
+  esac
+}
+
 if [ -n "$CLAUDE_MODEL" ]; then
   CLAUDE_MODEL="$(normalize_model_alias "$CLAUDE_MODEL")"
+fi
+if [ -n "$CODEX_MODEL" ]; then
+  CODEX_MODEL="$(normalize_model_alias "$CODEX_MODEL")"
+fi
+if [ -n "$CODEX_REVIEW_MODEL" ]; then
+  CODEX_REVIEW_MODEL="$(normalize_model_alias "$CODEX_REVIEW_MODEL")"
 fi
 if [ -n "$VSCODE_CLAUDE_MODEL" ]; then
   VSCODE_CLAUDE_MODEL="$(normalize_model_alias "$VSCODE_CLAUDE_MODEL")"
@@ -846,6 +889,9 @@ EOF
   fi
   if [ "$REQUEST_CODEX" = true ] && [ -n "${OPENAI_API_KEY:-}" ]; then
     printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  fi
+  if [ "$REQUEST_CODEX" = true ]; then
+    printf 'CODEX_MODEL=%s\n' "${CODEX_MODEL:-gpt-5.5}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
   if [ "$REQUEST_CODEX" = true ] && [ -n "${CODEX_BASE_URL:-}" ]; then
     printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null

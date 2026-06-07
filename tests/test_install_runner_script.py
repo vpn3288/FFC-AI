@@ -170,6 +170,7 @@ PY
                     "AI_VSCODE_ROOT_DIR": str(vscode_root),
                     "AI_DEFAULT_PROVIDER": "codex",
                     "OPENAI_API_KEY": "test-openai-key",
+                    "CODEX_MODEL": "codex",
                     "CODEX_BASE_URL": "https://example.invalid/v1",
                     "FAKE_SYSTEMD_DIR": str(root),
                     "SYSTEMCTL_CALLS": str(systemctl_calls),
@@ -190,6 +191,7 @@ PY
             self.assertIn("stage 05: skip VSCode because AI_RUNNER_COMPONENTS does not request it", result.stdout)
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn("AI_RUNNER_PROVIDERS=codex\n", config)
+            self.assertIn("CODEX_MODEL=gpt-5.3-codex\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
@@ -214,6 +216,7 @@ PY
             self.assertIn("-m ai_remote_runner.cli parse /ai 状态", runner_calls)
             codex_config = (root_home / ".codex" / "config.toml").read_text(encoding="utf-8")
             self.assertIn('model_provider = "openai"', codex_config)
+            self.assertIn('model = "gpt-5.3-codex"', codex_config)
             self.assertIn('openai_base_url = "https://example.invalid/v1"', codex_config)
             self.assertIn('approval_policy = "never"', codex_config)
             self.assertIn('sandbox_mode = "danger-full-access"', codex_config)

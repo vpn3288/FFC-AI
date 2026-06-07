@@ -32,6 +32,8 @@ from .runtime_config import (
     apply_base_url,
     apply_claude_api_retries,
     apply_claude_max_turns,
+    apply_claude_model,
+    apply_gpt_model,
     apply_model,
     apply_task_budget,
     config_summary,
@@ -181,6 +183,29 @@ def _config_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | 
     if provider:
         return provider, args
     return "vscode", args
+
+
+def _model_action_info(action: str) -> dict[str, str | None]:
+    if action == "model.select_gpt":
+        return {
+            "family": "gpt",
+            "message_zh": "GPT 模型已更新",
+            "usage": "usage: /ai GPT模型 设置 [claude-code|codex|vscode] <gpt-model>",
+            "wrong_family_detail": "这是 GPT 模型切换命令；Claude 模型请使用 /ai Claude模型 设置 [claude-code|codex|vscode] <claude-model>",
+        }
+    if action == "model.select_claude":
+        return {
+            "family": "claude",
+            "message_zh": "Claude 模型已更新",
+            "usage": "usage: /ai Claude模型 设置 [claude-code|codex|vscode] <claude-model>",
+            "wrong_family_detail": "这是 Claude 模型切换命令；GPT 模型请使用 /ai GPT模型 设置 [claude-code|codex|vscode] <gpt-model>",
+        }
+    return {
+        "family": None,
+        "message_zh": "模型已更新",
+        "usage": "usage: /ai 模型 使用 [claude-code|codex|vscode] <model>",
+        "wrong_family_detail": "model family does not match command",
+    }
 
 
 def _claude_control_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | None, list[str]]:
@@ -679,18 +704,27 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             if normalized:
                 target = normalized
         return _ok(request_id, run_id, "模型列表已生成", list_supported_models(target))
-    if action == "model.select":
+    if action in {"model.select", "model.select_gpt", "model.select_claude"}:
+        info = _model_action_info(action)
         target, rest = _config_target_from_args(rt, args)
         if target is None:
             return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         try:
             model = model_id_from_args(rest)
+            if info["family"] == "gpt":
+                data = apply_gpt_model(rt.state, target, model)
+            elif info["family"] == "claude":
+                data = apply_claude_model(rt.state, target, model)
+            else:
+                data = apply_model(rt.state, target, model)
         except ValueError as exc:
             code = str(exc)
             if code == "missing_model":
-                return _error(request_id, "missing_model", "usage: /ai 模型 使用 [claude-code|codex|vscode] <model>")
+                return _error(request_id, "missing_model", str(info["usage"]))
+            if code in {"gpt_model_required", "claude_model_required"}:
+                return _error(request_id, "wrong_model_family", str(info["wrong_family_detail"]))
             return _error(request_id, "invalid_model", "model must be one model id without spaces; put claude-code/vscode/codex before the model id")
-        return _ok(request_id, run_id, "模型已更新", apply_model(rt.state, target, model))
+        return _ok(request_id, run_id, str(info["message_zh"]), data)
     if action == "provider_config.set_api_key":
         target, rest = _config_target_from_args(rt, args)
         if target is None:

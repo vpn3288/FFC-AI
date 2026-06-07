@@ -372,7 +372,7 @@ class ExecutorTests(unittest.TestCase):
             }
             fake_key = "sk-" + "a" * 24
             with patch.dict("os.environ", env, clear=False):
-                model = execute(parse_command("/ai 模型 使用 vscode gpt-5.5"), {"request_id": "model-vscode", "raw_text": "/ai 模型 使用 vscode gpt-5.5"}, runtime)
+                model = execute(parse_command("/ai GPT模型 设置 vscode gpt-5.5"), {"request_id": "model-vscode", "raw_text": "/ai GPT模型 设置 vscode gpt-5.5"}, runtime)
                 key = execute(parse_command(f"/ai 密钥 设置 codex {fake_key}"), {"request_id": "key-codex", "raw_text": "/ai 密钥 设置 codex <redacted>"}, runtime)
                 proxy = execute(parse_command("/ai 代理 设置 claude-code https://cc-vibe.com"), {"request_id": "proxy-claude", "raw_text": "/ai 代理 设置 claude-code https://cc-vibe.com"}, runtime)
                 budget = execute(parse_command("/ai 预算 设置 1.25"), {"request_id": "budget-set", "raw_text": "/ai 预算 设置 1.25"}, runtime)
@@ -380,6 +380,9 @@ class ExecutorTests(unittest.TestCase):
                 retry = execute(parse_command("/ai 重试 设置 3"), {"request_id": "retry-set", "raw_text": "/ai 重试 设置 3"}, runtime)
 
             self.assertEqual(model["status"], "accepted")
+            self.assertEqual(model["message_zh"], "GPT 模型已更新")
+            self.assertEqual(model["data"]["model_family"], "gpt")
+            self.assertEqual(model["data"]["config_key"], "VSCODE_CLAUDE_MODEL")
             self.assertEqual(key["status"], "accepted")
             self.assertNotIn(fake_key, json.dumps(key, ensure_ascii=False))
             self.assertEqual(proxy["data"]["base_url"], "https://cc-vibe.com")
@@ -407,7 +410,7 @@ class ExecutorTests(unittest.TestCase):
             auth = json.loads((root / "root-home" / ".codex" / "auth.json").read_text(encoding="utf-8"))
             self.assertEqual(auth["OPENAI_API_KEY"], fake_key)
 
-    def test_model_select_normalizes_short_model_aliases_per_provider(self) -> None:
+    def test_gpt_and_claude_model_commands_normalize_short_aliases_per_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runtime = RunnerRuntime(root / "state", root / "workspaces")
@@ -416,22 +419,60 @@ class ExecutorTests(unittest.TestCase):
                 "CODEX_HOME": str(root / "root-home" / ".codex"),
             }
             with patch.dict("os.environ", env, clear=False):
-                claude = execute(parse_command("/ai 模型 使用 claude claude"), {"request_id": "model-claude", "raw_text": "/ai 模型 使用 claude claude"}, runtime)
-                vscode = execute(parse_command("/ai 模型 使用 vscode gpt"), {"request_id": "model-vscode", "raw_text": "/ai 模型 使用 vscode gpt"}, runtime)
-                codex = execute(parse_command("/ai 模型 使用 codex codex"), {"request_id": "model-codex", "raw_text": "/ai 模型 使用 codex codex"}, runtime)
+                claude = execute(parse_command("/ai Claude模型 设置 claude claude"), {"request_id": "model-claude", "raw_text": "/ai Claude模型 设置 claude claude"}, runtime)
+                vscode_gpt = execute(parse_command("/ai GPT模型 设置 vscode gpt"), {"request_id": "model-vscode-gpt", "raw_text": "/ai GPT模型 设置 vscode gpt"}, runtime)
+                vscode_claude = execute(parse_command("/ai Claude模型 设置 vscode claude"), {"request_id": "model-vscode-claude", "raw_text": "/ai Claude模型 设置 vscode claude"}, runtime)
+                codex_gpt = execute(parse_command("/ai GPT模型 设置 codex codex"), {"request_id": "model-codex-gpt", "raw_text": "/ai GPT模型 设置 codex codex"}, runtime)
+                codex_claude = execute(parse_command("/ai Claude模型 设置 codex claude-opus-4-8"), {"request_id": "model-codex-claude", "raw_text": "/ai Claude模型 设置 codex claude-opus-4-8"}, runtime)
 
             self.assertEqual(claude["status"], "accepted")
+            self.assertEqual(claude["message_zh"], "Claude 模型已更新")
             self.assertEqual(claude["data"]["target"], "claude-code")
             self.assertEqual(claude["data"]["requested_model"], "claude")
             self.assertEqual(claude["data"]["model"], "opus")
-            self.assertEqual(vscode["data"]["model"], "gpt-5.5")
-            self.assertEqual(codex["data"]["model"], "gpt-5.3-codex")
+            self.assertEqual(claude["data"]["config_key"], "CLAUDE_MODEL")
+            self.assertEqual(vscode_gpt["message_zh"], "GPT 模型已更新")
+            self.assertEqual(vscode_gpt["data"]["model"], "gpt-5.5")
+            self.assertEqual(vscode_gpt["data"]["config_key"], "VSCODE_CLAUDE_MODEL")
+            self.assertIn("ANTHROPIC_BASE_URL", vscode_gpt["data"]["note_zh"])
+            self.assertEqual(vscode_claude["data"]["model"], "opus")
+            self.assertEqual(vscode_claude["data"]["model_family"], "claude")
+            self.assertEqual(codex_gpt["data"]["model"], "gpt-5.3-codex")
+            self.assertEqual(codex_gpt["data"]["config_key"], "CODEX_MODEL")
+            self.assertEqual(codex_claude["data"]["model"], "claude-opus-4-8")
+            self.assertEqual(codex_claude["data"]["model_family"], "claude")
+            self.assertIn("CODEX_BASE_URL", codex_claude["data"]["note_zh"])
             config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
             self.assertIn("CLAUDE_MODEL=opus", config_env)
-            self.assertIn("VSCODE_CLAUDE_MODEL=gpt-5.5", config_env)
-            self.assertIn("CODEX_MODEL=gpt-5.3-codex", config_env)
+            self.assertIn("VSCODE_CLAUDE_MODEL=opus", config_env)
+            self.assertIn("CODEX_MODEL=claude-opus-4-8", config_env)
             settings = json.loads((root / "root-home" / ".claude" / "settings.json").read_text(encoding="utf-8"))
             self.assertEqual(settings["env"]["CLAUDE_MODEL"], "opus")
+
+    def test_model_family_commands_reject_obvious_wrong_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            gpt_wrong = execute(parse_command("/ai GPT模型 设置 claude-code claude"), {"request_id": "model-wrong-gpt", "raw_text": "/ai GPT模型 设置 claude-code claude"}, runtime)
+            claude_wrong = execute(parse_command("/ai Claude模型 设置 codex gpt"), {"request_id": "model-wrong-claude", "raw_text": "/ai Claude模型 设置 codex gpt"}, runtime)
+
+            self.assertEqual(gpt_wrong["status"], "error")
+            self.assertEqual(gpt_wrong["error"]["code"], "wrong_model_family")
+            self.assertIn("Claude 模型请使用", gpt_wrong["error"]["detail"])
+            self.assertEqual(claude_wrong["status"], "error")
+            self.assertEqual(claude_wrong["error"]["code"], "wrong_model_family")
+            self.assertIn("GPT 模型请使用", claude_wrong["error"]["detail"])
+
+    def test_legacy_model_select_still_works_for_existing_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            env = {"AI_TOOL_HOME": str(root / "root-home")}
+            with patch.dict("os.environ", env, clear=False):
+                response = execute(parse_command("/ai 模型 使用 claude-code code claude-opus-4-8"), {"request_id": "legacy-model", "raw_text": "/ai 模型 使用 claude-code code claude-opus-4-8"}, runtime)
+
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(response["message_zh"], "模型已更新")
+            self.assertEqual(response["data"]["model"], "claude-opus-4-8")
 
     def test_model_select_handles_split_provider_aliases_without_polluting_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

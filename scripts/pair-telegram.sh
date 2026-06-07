@@ -247,6 +247,8 @@ commands = [
     {"command": "codex", "description": "切换到 Codex 或直接让 Codex 执行任务"},
     {"command": "vscode", "description": "切换到 VSCode 或直接让 VSCode 执行任务"},
     {"command": "claude", "description": "切换到 Claude Code 或直接让 Claude Code 执行任务"},
+    {"command": "gptmodel", "description": "切换 GPT 模型"},
+    {"command": "claudemodel", "description": "切换 Claude 模型"},
     {"command": "shell", "description": "执行本机 shell 命令"},
 ]
 req = request.Request(
