@@ -67,7 +67,7 @@ path.write_text(json.dumps({"OPENAI_API_KEY": sys.argv[2]}, indent=2), encoding=
 path.chmod(0o600)
 PY
 fi
-if [ -n "$CODEX_REVIEW_BASE_URL" ] && [ -f "$CODEX_HOME_FRESH/config.toml" ]; then
+if [ -n "$CODEX_REVIEW_BASE_URL" ]; then
   python3 - "$CODEX_HOME_FRESH/config.toml" "$CODEX_REVIEW_BASE_URL" <<'PY'
 import re
 import sys
@@ -75,10 +75,16 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 base_url = sys.argv[2]
-text = path.read_text(encoding="utf-8")
-updated = re.sub(r'(?m)^(base_url\s*=\s*").*(")\s*$', rf'\1{base_url}\2', text, count=1)
+text = path.read_text(encoding="utf-8") if path.exists() else ""
+updated = re.sub(r'(?m)^(openai_base_url\s*=\s*").*(")\s*$', rf'\1{base_url}\2', text, count=1)
 if updated == text:
-    updated += f'\nbase_url = "{base_url}"\n'
+    updated = f'openai_base_url = "{base_url}"\n' + text
+if "[model_providers.OpenAI]" in updated:
+    replaced = re.sub(r'(?m)^(base_url\s*=\s*").*(")\s*$', rf'\1{base_url}\2', updated, count=1)
+    if replaced == updated:
+        updated = updated.replace("[model_providers.OpenAI]\n", f'[model_providers.OpenAI]\nbase_url = "{base_url}"\n', 1)
+    else:
+        updated = replaced
 path.write_text(updated, encoding="utf-8")
 PY
 fi
@@ -315,38 +321,54 @@ PY
     printf 'codex reviewer auth contains a test placeholder API key; set CODEX_REVIEW_API_KEY or OPENAI_API_KEY for the reviewer\n' > "$output"
     return 2
   fi
-  local cmd=(env HOME="$CODEX_HOME_FRESH" CODEX_HOME="$CODEX_HOME_FRESH" codex exec -c 'approval_policy="never"' -c 'network_access="enabled"' -c 'shell_environment_policy.inherit=all' --json)
-  if codex exec --help 2>&1 | grep -q -- '--dangerously-bypass-approvals-and-sandbox'; then
+  local help_text
+  help_text="$(codex exec --help 2>&1 || true)"
+  printf '%s' "$help_text" | grep -q -- '--json' || {
+    printf 'codex exec --json is required for review event capture\n' > "$output"
+    return 2
+  }
+  printf '%s' "$help_text" | grep -q -- '--output-last-message' || {
+    printf 'codex exec --output-last-message is required for review capture\n' > "$output"
+    return 2
+  }
+  local cmd=(env HOME="$CODEX_HOME_FRESH" CODEX_HOME="$CODEX_HOME_FRESH" TERM="${TERM:-xterm-256color}" codex exec -c 'approval_policy="never"' -c 'shell_environment_policy.inherit=all' --json)
+  if printf '%s' "$help_text" | grep -q -- '--ephemeral'; then
+    cmd+=(--ephemeral)
+  fi
+  if printf '%s' "$help_text" | grep -q -- '--color'; then
+    cmd+=(--color never)
+  fi
+  if printf '%s' "$help_text" | grep -q -- '--dangerously-bypass-approvals-and-sandbox'; then
     cmd+=(--dangerously-bypass-approvals-and-sandbox)
-  elif codex exec --help 2>&1 | grep -q -- '--sandbox'; then
+  elif printf '%s' "$help_text" | grep -q -- '--sandbox'; then
     cmd+=(--sandbox danger-full-access)
   else
     printf 'codex full access is unavailable: dangerous bypass or danger-full-access sandbox is required\n' > "$output"
     return 2
   fi
-  if codex exec --help 2>&1 | grep -q -- '--dangerously-bypass-hook-trust'; then
+  if printf '%s' "$help_text" | grep -q -- '--dangerously-bypass-hook-trust'; then
     cmd+=(--dangerously-bypass-hook-trust)
   fi
-  if codex exec --help 2>&1 | grep -q -- '--ignore-rules'; then
+  if printf '%s' "$help_text" | grep -q -- '--ignore-rules'; then
     cmd+=(--ignore-rules)
   fi
-  if codex exec --help 2>&1 | grep -q -- '--add-dir'; then
+  if printf '%s' "$help_text" | grep -q -- '--add-dir'; then
     cmd+=(--add-dir "$CODEX_REPO")
   else
     printf 'codex full access is unavailable: --add-dir is required for isolated review snapshots\n' > "$output"
     return 2
   fi
-  if codex exec --help 2>&1 | grep -q -- '--skip-git-repo-check'; then
+  if printf '%s' "$help_text" | grep -q -- '--skip-git-repo-check'; then
     cmd+=(--skip-git-repo-check)
   fi
   if [ -n "$CODEX_REVIEWER_MODEL" ]; then
     cmd+=(--model "$CODEX_REVIEWER_MODEL")
   fi
-  if codex exec --help 2>&1 | grep -q -- '--max-budget-usd'; then
+  if printf '%s' "$help_text" | grep -q -- '--max-budget-usd'; then
     cmd+=(--max-budget-usd "$CODEX_REVIEW_MAX_BUDGET_USD")
   fi
-	  cmd+=(--cd "$CODEX_REPO" --output-last-message "$last_message" -- "$(cat "$CODEX_PROMPT")")
-  timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" "${cmd[@]}" > "$CODEX_PRIVATE_DIR/review.raw.jsonl" 2> "$CODEX_PRIVATE_DIR/review.stderr" || return $?
+  cmd+=(--cd "$CODEX_REPO" --output-last-message "$last_message" -- -)
+  timeout "$CODEX_REVIEW_TIMEOUT_SECONDS" "${cmd[@]}" < "$CODEX_PROMPT" > "$CODEX_PRIVATE_DIR/review.raw.jsonl" 2> "$CODEX_PRIVATE_DIR/review.stderr" || return $?
   if [ -f "$last_message" ]; then
     cp "$last_message" "$output"
   else

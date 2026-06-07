@@ -67,7 +67,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--dangerously-bypass-hook-trust] [--ignore-rules] [--add-dir] [--skip-git-repo-check]\\n'
+                  printf 'usage: codex exec [--json] [--output-last-message] [--ephemeral] [--color] [--dangerously-bypass-approvals-and-sandbox] [--dangerously-bypass-hook-trust] [--ignore-rules] [--add-dir] [--skip-git-repo-check]\\n'
                   exit 0
                 fi
                 printf '{"tool":"codex","args":%s}\\n' "$(python3 - "$@" <<'PY'
@@ -158,11 +158,16 @@ PY
             self.assertNotIn("bypassPermissions", claude_args)
             self.assertNotIn("--dangerously-skip-permissions", claude_args)
             self.assertIn("--dangerously-bypass-approvals-and-sandbox", codex_args)
+            self.assertIn("shell_environment_policy.inherit=all", codex_args)
+            self.assertNotIn("sandbox_workspace_write.network_access=true", codex_args)
+            self.assertNotIn('network_access="enabled"', codex_args)
             self.assertIn("--dangerously-bypass-hook-trust", codex_args)
             self.assertIn("--ignore-rules", codex_args)
             self.assertIn("--add-dir", codex_args)
             self.assertIn(str(run_dir / "snapshots" / "codex-repo"), codex_args)
             self.assertNotIn("--max-budget-usd", codex_args)
+            self.assertEqual(codex_args[-1], "-")
+            self.assertNotIn("Run this review as a fresh conversation", codex_args)
 
     def test_codex_review_base_url_override_replaces_placeholder_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -190,7 +195,7 @@ PY
                 f"""
                 #!/usr/bin/env bash
                 if [ "${{1:-}}" = "exec" ] && [ "${{2:-}}" = "--help" ]; then
-                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
+                  printf 'usage: codex exec [--json] [--output-last-message] [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
                   exit 0
                 fi
                 cp "${{CODEX_HOME:?}}/config.toml" "{observed_config}"
@@ -224,7 +229,9 @@ PY
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('base_url = "https://review.example/v1"', observed_config.read_text(encoding="utf-8"))
+            observed_text = observed_config.read_text(encoding="utf-8")
+            self.assertIn('openai_base_url = "https://review.example/v1"', observed_text)
+            self.assertIn('base_url = "https://review.example/v1"', observed_text)
 
     def test_codex_review_api_key_override_replaces_placeholder_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -249,7 +256,7 @@ PY
                 f"""
                 #!/usr/bin/env bash
                 if [ "${{1:-}}" = "exec" ] && [ "${{2:-}}" = "--help" ]; then
-                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
+                  printf 'usage: codex exec [--json] [--output-last-message] [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
                   exit 0
                 fi
                 cp "${{CODEX_HOME:?}}/auth.json" "{observed_auth}"
@@ -305,7 +312,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--add-dir] [--max-budget-usd]\\n'
+                  printf 'usage: codex exec [--json] [--output-last-message] [--dangerously-bypass-approvals-and-sandbox] [--add-dir] [--max-budget-usd]\\n'
                   exit 0
                 fi
                 printf '{"args":%s}\\n' "$(python3 - "$@" <<'PY'
@@ -401,7 +408,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
+                  printf 'usage: codex exec [--json] [--output-last-message] [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
                   exit 0
                 fi
                 last=''
@@ -455,7 +462,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
+                  printf 'usage: codex exec [--json] [--output-last-message] [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
                   exit 0
                 fi
                 last=''
@@ -504,7 +511,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
+                  printf 'usage: codex exec [--json] [--output-last-message] [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
                   exit 0
                 fi
                 last=''

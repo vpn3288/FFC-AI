@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import tempfile
 import threading
@@ -19,6 +20,30 @@ from ai_remote_runner.security import b64url_encode, sign_body
 
 
 class BridgeHTTPTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patcher = patch.dict("os.environ", {}, clear=False)
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+        for key in (
+            "AI_RUNNER_PROVIDERS",
+            "AI_PERMISSION_SCOPE",
+            "AI_REQUIRE_SHELL_CONFIRMATION",
+            "AI_TASK_RESERVED_USD",
+            "OPENAI_API_KEY",
+            "CODEX_BASE_URL",
+            "CODEX_MODEL",
+            "CODEX_HOME",
+            "AI_CODEX_HOME",
+            "AI_TOOL_HOME",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_MODEL",
+            "VSCODE_CLAUDE_MODEL",
+            "MATTERMOST_SLASH_TOKEN",
+        ):
+            os.environ.pop(key, None)
+
     def _server(self, tmp: str) -> tuple[ThreadingHTTPServer, str, str]:
         secret = b64url_encode(secrets.token_bytes(32))
         server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)

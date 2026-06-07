@@ -21,6 +21,10 @@ MAX_TELEGRAM_MESSAGE_CHARS = 3900
 DEFAULT_TELEGRAM_RESERVED_USD = 0.20
 
 
+def _new_draft_id() -> int:
+    return uuid.uuid4().int % 2_147_483_647 or 1
+
+
 def load_config_env(root: Path | None = None) -> None:
     path = (root or state_root()) / "config.env"
     if not path.exists():
@@ -43,8 +47,13 @@ class TelegramConfig:
     poll_timeout_seconds: int = 30
     reserved_usd: float = DEFAULT_TELEGRAM_RESERVED_USD
     status_interval_seconds: float = 5.0
+    status_min_update_seconds: float = 0.0
     task_ttl_seconds: int = 21600
     clear_webhook_on_startup: bool = True
+    sync_commands_on_startup: bool = True
+    allowed_updates: tuple[str, ...] = ("message", "edited_message", "callback_query")
+    native_draft_progress: bool = False
+    native_draft_allow_chat_ids: frozenset[str] = frozenset()
 
     @classmethod
     def from_env(cls) -> "TelegramConfig":
@@ -53,6 +62,9 @@ class TelegramConfig:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
         raw_ids = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
         allowed = {item.strip() for item in raw_ids.split(",") if item.strip()}
+        raw_allowed_updates = os.environ.get("TELEGRAM_ALLOWED_UPDATES", "message,edited_message,callback_query")
+        allowed_updates = tuple(item.strip() for item in raw_allowed_updates.split(",") if item.strip())
+        raw_draft_allow = os.environ.get("TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS", "")
         return cls(
             token=token,
             allowed_chat_ids=allowed,
@@ -60,8 +72,13 @@ class TelegramConfig:
             poll_timeout_seconds=int(os.environ.get("TELEGRAM_POLL_TIMEOUT_SECONDS", "30")),
             reserved_usd=float(os.environ.get("TELEGRAM_RESERVED_USD", str(DEFAULT_TELEGRAM_RESERVED_USD))),
             status_interval_seconds=max(0.0, float(os.environ.get("TELEGRAM_STATUS_INTERVAL_SECONDS", "5"))),
+            status_min_update_seconds=max(0.0, float(os.environ.get("TELEGRAM_STATUS_MIN_UPDATE_SECONDS", "0.8"))),
             task_ttl_seconds=max(60, int(os.environ.get("TELEGRAM_TASK_TTL_SECONDS", "21600"))),
             clear_webhook_on_startup=os.environ.get("TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP", "1").lower() not in {"0", "false", "no"},
+            sync_commands_on_startup=os.environ.get("TELEGRAM_SYNC_COMMANDS_ON_STARTUP", "1").lower() not in {"0", "false", "no"},
+            allowed_updates=allowed_updates or ("message", "edited_message", "callback_query"),
+            native_draft_progress=os.environ.get("TELEGRAM_NATIVE_DRAFT_PROGRESS", "0").lower() in {"1", "true", "yes"},
+            native_draft_allow_chat_ids=frozenset(item.strip() for item in raw_draft_allow.split(",") if item.strip()),
         )
 
 
@@ -87,7 +104,7 @@ class TelegramClient:
         return data
 
     def get_updates(self, offset: int | None, timeout_seconds: int) -> list[dict[str, Any]]:
-        payload: dict[str, Any] = {"timeout": timeout_seconds, "allowed_updates": ["message"]}
+        payload: dict[str, Any] = {"timeout": timeout_seconds, "allowed_updates": list(self.config.allowed_updates)}
         if offset is not None:
             payload["offset"] = offset
         return list(self.call("getUpdates", payload, timeout=timeout_seconds + 10).get("result", []))
@@ -101,17 +118,23 @@ class TelegramClient:
     def delete_webhook(self, drop_pending_updates: bool = False) -> bool:
         return bool(self.call("deleteWebhook", {"drop_pending_updates": drop_pending_updates}, timeout=15).get("result"))
 
-    def send_message(self, chat_id: str, text: str) -> dict[str, Any]:
+    def set_my_commands(self, commands: list[dict[str, str]]) -> bool:
+        return bool(self.call("setMyCommands", {"commands": commands}, timeout=15).get("result"))
+
+    def send_message(self, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> dict[str, Any]:
         last_result: dict[str, Any] = {}
         chunks = [text[i : i + MAX_TELEGRAM_MESSAGE_CHARS] for i in range(0, len(text), MAX_TELEGRAM_MESSAGE_CHARS)] or [""]
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks):
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            }
+            if reply_markup and index == 0:
+                payload["reply_markup"] = reply_markup
             result = self.call(
                 "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": chunk,
-                    "disable_web_page_preview": True,
-                },
+                payload,
                 timeout=10,
             ).get("result")
             if isinstance(result, dict):
@@ -134,6 +157,16 @@ class TelegramClient:
     def send_chat_action(self, chat_id: str, action: str = "typing") -> None:
         self.call("sendChatAction", {"chat_id": chat_id, "action": action}, timeout=10)
 
+    def send_message_draft(self, chat_id: str, draft_id: int, text: str) -> bool:
+        payload = {"chat_id": int(chat_id), "draft_id": draft_id, "text": text[:4096]}
+        return bool(self.call("sendMessageDraft", payload, timeout=10).get("result"))
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text[:200]
+        return bool(self.call("answerCallbackQuery", payload, timeout=10).get("result"))
+
 
 @dataclass
 class TelegramTask:
@@ -142,8 +175,10 @@ class TelegramTask:
     message_id: int | None
     started_at: float
     provider: str
+    draft_id: int = 1
     status_message_id: int | None = None
     last_status_text: str = ""
+    last_status_update_at: float = 0.0
     done: bool = False
     response: dict[str, Any] | None = None
 
@@ -196,6 +231,7 @@ class TelegramBot:
                 except json.JSONDecodeError:
                     data = {}
             data[task.task_id] = {
+                "task_id": task.task_id,
                 "chat_id": task.chat_id,
                 "message_id": task.message_id,
                 "status_message_id": task.status_message_id,
@@ -207,14 +243,19 @@ class TelegramBot:
             }
             cutoff = int(time.time()) - self.config.task_ttl_seconds
             data = {key: value for key, value in data.items() if int(value.get("started_at", 0)) >= cutoff or not value.get("done")}
-            atomic_write_json(self.tasks_path, data)
+            try:
+                atomic_write_json(self.tasks_path, data)
+            except FileNotFoundError:
+                # Tests and local teardown can remove the transient state dir while a daemon
+                # Telegram task is finishing; do not let that crash the background runner.
+                return
 
     def chat_allowed(self, chat_id: str) -> bool:
         return chat_id in self.config.allowed_chat_ids
 
-    def safe_send_message(self, chat_id: str, text: str) -> dict[str, Any] | None:
+    def safe_send_message(self, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> dict[str, Any] | None:
         try:
-            return self.client.send_message(chat_id, text)
+            return self.client.send_message(chat_id, text, reply_markup=reply_markup)
         except Exception as exc:  # pragma: no cover - depends on Telegram/network failures
             self.state.mkdir(parents=True, exist_ok=True)
             with (self.state / "telegram-send-failures.jsonl").open("a", encoding="utf-8") as fh:
@@ -275,6 +316,52 @@ class TelegramBot:
                 )
             return False
 
+    def safe_send_message_draft(self, chat_id: str, draft_id: int, text: str) -> bool:
+        if not self.config.native_draft_progress:
+            return False
+        if self.config.native_draft_allow_chat_ids and "*" not in self.config.native_draft_allow_chat_ids and chat_id not in self.config.native_draft_allow_chat_ids:
+            return False
+        if draft_id <= 0:
+            return False
+        try:
+            return self.client.send_message_draft(chat_id, draft_id, text)
+        except Exception as exc:  # pragma: no cover - depends on Telegram/network/API version failures
+            with (self.state / "telegram-send-failures.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "time": int(time.time()),
+                            "chat_id": chat_id,
+                            "draft_text_chars": len(text),
+                            "error": str(exc)[:500],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            return False
+
+    def safe_answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+        try:
+            return self.client.answer_callback_query(callback_query_id, text)
+        except Exception as exc:  # pragma: no cover - depends on Telegram/network failures
+            with (self.state / "telegram-send-failures.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "time": int(time.time()),
+                            "callback_query_id": callback_query_id,
+                            "answer_text": text[:200],
+                            "error": str(exc)[:500],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            return False
+
     def pairing_hint(self, chat_id: str) -> str:
         return (
             "Telegram bot 已安装，但这个 chat 还没有配对。\n"
@@ -282,28 +369,81 @@ class TelegramBot:
             "在 runner 机器上运行 pair-telegram.sh，把这个 chat_id 加入允许列表后再发送 /ai 状态。"
         )
 
+    def telegram_menu_commands(self) -> list[dict[str, str]]:
+        return [
+            {"command": "ai", "description": "运行 AI 或管理 runner"},
+            {"command": "status", "description": "查看 runner 和 Codex 状态"},
+            {"command": "help", "description": "显示 /ai 命令帮助"},
+            {"command": "features", "description": "显示可用功能和 provider"},
+            {"command": "codex", "description": "切换到 Codex 或直接让 Codex 执行任务"},
+            {"command": "shell", "description": "执行本机 shell 命令"},
+        ]
+
+    def confirmation_reply_markup(self, response: dict[str, Any]) -> dict[str, Any] | None:
+        if response.get("status") != "needs_confirmation":
+            return None
+        token = str(response.get("data", {}).get("confirmation_token") or "")
+        if not token:
+            return None
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "确认执行", "callback_data": f"confirm:{token}"},
+                    {"text": "取消", "callback_data": f"cancel:{token}"},
+                ]
+            ]
+        }
+
+    def safe_send_response(self, chat_id: str, response: dict[str, Any]) -> dict[str, Any] | None:
+        return self.safe_send_message(chat_id, self.response_text(response), reply_markup=self.confirmation_reply_markup(response))
+
     def normalize_text(self, text: str) -> str:
         stripped = text.strip()
         if stripped.startswith("/ai@"):
             head, _, tail = stripped.partition(" ")
             if head.startswith("/ai@"):
                 return "/ai " + tail.strip()
+        if stripped.startswith("/codex@"):
+            head, _, tail = stripped.partition(" ")
+            if head.startswith("/codex@"):
+                tail = tail.strip()
+                return "/codex " + tail if tail else "/ai 提供商 使用 codex"
+        if stripped.startswith("/shell@"):
+            head, _, tail = stripped.partition(" ")
+            if head.startswith("/shell@"):
+                return "/shell " + tail.strip()
         if stripped == "/start":
             return "/ai 帮助"
         if stripped == "/help":
             return "/ai 帮助"
         if stripped == "/status":
             return "/ai 状态"
+        if stripped == "/features":
+            return "/ai 功能"
+        if stripped == "/codex":
+            return "/ai 提供商 使用 codex"
+        if stripped.startswith("/codex "):
+            return stripped
+        if stripped.startswith("/shell "):
+            return stripped
         return stripped
 
     def parsed_for_text(self, text: str) -> dict[str, Any]:
+        if text.startswith("/codex "):
+            prompt = text.removeprefix("/codex ").strip()
+            if prompt:
+                return {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": prompt, "provider": "codex"}, "requires_confirmation": False}
+        if text.startswith("/shell "):
+            command = text.removeprefix("/shell ").strip()
+            if command:
+                return {"status": "accepted", "canonical_action": "local.exec", "args": {"tail": [command]}, "requires_confirmation": False}
         parsed = parse_command(text, allow_bare=True)
-        if parsed.get("canonical_action") == "task.run" and not self.ai_providers_configured():
-            return {"status": "rejected", "error": "ai_provider_not_configured"}
         if parsed.get("status") == "rejected" and parsed.get("error") == "command_must_start_with_/ai" and not text.startswith("/"):
             if not self.ai_providers_configured():
                 return {"status": "rejected", "error": "ai_provider_not_configured"}
             return {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": text}, "requires_confirmation": False}
+        if parsed.get("canonical_action") == "task.run" and not self.ai_providers_configured():
+            return {"status": "rejected", "error": "ai_provider_not_configured"}
         return parsed
 
     def response_text(self, response: dict[str, Any]) -> str:
@@ -325,6 +465,31 @@ class TelegramBot:
             except json.JSONDecodeError:
                 pass
         return configured[0] if configured else "none"
+
+    def provider_for_parsed(self, parsed: dict[str, Any]) -> str:
+        action = parsed.get("canonical_action")
+        args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
+        requested = args.get("provider") if isinstance(args, dict) else None
+        if isinstance(requested, str) and requested:
+            return requested
+        if action == "task.run":
+            return self.default_provider()
+        if action == "codex.doctor":
+            return "codex"
+        return "runner"
+
+    def action_runs_in_background(self, parsed: dict[str, Any]) -> bool:
+        return parsed.get("canonical_action") in {"task.run", "local.exec", "codex.doctor"}
+
+    def confirmation_runs_background(self, parsed: dict[str, Any]) -> bool:
+        token = self.confirmation_token(parsed)
+        if not token:
+            return False
+        item = self.confirmations().get(token)
+        if not isinstance(item, dict):
+            return False
+        saved_parsed = item.get("parsed")
+        return isinstance(saved_parsed, dict) and self.action_runs_in_background(saved_parsed)
 
     def configured_providers(self) -> list[str]:
         raw = os.environ.get("AI_RUNNER_PROVIDERS")
@@ -366,12 +531,13 @@ class TelegramBot:
         )
 
     def start_status_message(self, chat_id: str, provider: str, message_id: int | None) -> TelegramTask:
-        task = TelegramTask(task_id=str(uuid.uuid4()), chat_id=chat_id, message_id=message_id, started_at=time.time(), provider=provider)
+        task = TelegramTask(task_id=str(uuid.uuid4()), chat_id=chat_id, message_id=message_id, started_at=time.time(), provider=provider, draft_id=_new_draft_id())
         text = self.status_text(task, "排队中。")
         result = self.safe_send_message(chat_id, text)
         if result and isinstance(result.get("message_id"), int):
             task.status_message_id = int(result["message_id"])
         task.last_status_text = text
+        task.last_status_update_at = 0.0
         self.save_task_status(task)
         return task
 
@@ -379,8 +545,14 @@ class TelegramBot:
         text = self.status_text(task, message)
         if not force and text == task.last_status_text:
             return
+        now = time.time()
+        if not force and self.config.status_min_update_seconds > 0 and task.last_status_update_at > 0:
+            if now - task.last_status_update_at < self.config.status_min_update_seconds:
+                return
         task.last_status_text = text
+        task.last_status_update_at = now
         self.safe_send_chat_action(task.chat_id, "typing")
+        self.safe_send_message_draft(task.chat_id, task.draft_id, text)
         if task.status_message_id is not None and self.safe_edit_message_text(task.chat_id, task.status_message_id, text):
             self.save_task_status(task)
             return
@@ -439,13 +611,29 @@ class TelegramBot:
             "data": {},
         }
 
-    def task_runtime(self, task: TelegramTask) -> RunnerRuntime:
-        provider = self.default_provider()
+    def task_runtime(self, task: TelegramTask, parsed: dict[str, Any]) -> RunnerRuntime:
+        provider = self.provider_for_parsed(parsed)
         if provider == "none":
             raise RuntimeError("ai_provider_not_configured")
         task.provider = provider
         self.update_status_message(task, "排队中。", force=True)
         return self.runtime.with_event_observer(self.task_event_observer(task))
+
+    def confirmation_token(self, parsed: dict[str, Any]) -> str:
+        if parsed.get("canonical_action") != "confirm":
+            return ""
+        return " ".join(parsed.get("args", {}).get("tail", [])).strip()
+
+    def confirmation_runs_ai_task(self, parsed: dict[str, Any]) -> bool:
+        token = self.confirmation_token(parsed)
+        if not token:
+            return False
+        pending = self.confirmations()
+        item = pending.get(token)
+        if not isinstance(item, dict):
+            return False
+        saved_parsed = item.get("parsed")
+        return isinstance(saved_parsed, dict) and saved_parsed.get("canonical_action") == "task.run"
 
     def execute_text(self, chat_id: str, message: dict[str, Any], text: str, task: TelegramTask | None = None) -> dict[str, Any]:
         request_id = f"telegram:{chat_id}:{message.get('message_id') or uuid.uuid4()}"
@@ -470,10 +658,10 @@ class TelegramBot:
             if not item:
                 return {"request_id": request_id, "status": "rejected", "error": {"code": "confirmation_not_found", "detail": "confirmation_not_found"}, "data": {}}
             item["envelope"]["confirmed"] = True
-            if item["parsed"].get("canonical_action") == "task.run":
+            if self.action_runs_in_background(item["parsed"]):
                 if task is None:
-                    task = self.start_status_message(chat_id, self.default_provider(), int(message["message_id"]) if isinstance(message.get("message_id"), int) else None)
-                runtime = self.task_runtime(task)
+                    task = self.start_status_message(chat_id, self.provider_for_parsed(item["parsed"]), int(message["message_id"]) if isinstance(message.get("message_id"), int) else None)
+                runtime = self.task_runtime(task, item["parsed"])
                 return self.execute_with_status(task, item["parsed"], item["envelope"], runtime)
             return execute(item["parsed"], item["envelope"], self.runtime)
 
@@ -486,11 +674,15 @@ class TelegramBot:
             "raw_text": text,
             "reserved_usd": float(os.environ.get("TELEGRAM_RESERVED_USD", str(self.config.reserved_usd))),
         }
+        parsed_args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
+        requested_provider = parsed_args.get("provider") if isinstance(parsed_args, dict) else None
+        if isinstance(requested_provider, str) and requested_provider:
+            envelope["provider"] = requested_provider
         runtime = self.runtime
-        if parsed.get("canonical_action") == "task.run":
+        if self.action_runs_in_background(parsed):
             if task is None:
-                task = self.start_status_message(chat_id, self.default_provider(), int(message["message_id"]) if isinstance(message.get("message_id"), int) else None)
-            runtime = self.task_runtime(task)
+                task = self.start_status_message(chat_id, self.provider_for_parsed(parsed), int(message["message_id"]) if isinstance(message.get("message_id"), int) else None)
+            runtime = self.task_runtime(task, parsed)
             response = self.execute_with_status(task, parsed, envelope, runtime)
         else:
             response = execute(parsed, envelope, runtime)
@@ -502,8 +694,9 @@ class TelegramBot:
                 self.save_confirmations(pending)
         return response
 
-    def run_task_background(self, chat_id: str, message: dict[str, Any], text: str) -> TelegramTask:
-        task = self.start_status_message(chat_id, self.default_provider(), int(message["message_id"]) if isinstance(message.get("message_id"), int) else None)
+    def run_task_background(self, chat_id: str, message: dict[str, Any], text: str, parsed: dict[str, Any] | None = None) -> TelegramTask:
+        parsed_for_provider = parsed or self.parsed_for_text(text)
+        task = self.start_status_message(chat_id, self.provider_for_parsed(parsed_for_provider), int(message["message_id"]) if isinstance(message.get("message_id"), int) else None)
 
         def run() -> None:
             try:
@@ -521,7 +714,8 @@ class TelegramBot:
             task.done = True
             final_status = "已完成，正在发送最终回复。" if response.get("status") in {"accepted", "completed", "needs_confirmation"} else "执行失败，正在发送错误信息。"
             self.update_status_message(task, final_status, force=True)
-            self.safe_send_message(chat_id, self.response_text(response))
+            self.safe_send_message_draft(chat_id, task.draft_id, "")
+            self.safe_send_response(chat_id, response)
             self.save_task_status(task)
 
         with self._tasks_lock:
@@ -530,8 +724,53 @@ class TelegramBot:
         thread.start()
         return task
 
+    def handle_callback_query(self, callback_query: dict[str, Any]) -> bool:
+        callback_query_id = str(callback_query.get("id") or "")
+        data = str(callback_query.get("data") or "")
+        message = callback_query.get("message") if isinstance(callback_query.get("message"), dict) else {}
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        chat_id_value = chat.get("id")
+        if chat_id_value is None:
+            self.safe_answer_callback_query(callback_query_id, "缺少 chat_id")
+            return False
+        chat_id = str(chat_id_value)
+        if not self.chat_allowed(chat_id):
+            self.safe_answer_callback_query(callback_query_id, "这个 chat 还没有配对")
+            self.safe_send_message(chat_id, self.pairing_hint(chat_id))
+            return True
+        if data.startswith("cancel:"):
+            token = data.removeprefix("cancel:").strip()
+            pending = self.confirmations()
+            removed = pending.pop(token, None)
+            self.save_confirmations(pending)
+            self.safe_answer_callback_query(callback_query_id, "已取消" if removed else "确认请求不存在或已过期")
+            if isinstance(message.get("message_id"), int):
+                self.safe_edit_message_text(chat_id, int(message["message_id"]), "已取消。")
+            return True
+        if data.startswith("confirm:"):
+            token = data.removeprefix("confirm:").strip()
+            normalized = f"/ai 确认 {token}"
+            parsed = self.parsed_for_text(normalized)
+            self.safe_answer_callback_query(callback_query_id, "已确认，开始执行")
+            synthetic_message = {
+                "message_id": message.get("message_id"),
+                "chat": {"id": chat_id},
+                "from": callback_query.get("from") or {},
+                "text": normalized,
+            }
+            if self.confirmation_runs_background(parsed):
+                self.run_task_background(chat_id, synthetic_message, normalized, parsed)
+                return True
+            response = self.execute_text(chat_id, synthetic_message, normalized)
+            self.safe_send_response(chat_id, response)
+            return True
+        self.safe_answer_callback_query(callback_query_id, "未知按钮")
+        return True
+
     def handle_update(self, update: dict[str, Any]) -> bool:
-        message = update.get("message") or {}
+        if isinstance(update.get("callback_query"), dict):
+            return self.handle_callback_query(update["callback_query"])
+        message = update.get("message") or update.get("edited_message") or {}
         chat = message.get("chat") or {}
         chat_id_value = chat.get("id")
         text = message.get("text")
@@ -543,11 +782,11 @@ class TelegramBot:
             return True
         normalized = self.normalize_text(text)
         parsed = self.parsed_for_text(normalized)
-        if parsed.get("canonical_action") == "task.run":
-            self.run_task_background(chat_id, message, normalized)
+        if self.action_runs_in_background(parsed) or self.confirmation_runs_background(parsed):
+            self.run_task_background(chat_id, message, normalized, parsed)
             return True
         response = self.execute_text(chat_id, message, normalized)
-        self.safe_send_message(chat_id, self.response_text(response))
+        self.safe_send_response(chat_id, response)
         return True
 
     def startup_check(self) -> None:
@@ -556,6 +795,8 @@ class TelegramBot:
             raise RuntimeError("telegram_token_is_not_bot")
         if self.config.clear_webhook_on_startup:
             self.client.delete_webhook(drop_pending_updates=False)
+        if self.config.sync_commands_on_startup:
+            self.client.set_my_commands(self.telegram_menu_commands())
 
     def poll_forever(self) -> None:
         self.startup_check()

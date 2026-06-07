@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,8 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*(?!<|\\$|\\{)[A-Za-z0-9_-]{32,}\b")),
 )
 DEFAULT_TASK_RESERVED_USD = 0.20
+DEFAULT_LOCAL_EXEC_TIMEOUT_SECONDS = 300
+DEFAULT_LOCAL_EXEC_MAX_OUTPUT_BYTES = 120000
 
 
 @dataclass
@@ -200,6 +203,58 @@ def _default_reserved_usd() -> float:
     return max(0.0, value)
 
 
+def _local_exec_timeout_seconds() -> int:
+    raw = os.environ.get("AI_LOCAL_EXEC_TIMEOUT_SECONDS", str(DEFAULT_LOCAL_EXEC_TIMEOUT_SECONDS))
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return DEFAULT_LOCAL_EXEC_TIMEOUT_SECONDS
+    return min(86400, max(1, value))
+
+
+def _local_exec_max_output_bytes() -> int:
+    raw = os.environ.get("AI_LOCAL_EXEC_MAX_OUTPUT_BYTES", str(DEFAULT_LOCAL_EXEC_MAX_OUTPUT_BYTES))
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return DEFAULT_LOCAL_EXEC_MAX_OUTPUT_BYTES
+    return min(5_000_000, max(1024, value))
+
+
+def _trim_utf8(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip() + "\n...(output truncated)"
+
+
+def _preview_command(command: str, max_chars: int = 180) -> str:
+    compact = " ".join(command.split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 6].rstrip() + " ..."
+
+
+def _local_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    if not env.get("TERM") or env.get("TERM") == "dumb":
+        env["TERM"] = "xterm-256color"
+    return env
+
+
+def _format_local_exec_output(command: str, cwd: Path, returncode: int | str, stdout: str, stderr: str, max_bytes: int) -> str:
+    sections = [
+        f"command: {command}",
+        f"cwd: {cwd}",
+        f"exit_code: {returncode}",
+    ]
+    if stdout.strip():
+        sections.append("stdout:\n" + stdout.rstrip())
+    if stderr.strip():
+        sections.append("stderr:\n" + stderr.rstrip())
+    return _trim_utf8("\n\n".join(sections), max_bytes)
+
+
 def _policy_conversation_id(policy: dict[str, Any], provider: str) -> str:
     provider_map = policy.get("provider_conversations")
     if isinstance(provider_map, dict):
@@ -273,6 +328,27 @@ def _recent_run_events(rt: RunnerRuntime, limit: int = 10) -> list[dict[str, Any
     return sorted(runs.values(), key=lambda item: int(item.get("time") or 0), reverse=True)[:limit]
 
 
+def _telegram_tasks(rt: RunnerRuntime, limit: int = 10) -> list[dict[str, Any]]:
+    path = rt.state / "telegram-tasks.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    tasks = []
+    for task_id, item in data.items():
+        if not isinstance(item, dict):
+            continue
+        task = dict(item)
+        task.setdefault("task_id", task_id)
+        tasks.append(task)
+    tasks.sort(key=lambda item: int(item.get("started_at") or 0), reverse=True)
+    return tasks[:limit]
+
+
 def _command_index_with_availability(items: list[dict[str, Any]], providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     any_provider_available = any(item.get("available") for item in providers)
     codex_available = any(item.get("provider") == "codex" and item.get("available") for item in providers)
@@ -307,6 +383,7 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "default_provider": default_provider or "none",
         "default_workspace": _selected_workspace(runtime) or "default",
         "recent_runs": _recent_run_events(runtime),
+        "telegram_tasks": _telegram_tasks(runtime),
         "state_root": str(runtime.state),
         "workspace_root": str(runtime.workspaces),
     }
@@ -375,6 +452,63 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             int(existing.get("hard_stop_threshold_percent", 95)),
         )
         return _ok(request_id, run_id, "上下文状态已生成", state.__dict__ | {"context_used_percent": state.context_used_percent, "policy": policy})
+    if action in {"local.exec", "codex.doctor"}:
+        if action == "codex.doctor":
+            command = os.environ.get("AI_CODEX_DOCTOR_COMMAND", "codex doctor --summary --ascii").strip()
+            provider = "codex"
+        else:
+            command = " ".join(args).strip()
+            provider = "runner"
+        if not command:
+            return _error(request_id, "missing_command", "usage: /ai shell <command> or /ai 脚本 运行 <command>")
+        workspace = rt.workspaces / workspace_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        timeout_seconds = _local_exec_timeout_seconds()
+        max_output_bytes = _local_exec_max_output_bytes()
+        rt.events.emit(status_event(run_id, "running_command", f"本机命令执行中：{_preview_command(command)}", provider))
+        try:
+            result = subprocess.run(
+                command,
+                cwd=workspace,
+                env=_local_subprocess_env(),
+                shell=True,
+                executable="/bin/bash",
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            output = _format_local_exec_output(command, workspace, "timeout", stdout, stderr, max_output_bytes)
+            rt.events.emit(status_event(run_id, "error", f"本机命令超时：{_preview_command(command)}", provider))
+            return {
+                "request_id": request_id,
+                "status": "error",
+                "run_id": run_id,
+                "message_zh": "命令执行超时",
+                "data": {"command": command, "cwd": str(workspace), "timeout_seconds": timeout_seconds, "output": output},
+                "error": {"code": "local_exec_timeout", "detail": output},
+            }
+        output = _format_local_exec_output(command, workspace, result.returncode, result.stdout, result.stderr, max_output_bytes)
+        if result.returncode != 0:
+            rt.events.emit(status_event(run_id, "error", f"本机命令失败：exit={result.returncode} {_preview_command(command)}", provider))
+            return {
+                "request_id": request_id,
+                "status": "error",
+                "run_id": run_id,
+                "message_zh": "命令执行失败",
+                "data": {"command": command, "cwd": str(workspace), "exit_code": result.returncode, "output": output},
+                "error": {"code": f"local_exec_exit_{result.returncode}", "detail": output},
+            }
+        rt.events.emit(status_event(run_id, "done", f"本机命令完成：{_preview_command(command)}", provider))
+        return _ok(
+            request_id,
+            run_id,
+            "命令执行完成",
+            {"command": command, "cwd": str(workspace), "exit_code": result.returncode, "output": output},
+        )
     if action == "task.run":
         prompt = parsed.get("args", {}).get("prompt") or envelope.get("raw_text", "")
         provider = envelope.get("provider") or _default_provider(rt)

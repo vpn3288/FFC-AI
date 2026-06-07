@@ -240,7 +240,7 @@ CODEX_EXEC_TEMPLATE = [
     "-c",
     'approval_policy="never"',
     "-c",
-    "network_access=\"enabled\"",
+    "sandbox_workspace_write.network_access=true",
     "-c",
     "shell_environment_policy.inherit=all",
     "--json",
@@ -400,29 +400,51 @@ def _codex_jsonl_last_agent_message(output: str) -> str:
     return last_message
 
 
-def _codex_item_label(item: dict[str, Any]) -> str:
+def _preview_text(text: str, max_chars: int = 180) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 6].rstrip() + " ..."
+
+
+def _codex_item_label(item: dict[str, Any], event_type: str = "") -> str:
     item_type = str(item.get("type") or "item")
     if item_type == "command_execution":
         command = item.get("command")
-        return f"运行命令：{str(command)[:160]}" if command else "正在运行命令。"
+        command_text = _preview_text(str(command), 180) if command else ""
+        if event_type == "item.completed":
+            exit_code = item.get("exit_code")
+            if exit_code is not None:
+                return f"命令已完成：exit={exit_code} {command_text}".strip()
+            return f"命令已完成：{command_text}".strip() if command_text else "命令已完成。"
+        return f"运行命令：{command_text}" if command_text else "正在运行命令。"
     if item_type == "file_change":
         path = item.get("path") or item.get("file")
+        if event_type == "item.completed":
+            return f"文件修改已完成：{path}" if path else "文件修改已完成。"
         return f"正在修改文件：{path}" if path else "正在修改文件。"
     if item_type == "reasoning":
         return "正在推理和规划。"
     if item_type == "mcp_tool_call":
         name = item.get("name") or item.get("tool")
+        if event_type == "item.completed":
+            return f"MCP 工具调用已完成：{name}" if name else "MCP 工具调用已完成。"
         return f"正在调用 MCP 工具：{name}" if name else "正在调用 MCP 工具。"
     if item_type == "web_search":
+        if event_type == "item.completed":
+            return "联网检索已完成。"
         return "正在联网检索。"
     if item_type == "plan_update":
         return "正在更新执行计划。"
     if item_type == "agent_message":
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            return f"正在整理最终回复：{_preview_text(text)}"
         return "正在生成回复。"
     return f"正在处理 {item_type}。"
 
 
-def _codex_event_phase(item: dict[str, Any]) -> str:
+def _codex_event_phase(item: dict[str, Any], event_type: str = "") -> str:
     item_type = str(item.get("type") or "")
     if item_type == "command_execution":
         return "running_command"
@@ -435,10 +457,58 @@ def _codex_event_phase(item: dict[str, Any]) -> str:
     return "running"
 
 
-def _emit_codex_jsonl_events(output: str, run_id: str, emit: Callable[[dict[str, Any]], None] | None) -> None:
+def _emit_codex_jsonl_event(event: dict[str, Any], run_id: str, emit: Callable[[dict[str, Any]], None], seen: set[str]) -> None:
+    event_type = str(event.get("type") or "")
+    if event_type == "thread.started":
+        thread_id = event.get("thread_id")
+        message = "Codex 会话已创建。"
+        if thread_id:
+            message = f"{message} thread={thread_id}"
+        emit({"run_id": run_id, "provider": "codex", "phase": "queued", "public_message_zh": message})
+        return
+    if event_type == "turn.started":
+        emit({"run_id": run_id, "provider": "codex", "phase": "thinking", "public_message_zh": "Codex 已开始处理任务。"})
+        return
+    if event_type == "turn.completed":
+        usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+        message = "Codex 本轮已完成。"
+        if usage:
+            message = (
+                "Codex 本轮已完成。"
+                f"input={usage.get('input_tokens', '?')} "
+                f"output={usage.get('output_tokens', '?')} "
+                f"reasoning={usage.get('reasoning_output_tokens', '?')}"
+            )
+        emit({"run_id": run_id, "provider": "codex", "phase": "running", "public_message_zh": message})
+        return
+    if event_type == "turn.failed":
+        emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("error") or "turn_failed")})
+        return
+    if event_type == "error":
+        emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("message") or event.get("error") or "codex_error")})
+        return
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return
+    if event_type not in {"item.started", "item.completed", "item.updated"}:
+        return
+    fingerprint = f"{event_type}:{item.get('id')}:{item.get('status')}:{item.get('type')}:{item.get('exit_code')}:{item.get('text')}"
+    if fingerprint in seen:
+        return
+    seen.add(fingerprint)
+    label = _codex_item_label(item, event_type)
+    emit({"run_id": run_id, "provider": "codex", "phase": _codex_event_phase(item, event_type), "public_message_zh": label})
+
+
+def _emit_codex_jsonl_events(
+    output: str,
+    run_id: str,
+    emit: Callable[[dict[str, Any]], None] | None,
+    seen: set[str] | None = None,
+) -> None:
     if not emit:
         return
-    last_fingerprint = ""
+    emitted = seen if seen is not None else set()
     for line in output.splitlines():
         if not line.strip():
             continue
@@ -446,40 +516,14 @@ def _emit_codex_jsonl_events(output: str, run_id: str, emit: Callable[[dict[str,
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        event_type = str(event.get("type") or "")
-        if event_type == "turn.started":
-            emit({"run_id": run_id, "provider": "codex", "phase": "thinking", "public_message_zh": "Codex 已开始处理任务。"})
-            continue
-        if event_type == "turn.completed":
-            usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
-            message = "Codex 本轮已完成。"
-            if usage:
-                message = (
-                    "Codex 本轮已完成。"
-                    f"input={usage.get('input_tokens', '?')} "
-                    f"output={usage.get('output_tokens', '?')} "
-                    f"reasoning={usage.get('reasoning_output_tokens', '?')}"
-                )
-            emit({"run_id": run_id, "provider": "codex", "phase": "running", "public_message_zh": message})
-            continue
-        if event_type == "turn.failed":
-            emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("error") or "turn_failed")})
-            continue
-        if event_type == "error":
-            emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("message") or event.get("error") or "codex_error")})
-            continue
-        item = event.get("item")
-        if not isinstance(item, dict):
-            continue
-        fingerprint = f"{event_type}:{item.get('id')}:{item.get('status')}:{item.get('type')}"
-        if fingerprint == last_fingerprint:
-            continue
-        last_fingerprint = fingerprint
-        if event_type in {"item.started", "item.completed", "item.updated"}:
-            label = _codex_item_label(item)
-            if event_type == "item.completed":
-                label = f"{label} 已完成。"
-            emit({"run_id": run_id, "provider": "codex", "phase": _codex_event_phase(item), "public_message_zh": label})
+        _emit_codex_jsonl_event(event, run_id, emit, emitted)
+
+
+def _codex_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    if not env.get("TERM") or env.get("TERM") == "dumb":
+        env["TERM"] = "xterm-256color"
+    return env
 
 
 def _run_codex_command(
@@ -490,20 +534,22 @@ def _run_codex_command(
     run_id: str,
     emit: Callable[[dict[str, Any]], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = _codex_subprocess_env()
     if emit is None:
-        return subprocess.run(command, cwd=workspace, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
-    process = subprocess.Popen(command, cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    process = subprocess.Popen(command, cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert process.stdin is not None
     assert process.stdout is not None
     assert process.stderr is not None
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
+    seen_events: set[str] = set()
 
     def read_stdout() -> None:
         assert process.stdout is not None
         for line in process.stdout:
             stdout_lines.append(line)
-            _emit_codex_jsonl_events(line, run_id, emit)
+            _emit_codex_jsonl_events(line, run_id, emit, seen_events)
 
     def read_stderr() -> None:
         assert process.stderr is not None
@@ -534,6 +580,10 @@ def _run_codex_command(
         if process.poll() is None:
             process.kill()
         raise
+    finally:
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            if pipe is not None and not pipe.closed:
+                pipe.close()
 
 
 def invoke_claude(
@@ -652,6 +702,8 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
     ]
     if _codex_exec_help_has("--ephemeral"):
         command.insert(command.index("--cd"), "--ephemeral")
+    if _codex_exec_help_has("--color"):
+        command[command.index("--cd") : command.index("--cd")] = ["--color", "never"]
     if _codex_exec_help_has("--dangerously-bypass-approvals-and-sandbox"):
         command.insert(command.index("--cd"), "--dangerously-bypass-approvals-and-sandbox")
     elif _codex_exec_help_has("--sandbox"):

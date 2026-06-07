@@ -96,11 +96,82 @@ class PairTelegramScriptTests(unittest.TestCase):
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn(f"TELEGRAM_BOT_TOKEN={token}\n", config)
             self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=123\n", config)
+            self.assertIn("TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP=1\n", config)
             self.assertIn("TELEGRAM_RESERVED_USD=0.25\n", config)
+            self.assertIn("TELEGRAM_STATUS_INTERVAL_SECONDS=5\n", config)
+            self.assertIn("TELEGRAM_STATUS_MIN_UPDATE_SECONDS=0.8\n", config)
+            self.assertIn("TELEGRAM_SYNC_COMMANDS_ON_STARTUP=1\n", config)
+            self.assertIn("TELEGRAM_ALLOWED_UPDATES=message,edited_message,callback_query\n", config)
+            self.assertIn("TELEGRAM_NATIVE_DRAFT_PROGRESS=0\n", config)
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["telegram_status"], "paired")
             self.assertTrue(manifest["telegram_paired"])
+            self.assertEqual(manifest["telegram_allowed_chat_ids"], ["123"])
+            self.assertTrue(manifest["telegram_webhook_cleared_for_polling"])
+            self.assertEqual(manifest["telegram_allowed_updates"], ["message", "edited_message", "callback_query"])
+            self.assertFalse(manifest["telegram_native_draft_progress"])
             self.assertIn("systemctl enable --now ai-telegram-bot.service", calls.read_text(encoding="utf-8"))
+
+    def test_pair_telegram_rerun_rewrites_status_stream_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            service = root / "ai-telegram-bot.service"
+            state.mkdir()
+            (state / "config.env").write_text(
+                "\n".join(
+                    [
+                        "OTHER_SETTING=keep",
+                        "TELEGRAM_BOT_TOKEN=old-token",
+                        "TELEGRAM_ALLOWED_CHAT_IDS=999",
+                        "TELEGRAM_STATUS_INTERVAL_SECONDS=99",
+                        "TELEGRAM_STATUS_MIN_UPDATE_SECONDS=99",
+                        "TELEGRAM_SYNC_COMMANDS_ON_STARTUP=0",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            service.write_text("[Service]\n", encoding="utf-8")
+            fakebin, calls = self.make_fakebin(root)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--bot-token",
+                    "new-token:ABC_def",
+                    "--chat-id",
+                    "123",
+                    "--status-interval",
+                    "2",
+                    "--status-min-update",
+                    "0.4",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            config_lines = (state / "config.env").read_text(encoding="utf-8").splitlines()
+            self.assertIn("OTHER_SETTING=keep", config_lines)
+            self.assertEqual(config_lines.count("TELEGRAM_STATUS_INTERVAL_SECONDS=2"), 1)
+            self.assertEqual(config_lines.count("TELEGRAM_STATUS_MIN_UPDATE_SECONDS=0.4"), 1)
+            self.assertNotIn("TELEGRAM_STATUS_INTERVAL_SECONDS=99", config_lines)
+            self.assertNotIn("TELEGRAM_STATUS_MIN_UPDATE_SECONDS=99", config_lines)
 
     def test_discover_chat_id_mode_does_not_require_chat_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,7 +213,87 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertIn("discovery mode enabled", result.stdout)
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=\n", config)
+            self.assertIn("TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP=1\n", config)
+            self.assertIn("TELEGRAM_SYNC_COMMANDS_ON_STARTUP=1\n", config)
             self.assertNotIn("TELEGRAM_ALLOW_ALL_CHATS", config)
+
+    def test_discover_chat_id_mode_pairs_when_update_is_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            service = root / "ai-telegram-bot.service"
+            api_calls = root / "telegram-api-calls.log"
+            state.mkdir()
+            (state / "install-manifest.json").write_text(json.dumps({"telegram_status": "pending_pairing"}), encoding="utf-8")
+            service.write_text("[Service]\n", encoding="utf-8")
+            fakebin, calls = self.make_fakebin(root)
+            fakebin.joinpath("python3").write_text(
+                textwrap.dedent(
+                    f"""
+                    #!/usr/bin/env bash
+                    script="$(cat)"
+                    if printf '%s' "$script" | grep -q 'getUpdates'; then
+                      printf 'getUpdates %s timeout=%s\\n' "$3" "$4" >> "{api_calls}"
+                      printf '789\\n'
+                      exit 0
+                    fi
+                    if printf '%s' "$script" | grep -q 'sendMessage'; then
+                      printf 'sendMessage %s %s\\n' "$3" "$4" >> "{api_calls}"
+                      exit 0
+                    fi
+                    if printf '%s' "$script" | grep -q 'deleteWebhook'; then
+                      printf 'deleteWebhook %s\\n' "$3" >> "{api_calls}"
+                      exit 0
+                    fi
+                    if printf '%s' "$script" | grep -q 'getMe'; then
+                      printf 'getMe %s\\n' "$3" >> "{api_calls}"
+                      printf '{{"id":1,"username":"ffc_test_bot"}}\\n'
+                      exit 0
+                    fi
+                    shift
+                    printf '%s' "$script" | /usr/bin/python3 - "$@"
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            (fakebin / "python3").chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
+                    "PAIR_TELEGRAM_DISCOVER_TIMEOUT_SECONDS": "1",
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--bot-token",
+                    "test-token:ABC_def",
+                    "--discover-chat-id",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("discovered Telegram chat_id(s): 789", result.stdout)
+            config = (state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=789\n", config)
+            manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["telegram_status"], "paired")
+            self.assertTrue(manifest["telegram_paired"])
+            self.assertEqual(manifest["telegram_allowed_chat_ids"], ["789"])
+            api_log = api_calls.read_text(encoding="utf-8")
+            self.assertIn("getUpdates test-token:ABC_def timeout=1", api_log)
+            self.assertIn("sendMessage test-token:ABC_def 789", api_log)
 
     def test_interactive_bot_token_and_telegram_id_pair_successfully(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -287,6 +438,9 @@ class PairTelegramScriptTests(unittest.TestCase):
                         printf 'sendMessage %s %s\\n' "$3" "${{4:-}}" >> "{api_calls}"
                       else
                         printf 'getMe %s\\n' "$3" >> "{api_calls}"
+                        if printf '%s' "$script" | grep -q 'deleteWebhook'; then
+                          printf 'deleteWebhook %s\\n' "$3" >> "{api_calls}"
+                        fi
                       fi
                       exit 0
                     fi
@@ -323,9 +477,11 @@ class PairTelegramScriptTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("verifying Telegram bot token with getMe", result.stdout)
+            self.assertIn("clearing Telegram webhook for long polling", result.stdout)
             self.assertIn("sending Telegram pairing test message", result.stdout)
             api_log = api_calls.read_text(encoding="utf-8")
             self.assertIn("getMe test-token:ABC_def", api_log)
+            self.assertIn("deleteWebhook test-token:ABC_def", api_log)
             self.assertIn("sendMessage test-token:ABC_def 123", api_log)
 
     def test_rejects_invalid_chat_id_before_writing_config(self) -> None:

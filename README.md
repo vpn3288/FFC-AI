@@ -269,7 +269,7 @@ export CODEX_MODEL="gpt-5.5"
 export CODEX_BASE_URL="https://api.openai.com/v1"
 ```
 
-脚本默认按 root/global 模式配置 AI 工具：systemd 服务显式以 root 运行，`HOME=/root`，`CODEX_HOME=/root/.codex`，Codex 配置启用 `approval_policy="never"`、`network_access="enabled"` 和 `danger-full-access`。如果你显式设置 `AI_TOOL_HOME` 或 `AI_CODEX_HOME`，才会写到自定义目录。
+脚本默认按 root/global 模式配置 AI 工具：systemd 服务显式以 root 运行，`HOME=/root`，`CODEX_HOME=/root/.codex`，Codex 配置启用 `approval_policy="never"`、`sandbox_mode="danger-full-access"`、`openai_base_url` 和 `[sandbox_workspace_write].network_access=true`。如果你显式设置 `AI_TOOL_HOME` 或 `AI_CODEX_HOME`，才会写到自定义目录。
 
 ### VSCode
 
@@ -461,7 +461,7 @@ sudo scripts/pair-telegram.sh \
   --telegram-id 你的TelegramID
 ```
 
-脚本会提示输入 BotFather 给你的机器人密钥，输入时不会回显。这样会直接写入配置并启动 `ai-telegram-bot.service`。
+脚本会提示输入 BotFather 给你的机器人密钥，输入时不会回显。配对时会先调用 Telegram `getMe` 验证 token，默认调用 `deleteWebhook` 清掉旧 webhook，避免 long polling 启动后收不到消息；然后写入配置并启动 `ai-telegram-bot.service`。
 
 如果你要自动化部署，也可以把 token 放到 runner 机器的 root 只读文件里：
 
@@ -509,7 +509,7 @@ ai-telegram-bot.service
 请总结这个项目现在还有哪些待办
 ```
 
-当 AI 任务正在运行时，Telegram bot 会发送 `typing` 状态，并持续发中文心跳，例如“正在调用 provider，模型正在思考或工具正在运行”“仍在运行，可能是模型思考、工具执行、联网等待或生成中”。如果长时间没有最终回复，先看这些心跳和 runner 日志，而不是判断为没有连接。
+当 AI 任务正在运行时，Telegram bot 会发送 `typing` 状态，并用一条状态消息原地更新 queued、calling、running command、writing files、done/error 等状态；如果编辑失败才回退为发送新消息。如果长时间没有最终回复，先看这些心跳和 runner 日志，而不是判断为没有连接。
 
 ## 10. 验证是否打通
 

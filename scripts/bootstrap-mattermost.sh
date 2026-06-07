@@ -51,7 +51,9 @@ require_mmctl_match() {
   local description="$1"
   local pattern="$2"
   shift 2
-  if ! mmctl "$@" | grep -q "$pattern"; then
+  local output
+  output="$(mmctl "$@")"
+  if [[ "$output" != *"$pattern"* ]]; then
     log "missing Mattermost object after create attempt: $description"
     exit 1
   fi
@@ -60,7 +62,9 @@ require_mmctl_match() {
 ensure_team() {
   local name="$1"
   local display="$2"
-  mmctl team list | grep -q "$name" || mmctl team create --name "$name" --display-name "$display"
+  local output
+  output="$(mmctl team list)"
+  [[ "$output" == *"$name"* ]] || mmctl team create --name "$name" --display-name "$display"
   require_mmctl_match "team:$name" "$name" team list
 }
 
@@ -68,7 +72,9 @@ ensure_channel() {
   local team="$1"
   local name="$2"
   local display="$3"
-  mmctl channel list "$team" | grep -q "$name" || mmctl channel create --team "$team" --name "$name" --display-name "$display"
+  local output
+  output="$(mmctl channel list "$team")"
+  [[ "$output" == *"$name"* ]] || mmctl channel create --team "$team" --name "$name" --display-name "$display"
   require_mmctl_match "channel:$team/$name" "$name" channel list "$team"
 }
 

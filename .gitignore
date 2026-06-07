@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.ai-remote-codex-*-last-message.txt
 work/smoke-state*/
 work/smoke-workspaces*/
 work/test-state*/

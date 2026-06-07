@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,34 @@ from ai_remote_runner.commands import parse_command
 from ai_remote_runner.commands import COMMANDS
 from ai_remote_runner.executor import RunnerRuntime, execute
 from ai_remote_runner.providers import ProviderResult
+from ai_remote_runner.runtime_config import apply_base_url, config_summary
 
 
 class ExecutorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patcher = patch.dict("os.environ", {}, clear=False)
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+        for key in (
+            "AI_RUNNER_PROVIDERS",
+            "AI_PERMISSION_SCOPE",
+            "AI_REQUIRE_SHELL_CONFIRMATION",
+            "AI_TASK_RESERVED_USD",
+            "TELEGRAM_RESERVED_USD",
+            "OPENAI_API_KEY",
+            "CODEX_BASE_URL",
+            "CODEX_MODEL",
+            "CODEX_HOME",
+            "AI_CODEX_HOME",
+            "AI_TOOL_HOME",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_MODEL",
+            "VSCODE_CLAUDE_MODEL",
+        ):
+            os.environ.pop(key, None)
+
     def test_status_command_executes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
@@ -47,6 +73,65 @@ class ExecutorTests(unittest.TestCase):
             response = execute(parse_command("/ai 状态"), {"request_id": "sw-events", "raw_text": "/ai 状态"}, runtime)
             active = next(item for item in response["data"]["recent_runs"] if item["run_id"] == "run-active")
             self.assertEqual(active["phase"], "running")
+
+    def test_status_includes_telegram_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            runtime.state.mkdir(parents=True)
+            (runtime.state / "telegram-tasks.json").write_text(
+                json.dumps({"task-1": {"task_id": "task-1", "provider": "codex", "done": False, "started_at": 123}}),
+                encoding="utf-8",
+            )
+            response = execute(parse_command("/ai 状态"), {"request_id": "telegram-tasks", "raw_text": "/ai 状态"}, runtime)
+            self.assertEqual(response["data"]["telegram_tasks"][0]["task_id"], "task-1")
+
+    def test_local_exec_runs_command_and_emits_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = parse_command("/ai shell printf local-ok")
+            response = execute(parsed, {"request_id": "local-exec", "raw_text": "/ai shell printf local-ok"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(response["data"]["exit_code"], 0)
+            self.assertIn("local-ok", response["data"]["output"])
+            events = (runtime.state / "events.jsonl").read_text(encoding="utf-8")
+            self.assertIn("running_command", events)
+            self.assertIn("done", events)
+
+    def test_local_exec_reports_nonzero_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = parse_command("/ai shell bash -lc 'echo bad >&2; exit 7'")
+            response = execute(parsed, {"request_id": "local-fail", "raw_text": "/ai shell bash -lc 'echo bad >&2; exit 7'"}, runtime)
+            self.assertEqual(response["status"], "error")
+            self.assertEqual(response["error"]["code"], "local_exec_exit_7")
+            self.assertIn("bad", response["error"]["detail"])
+
+    def test_codex_doctor_uses_overridable_local_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            with patch.dict("os.environ", {"AI_CODEX_DOCTOR_COMMAND": "printf codex-doctor-ok"}, clear=False):
+                response = execute(parse_command("/ai codex doctor"), {"request_id": "codex-doctor", "raw_text": "/ai codex doctor"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertIn("codex-doctor-ok", response["data"]["output"])
+
+    def test_codex_base_url_runtime_config_uses_current_codex_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            codex_home = root / "codex-home"
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                result = apply_base_url(runtime.state, "codex", "https://proxy.example/v1")
+                config = (codex_home / "config.toml").read_text(encoding="utf-8")
+                summary = config_summary("codex")
+            self.assertEqual(result["base_url"], "https://proxy.example/v1")
+            self.assertIn('model_provider = "openai"', config)
+            self.assertIn('openai_base_url = "https://proxy.example/v1"', config)
+            self.assertIn("[sandbox_workspace_write]", config)
+            self.assertIn("network_access = true", config)
+            self.assertNotIn('network_access = "enabled"', config)
+            self.assertNotIn("dangerously_bypass_approvals_and_sandbox", config)
+            self.assertNotIn("[model_providers.OpenAI]", config)
+            self.assertEqual(summary["base_url"], "https://proxy.example/v1")
 
     def test_status_reads_core_ready_from_install_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

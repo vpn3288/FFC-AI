@@ -21,9 +21,10 @@ def write_executable(path: Path, content: str) -> None:
 def clean_env() -> dict[str, str]:
     env = os.environ.copy()
     for key in list(env):
-        if key.startswith("ANTHROPIC_") or key.startswith("CODEX_") or key.startswith("CLAUDE_CODE_"):
+        if key.startswith("ANTHROPIC_") or key.startswith("CODEX_") or key.startswith("CLAUDE_CODE_") or key.startswith("TELEGRAM_"):
             env.pop(key, None)
     env.pop("OPENAI_API_KEY", None)
+    env.pop("AI_BRIDGE_SHARED_SECRET", None)
     return env
 
 
@@ -116,11 +117,11 @@ PY
                   exit 0
                 fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\\n'
+                  printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'
                   exit 0
                 fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "-c" ]; then
-                  printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\\n'
+                  printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'
                   exit 0
                 fi
                 exit 0
@@ -193,6 +194,7 @@ PY
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
             self.assertIn(f"CODEX_HOME={root_home / '.codex'}\n", config)
+            self.assertIn("TERM=xterm-256color\n", config)
             self.assertIn(f"AI_BRIDGE_SHARED_SECRET={existing_bridge_secret}\n", config)
             self.assertIn("MATTERMOST_PLATFORM_URL=https://mattermost.example\n", config)
             self.assertIn("MATTERMOST_WEBHOOK_URL=https://mattermost.example/hooks/hook-id\n", config)
@@ -211,9 +213,15 @@ PY
             self.assertIn("-m ai_remote_runner.cli providers", runner_calls)
             self.assertIn("-m ai_remote_runner.cli parse /ai 状态", runner_calls)
             codex_config = (root_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+            self.assertIn('model_provider = "openai"', codex_config)
+            self.assertIn('openai_base_url = "https://example.invalid/v1"', codex_config)
             self.assertIn('approval_policy = "never"', codex_config)
             self.assertIn('sandbox_mode = "danger-full-access"', codex_config)
-            self.assertIn("dangerously_bypass_approvals_and_sandbox = true", codex_config)
+            self.assertIn("[sandbox_workspace_write]", codex_config)
+            self.assertIn("network_access = true", codex_config)
+            self.assertNotIn('network_access = "enabled"', codex_config)
+            self.assertNotIn("workspace_write_network_access", codex_config)
+            self.assertNotIn("dangerously_bypass_approvals_and_sandbox", codex_config)
             self.assertIn('inherit = "all"', codex_config)
             self.assertIn("disable_response_storage = false", codex_config)
             self.assertFalse(vscode_wrapper.exists())
@@ -265,6 +273,8 @@ PY
                 """,
             )
             write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "bash", "#!/bin/sh\nexec /bin/bash \"$@\"\n")
+            write_executable(fakebin / "sh", "#!/bin/sh\nexec /bin/sh \"$@\"\n")
             write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
             write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
             write_executable(
@@ -272,7 +282,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\\n'; exit 0; fi
-                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
                 exit 0
                 """,
             )
@@ -294,7 +304,7 @@ PY
                     "AI_WORKSPACE_ROOT": str(workspaces),
                     "AI_REMOTE_INSTALL_ROOT": str(install),
                     "AI_RUNNER_COMPONENTS": "codex,telegram",
-                    "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_SERVICE_PATH": str(fakebin),
                     "AI_VSCODE_ROOT_WRAPPER": str(vscode_wrapper),
                     "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
                     "AI_DEFAULT_PROVIDER": "codex",
@@ -348,7 +358,7 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX
@@ -375,6 +385,8 @@ PY
                 """,
             )
             write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "bash", "#!/bin/sh\nexec /bin/bash \"$@\"\n")
+            write_executable(fakebin / "sh", "#!/bin/sh\nexec /bin/sh \"$@\"\n")
             write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
             write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
             write_executable(fakebin / "node", "#!/usr/bin/env bash\nprintf 'v20.11.1\\n'\n")
@@ -398,7 +410,7 @@ PY
                     "AI_WORKSPACE_ROOT": str(workspaces),
                     "AI_REMOTE_INSTALL_ROOT": str(install),
                     "AI_RUNNER_COMPONENTS": "codex",
-                    "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_SERVICE_PATH": str(fakebin),
                     "AI_VSCODE_ROOT_WRAPPER": str(root / "code-root"),
                     "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
                     "AI_DEFAULT_PROVIDER": "codex",
@@ -444,7 +456,7 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--cd] [--output-last-message] [--sandbox]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX
@@ -500,6 +512,8 @@ SETUP
                 """,
             )
             write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "bash", "#!/bin/sh\nexec /bin/bash \"$@\"\n")
+            write_executable(fakebin / "sh", "#!/bin/sh\nexec /bin/sh \"$@\"\n")
             write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
             write_executable(fakebin / "npm", "#!/usr/bin/env bash\nexit 0\n")
             write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
@@ -522,7 +536,7 @@ SETUP
                     "AI_WORKSPACE_ROOT": str(workspaces),
                     "AI_REMOTE_INSTALL_ROOT": str(install),
                     "AI_RUNNER_COMPONENTS": "codex",
-                    "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_SERVICE_PATH": str(fakebin),
                     "AI_VSCODE_ROOT_WRAPPER": str(root / "code-root"),
                     "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
                     "AI_DEFAULT_PROVIDER": "codex",

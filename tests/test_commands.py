@@ -46,6 +46,11 @@ class CommandTests(unittest.TestCase):
             "/ai 说明": "description.list",
             "/ai 说明 编辑 demo": "description.edit",
             "/ai 凭据 授权 credential://demo codex ssh.exec 60": "credential.grant",
+            "/ai shell pwd": "local.exec",
+            "/ai 执行 pwd": "local.exec",
+            "/ai 命令 执行 pwd": "local.exec",
+            "/ai 脚本 运行 scripts/smoke-test.sh": "local.exec",
+            "/ai codex doctor": "codex.doctor",
         }
         for raw, action in cases.items():
             with self.subTest(raw=raw):

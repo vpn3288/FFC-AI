@@ -30,8 +30,9 @@ class ProviderTests(unittest.TestCase):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
         self.assertIn("-c", command)
         self.assertIn('approval_policy="never"', command)
-        self.assertIn("network_access=\"enabled\"", command)
+        self.assertIn("sandbox_workspace_write.network_access=true", command)
         self.assertIn("shell_environment_policy.inherit=all", command)
+        self.assertNotIn("network_access=\"enabled\"", command)
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
         self.assertIn("--dangerously-bypass-hook-trust", command)
         self.assertIn("--ignore-rules", command)
@@ -127,6 +128,7 @@ class ProviderTests(unittest.TestCase):
             [
                 '{"type":"turn.started"}',
                 '{"type":"item.started","item":{"id":"cmd1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}',
+                '{"type":"item.completed","item":{"id":"cmd1","type":"command_execution","command":"bash -lc ls","exit_code":0,"status":"completed"}}',
                 '{"type":"item.completed","item":{"id":"file1","type":"file_change","path":"src/app.py","status":"completed"}}',
                 '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5,"reasoning_output_tokens":2}}',
             ]
@@ -140,7 +142,15 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("running_command", phases)
         self.assertIn("writing_files", phases)
         self.assertTrue(any("bash -lc ls" in message for message in messages))
+        self.assertTrue(any("exit=0" in message for message in messages))
         self.assertTrue(any("src/app.py" in message for message in messages))
+
+    def test_codex_jsonl_thread_started_is_visible(self) -> None:
+        events: list[dict[str, object]] = []
+        _emit_codex_jsonl_events('{"type":"thread.started","thread_id":"thread-1"}\n', "run-1", events.append)
+
+        self.assertEqual(events[0]["phase"], "queued")
+        self.assertIn("thread-1", str(events[0]["public_message_zh"]))
 
     def test_invoke_codex_returns_stderr_when_last_message_missing(self) -> None:
         import subprocess

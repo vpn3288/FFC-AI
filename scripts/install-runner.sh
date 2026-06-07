@@ -13,6 +13,7 @@ CODEX_HOME="${AI_CODEX_HOME:-$AI_TOOL_HOME/.codex}"
 VSCODE_ROOT_WRAPPER="${AI_VSCODE_ROOT_WRAPPER:-/usr/local/bin/code-root}"
 VSCODE_ROOT_DIR="${AI_VSCODE_ROOT_DIR:-/root/.vscode-root}"
 SERVICE_PATH="${AI_SERVICE_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+AI_SERVICE_TERM="${AI_SERVICE_TERM:-xterm-256color}"
 RUNNER_PYTHON="$INSTALL_ROOT/.venv/bin/python"
 CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 VSCODE_CLAUDE_MODEL="${VSCODE_CLAUDE_MODEL:-claude-opus-4-6}"
@@ -59,6 +60,7 @@ root_env_run() {
     HOME="$AI_TOOL_HOME"
     CODEX_HOME="$CODEX_HOME"
     PATH="$SERVICE_PATH"
+    TERM="$AI_SERVICE_TERM"
     AI_RUNNER_PROVIDERS="$AI_RUNNER_PROVIDERS"
     AI_PERMISSION_SCOPE="$AI_PERMISSION_SCOPE"
     AI_REQUIRE_SHELL_CONFIRMATION="$AI_REQUIRE_SHELL_CONFIRMATION"
@@ -98,7 +100,7 @@ root_has_command() {
     printf '[dry-run] root env PATH=%s command -v %s\n' "$SERVICE_PATH" "$1"
     return 0
   else
-    sudo env HOME="$AI_TOOL_HOME" CODEX_HOME="$CODEX_HOME" PATH="$SERVICE_PATH" sh -c "command -v '$1' >/dev/null 2>&1"
+    sudo env HOME="$AI_TOOL_HOME" CODEX_HOME="$CODEX_HOME" PATH="$SERVICE_PATH" TERM="$AI_SERVICE_TERM" sh -c "command -v '$1' >/dev/null 2>&1"
   fi
 }
 
@@ -546,19 +548,19 @@ else
 fi
 if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; }; then
   CODEX_KEY="${CODEX_API_KEY:-$OPENAI_API_KEY}"
+  CODEX_EFFECTIVE_MODEL_PROVIDER="${CODEX_MODEL_PROVIDER:-openai}"
+  CODEX_EFFECTIVE_BASE_URL="${CODEX_OPENAI_BASE_URL:-${CODEX_BASE_URL:-https://api.openai.com/v1}}"
   if [ "$DRY_RUN" = false ]; then
     sudo mkdir -p "$CODEX_HOME"
     sudo tee "$CODEX_HOME/config.toml" >/dev/null <<EOF
-model_provider = "${CODEX_MODEL_PROVIDER:-OpenAI}"
+model_provider = "$CODEX_EFFECTIVE_MODEL_PROVIDER"
 model = "${CODEX_MODEL:-gpt-5.5}"
 review_model = "${CODEX_REVIEW_MODEL:-${CODEX_MODEL:-gpt-5.5}}"
 model_reasoning_effort = "${CODEX_REASONING_EFFORT:-xhigh}"
 disable_response_storage = ${CODEX_DISABLE_RESPONSE_STORAGE:-false}
-network_access = "enabled"
+openai_base_url = "$CODEX_EFFECTIVE_BASE_URL"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
-workspace_write_network_access = true
-dangerously_bypass_approvals_and_sandbox = true
 model_context_window = ${CODEX_CONTEXT_WINDOW:-200000}
 model_auto_compact_token_limit = ${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-160000}
 hide_agent_reasoning = false
@@ -566,15 +568,22 @@ hide_agent_reasoning = false
 [shell_environment_policy]
 inherit = "all"
 
-[model_providers.${CODEX_MODEL_PROVIDER:-OpenAI}]
-name = "${CODEX_MODEL_PROVIDER:-OpenAI}"
-base_url = "${CODEX_BASE_URL:-https://api.openai.com/v1}"
-wire_api = "responses"
-requires_openai_auth = true
+[sandbox_workspace_write]
+network_access = true
 
 [features]
 goals = true
 EOF
+    if [ "$CODEX_EFFECTIVE_MODEL_PROVIDER" != "openai" ]; then
+      sudo tee -a "$CODEX_HOME/config.toml" >/dev/null <<EOF
+
+[model_providers.$CODEX_EFFECTIVE_MODEL_PROVIDER]
+name = "$CODEX_EFFECTIVE_MODEL_PROVIDER"
+base_url = "$CODEX_EFFECTIVE_BASE_URL"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"
+EOF
+    fi
     sudo env CODEX_KEY="$CODEX_KEY" CODEX_HOME="$CODEX_HOME" python3 - <<'PY'
 import json
 import os
@@ -587,7 +596,7 @@ PY
     sudo chown -R root:root "$CODEX_HOME" 2>/dev/null || true
   else
     log "would write $CODEX_HOME/config.toml and $CODEX_HOME/auth.json from CODEX_* environment"
-	fi
+  fi
 elif [ "$REQUEST_CODEX" != true ] && { [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; }; then
   log 'stage 04b: skip Codex config/auth because Codex is not requested'
 fi
@@ -669,7 +678,14 @@ if [ "$DRY_RUN" = false ]; then
   PREVIOUS_TELEGRAM_API_BASE="$(config_value TELEGRAM_API_BASE)"
   PREVIOUS_TELEGRAM_RESERVED_USD="$(config_value TELEGRAM_RESERVED_USD)"
   PREVIOUS_TELEGRAM_STATUS_INTERVAL_SECONDS="$(config_value TELEGRAM_STATUS_INTERVAL_SECONDS)"
+  PREVIOUS_TELEGRAM_STATUS_MIN_UPDATE_SECONDS="$(config_value TELEGRAM_STATUS_MIN_UPDATE_SECONDS)"
   PREVIOUS_TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP="$(config_value TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP)"
+  PREVIOUS_TELEGRAM_SYNC_COMMANDS_ON_STARTUP="$(config_value TELEGRAM_SYNC_COMMANDS_ON_STARTUP)"
+  PREVIOUS_TELEGRAM_ALLOWED_UPDATES="$(config_value TELEGRAM_ALLOWED_UPDATES)"
+  PREVIOUS_TELEGRAM_NATIVE_DRAFT_PROGRESS="$(config_value TELEGRAM_NATIVE_DRAFT_PROGRESS)"
+  PREVIOUS_TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS="$(config_value TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS)"
+  PREVIOUS_AI_LOCAL_EXEC_TIMEOUT_SECONDS="$(config_value AI_LOCAL_EXEC_TIMEOUT_SECONDS)"
+  PREVIOUS_AI_LOCAL_EXEC_MAX_OUTPUT_BYTES="$(config_value AI_LOCAL_EXEC_MAX_OUTPUT_BYTES)"
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
@@ -679,6 +695,7 @@ AI_REQUIRE_SHELL_CONFIRMATION=$AI_REQUIRE_SHELL_CONFIRMATION
 HOME=$AI_TOOL_HOME
 CODEX_HOME=$CODEX_HOME
 PATH=$SERVICE_PATH
+TERM=$AI_SERVICE_TERM
 CLAUDE_MODEL=$CLAUDE_MODEL
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 EOF
@@ -708,7 +725,7 @@ EOF
   if [ "$REQUEST_CODEX" = true ] && [ -n "${CODEX_BASE_URL:-}" ]; then
     printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
-  for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_CHAT_IDS TELEGRAM_API_BASE TELEGRAM_RESERVED_USD TELEGRAM_STATUS_INTERVAL_SECONDS TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP; do
+  for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_CHAT_IDS TELEGRAM_API_BASE TELEGRAM_RESERVED_USD TELEGRAM_STATUS_INTERVAL_SECONDS TELEGRAM_STATUS_MIN_UPDATE_SECONDS TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP TELEGRAM_SYNC_COMMANDS_ON_STARTUP TELEGRAM_ALLOWED_UPDATES TELEGRAM_NATIVE_DRAFT_PROGRESS TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS AI_LOCAL_EXEC_TIMEOUT_SECONDS AI_LOCAL_EXEC_MAX_OUTPUT_BYTES; do
     value="$(printenv "$key" || true)"
     if [ -z "$value" ]; then
       case "$key" in
@@ -722,7 +739,14 @@ EOF
         TELEGRAM_API_BASE) value="$PREVIOUS_TELEGRAM_API_BASE" ;;
         TELEGRAM_RESERVED_USD) value="$PREVIOUS_TELEGRAM_RESERVED_USD" ;;
         TELEGRAM_STATUS_INTERVAL_SECONDS) value="${PREVIOUS_TELEGRAM_STATUS_INTERVAL_SECONDS:-5}" ;;
+        TELEGRAM_STATUS_MIN_UPDATE_SECONDS) value="${PREVIOUS_TELEGRAM_STATUS_MIN_UPDATE_SECONDS:-0.8}" ;;
         TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP) value="${PREVIOUS_TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP:-1}" ;;
+        TELEGRAM_SYNC_COMMANDS_ON_STARTUP) value="${PREVIOUS_TELEGRAM_SYNC_COMMANDS_ON_STARTUP:-1}" ;;
+        TELEGRAM_ALLOWED_UPDATES) value="${PREVIOUS_TELEGRAM_ALLOWED_UPDATES:-message,edited_message,callback_query}" ;;
+        TELEGRAM_NATIVE_DRAFT_PROGRESS) value="${PREVIOUS_TELEGRAM_NATIVE_DRAFT_PROGRESS:-0}" ;;
+        TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS) value="$PREVIOUS_TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS" ;;
+        AI_LOCAL_EXEC_TIMEOUT_SECONDS) value="${PREVIOUS_AI_LOCAL_EXEC_TIMEOUT_SECONDS:-300}" ;;
+        AI_LOCAL_EXEC_MAX_OUTPUT_BYTES) value="${PREVIOUS_AI_LOCAL_EXEC_MAX_OUTPUT_BYTES:-120000}" ;;
       esac
     fi
     if [ -n "$value" ]; then
@@ -877,21 +901,19 @@ if [ "$DRY_RUN" = false ] && { [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCOD
 fi
 if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
   root_has_command codex || { log 'codex is required before core_ready for requested provider codex'; exit 1; }
-  root_env_run codex exec --help >/dev/null || { log 'codex exec is required before core_ready for requested provider codex'; exit 1; }
-  root_env_run codex exec --help 2>&1 | grep -q -- '--json' || { log 'codex exec --json is required for realtime Codex status events'; exit 1; }
-  root_env_run codex exec --help 2>&1 | grep -q -- '--cd' || { log 'codex exec --cd is required before core_ready for requested provider codex'; exit 1; }
-  root_env_run codex exec --help 2>&1 | grep -q -- '--output-last-message' || { log 'codex exec --output-last-message is required before core_ready for requested provider codex'; exit 1; }
-  if root_env_run codex exec --help 2>&1 | grep -Eq -- '--dangerously-bypass-approvals-and-sandbox|--sandbox'; then
+  CODEX_EXEC_HELP_TEXT="$(root_env_run codex exec --help 2>&1)" || { log 'codex exec is required before core_ready for requested provider codex'; exit 1; }
+  root_env_run codex exec --strict-config --help >/dev/null || { log 'codex config.toml is not accepted by this Codex CLI under --strict-config'; exit 1; }
+  grep -q -- '--json' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --json is required for realtime Codex status events'; exit 1; }
+  grep -q -- '--ephemeral' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --ephemeral is required so phone-triggered runs do not persist sessions'; exit 1; }
+  grep -q -- '--cd' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --cd is required before core_ready for requested provider codex'; exit 1; }
+  grep -q -- '--output-last-message' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --output-last-message is required before core_ready for requested provider codex'; exit 1; }
+  grep -q -- '--add-dir' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --add-dir is required for VM-wide full-access operation'; exit 1; }
+  grep -q -- '--skip-git-repo-check' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --skip-git-repo-check is required for arbitrary workspace operation'; exit 1; }
+  if grep -Eq -- '--dangerously-bypass-approvals-and-sandbox|--sandbox' <<< "$CODEX_EXEC_HELP_TEXT"; then
     log 'codex full-access exec flag is available'
   else
     log 'codex full-access exec flag is unavailable'
     exit 1
-  fi
-  if ! root_env_run codex exec --help 2>&1 | grep -q -- '--add-dir'; then
-    log 'codex exec --add-dir is recommended for VM-wide access; continuing because some stable Codex builds use danger-full-access without --add-dir'
-  fi
-  if ! root_env_run codex exec --help 2>&1 | grep -q -- '--skip-git-repo-check'; then
-    log 'codex exec --skip-git-repo-check not available; continuing with configured full-access flags'
   fi
 fi
 if [ "$DRY_RUN" = true ]; then

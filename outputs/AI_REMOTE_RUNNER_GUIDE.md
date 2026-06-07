@@ -336,7 +336,7 @@ Default Codex `exec` template MUST use full VM access. Prefer the CLI's explicit
 cd "$RUNNER_WORKSPACE"
 codex exec \
   -c 'approval_policy="never"' \
-  -c 'network_access="enabled"' \
+  -c 'sandbox_workspace_write.network_access=true' \
   -c 'shell_environment_policy.inherit=all' \
   --json \
   --dangerously-bypass-approvals-and-sandbox \
@@ -355,11 +355,12 @@ Codex config written by the installer MUST target root/global execution by defau
 ```toml
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
-network_access = "enabled"
-dangerously_bypass_approvals_and_sandbox = true
 
 [shell_environment_policy]
 inherit = "all"
+
+[sandbox_workspace_write]
+network_access = true
 ```
 
 Codex adapter MUST wrap `codex exec` with service-level budget reservation, timeout, kill, and output-size caps because verified local `codex exec --help` does not expose a universal `--max-budget-usd`.

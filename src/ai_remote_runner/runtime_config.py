@@ -137,23 +137,19 @@ def _read_codex_config() -> str:
     if path.exists():
         return path.read_text(encoding="utf-8")
     return (
-        'model_provider = "OpenAI"\n'
+        'model_provider = "openai"\n'
         'model = "gpt-5.5"\n'
         'review_model = "gpt-5.5"\n'
         'model_reasoning_effort = "xhigh"\n'
-        'network_access = "enabled"\n'
+        'openai_base_url = "https://api.openai.com/v1"\n'
         'approval_policy = "never"\n'
         'sandbox_mode = "danger-full-access"\n'
-        'dangerously_bypass_approvals_and_sandbox = true\n'
         '\n'
         '[shell_environment_policy]\n'
         'inherit = "all"\n'
         '\n'
-        '[model_providers.OpenAI]\n'
-        'name = "OpenAI"\n'
-        'base_url = "https://api.openai.com/v1"\n'
-        'wire_api = "responses"\n'
-        'requires_openai_auth = true\n'
+        '[sandbox_workspace_write]\n'
+        'network_access = true\n'
         '\n'
         '[features]\n'
         'goals = true\n'
@@ -169,16 +165,24 @@ def _replace_or_prepend_toml_key(text: str, key: str, value: str) -> str:
 
 
 def _replace_or_append_provider_base_url(text: str, base_url: str) -> str:
-    pattern = re.compile(r'(?m)^base_url\s*=\s*".*"$')
-    if pattern.search(text):
-        text = pattern.sub(f'base_url = "{base_url}"', text, count=1)
-    elif "[model_providers.OpenAI]" in text:
-        text = text.replace("[model_providers.OpenAI]\n", f'[model_providers.OpenAI]\nbase_url = "{base_url}"\n', 1)
-    else:
-        text += f'\n[model_providers.OpenAI]\nname = "OpenAI"\nbase_url = "{base_url}"\nwire_api = "responses"\nrequires_openai_auth = true\n'
     openai_base_pattern = re.compile(r'(?m)^openai_base_url\s*=\s*".*"$')
     if openai_base_pattern.search(text):
         text = openai_base_pattern.sub(f'openai_base_url = "{base_url}"', text, count=1)
+    else:
+        text = f'openai_base_url = "{base_url}"\n' + text
+    if "[model_providers.OpenAI]" in text:
+        provider_block_pattern = re.compile(
+            r'(?ms)(^\[model_providers\.OpenAI\]\n.*?)(?=^\[|\Z)'
+        )
+
+        def replace_legacy_provider(match: re.Match[str]) -> str:
+            block = match.group(1)
+            pattern = re.compile(r'(?m)^base_url\s*=\s*".*"$')
+            if pattern.search(block):
+                return pattern.sub(f'base_url = "{base_url}"', block, count=1)
+            return block.replace("[model_providers.OpenAI]\n", f'[model_providers.OpenAI]\nbase_url = "{base_url}"\n', 1)
+
+        text = provider_block_pattern.sub(replace_legacy_provider, text, count=1)
     return text
 
 

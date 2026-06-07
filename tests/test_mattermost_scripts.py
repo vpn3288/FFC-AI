@@ -10,6 +10,7 @@ import textwrap
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,31 @@ def write_executable(path: Path, content: str) -> None:
 
 
 class MattermostScriptTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patcher = patch.dict("os.environ", {}, clear=False)
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+        for key in (
+            "AI_BRIDGE_SHARED_SECRET",
+            "AI_REMOTE_STATE",
+            "AI_WORKSPACE_ROOT",
+            "MATTERMOST_INSTALL_DIR",
+            "MATTERMOST_DOMAIN",
+            "MATTERMOST_DEPLOY_MODE",
+            "MATTERMOST_ADMIN_USERNAME",
+            "MATTERMOST_ADMIN_EMAIL",
+            "MATTERMOST_ADMIN_PASSWORD",
+            "MATTERMOST_SLASH_TOKEN",
+            "MATTERMOST_VERSION",
+            "MATTERMOST_MIN_VERSION",
+            "MATTERMOST_IMAGE",
+            "MATTERMOST_IMAGE_REPOSITORY",
+            "MATTERMOST_BRIDGE_URL",
+            "VALIDATE_MATTERMOST_COMMAND",
+            "BOOTSTRAP_MATTERMOST_SCRIPT",
+        ):
+            os.environ.pop(key, None)
+
     def test_install_communication_uses_latest_mattermost_release(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
