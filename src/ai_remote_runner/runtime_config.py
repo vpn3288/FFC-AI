@@ -77,6 +77,8 @@ def apply_config_env(state: Path, updates: dict[str, str]) -> dict[str, str]:
         "CLAUDE_MODEL",
         "VSCODE_CLAUDE_MODEL",
         "CLAUDE_MAX_TURNS",
+        "CLAUDE_API_RETRY_ATTEMPTS",
+        "CLAUDE_API_RETRY_SLEEP_SECONDS",
         "CODEX_MODEL",
         "AI_TASK_RESERVED_USD",
         "TELEGRAM_RESERVED_USD",
@@ -291,6 +293,20 @@ def apply_claude_max_turns(state: Path, max_turns: int | str) -> dict[str, Any]:
     return {"claude_max_turns": parsed, "max_turns_unlimited": unlimited}
 
 
+def _claude_retry_attempts_value(attempts: int | str) -> tuple[str, int]:
+    raw = str(attempts).strip()
+    parsed = int(raw)
+    if parsed < 0 or parsed > 5:
+        raise ValueError("retry attempts must be between 0 and 5")
+    return str(parsed), parsed
+
+
+def apply_claude_api_retries(state: Path, attempts: int | str) -> dict[str, Any]:
+    value, parsed = _claude_retry_attempts_value(attempts)
+    apply_config_env(state, {"CLAUDE_API_RETRY_ATTEMPTS": value})
+    return {"claude_api_retry_attempts": parsed}
+
+
 def _toml_string_value(text: str, key: str) -> str:
     match = re.search(rf'(?m)^{re.escape(key)}\s*=\s*"([^"]*)"', text)
     return match.group(1) if match else ""
@@ -316,6 +332,8 @@ def config_summary(target: str) -> dict[str, Any]:
         "base_url": os.environ.get("ANTHROPIC_BASE_URL") or env.get("ANTHROPIC_BASE_URL", ""),
         "api_key_configured": bool(os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY")),
         "claude_max_turns": os.environ.get("CLAUDE_MAX_TURNS") or load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))).get("CLAUDE_MAX_TURNS", "0"),
+        "claude_api_retry_attempts": os.environ.get("CLAUDE_API_RETRY_ATTEMPTS") or load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))).get("CLAUDE_API_RETRY_ATTEMPTS", "2"),
+        "claude_api_retry_sleep_seconds": os.environ.get("CLAUDE_API_RETRY_SLEEP_SECONDS") or load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))).get("CLAUDE_API_RETRY_SLEEP_SECONDS", "8"),
         "config_file": str(claude_settings_path()),
     }
 

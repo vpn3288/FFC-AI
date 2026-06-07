@@ -376,6 +376,54 @@ class ProviderTests(unittest.TestCase):
             self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.03)
             self.assertTrue(any(event.get("phase") == "warning" and "重试" in event.get("public_message_zh", "") for event in events))
 
+    def test_invoke_claude_retries_transient_api_error(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        malformed = subprocess.CompletedProcess(
+            ["claude"],
+            1,
+            stdout=json.dumps({"type": "result", "is_error": True, "total_cost_usd": 0.5}),
+            stderr="API Error: API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request",
+        )
+        ok = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "OK", "total_cost_usd": 0.03}), stderr="")
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch.dict("os.environ", {"CLAUDE_API_RETRY_ATTEMPTS": "2", "CLAUDE_API_RETRY_SLEEP_SECONDS": "0"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", side_effect=[malformed, ok]) as run,
+            ):
+                result = invoke_claude("请继续处理任务", Path(tmp), "instructions", ledger, reserved_usd=0.0, emit=events.append)
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.output_text, "OK")
+            self.assertEqual(run.call_count, 2)
+            self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.53)
+            self.assertTrue(any("网关/API" in event.get("public_message_zh", "") for event in events))
+
+    def test_invoke_claude_does_not_retry_terminal_json_error(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        max_turns = subprocess.CompletedProcess(
+            ["claude"],
+            1,
+            stdout=json.dumps({"type": "result", "subtype": "error_max_turns", "total_cost_usd": 2.0, "errors": ["Reached maximum number of turns (12)"]}),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch.dict("os.environ", {"CLAUDE_API_RETRY_ATTEMPTS": "2", "CLAUDE_API_RETRY_SLEEP_SECONDS": "0"}, clear=False),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=max_turns) as run,
+            ):
+                result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.0)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(run.call_count, 1)
+            self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 2.0)
+
     def test_invoke_claude_omits_native_budget_when_unlimited(self) -> None:
         import tempfile
         import subprocess

@@ -22,6 +22,7 @@ from .providers import build_instruction_prompt, invoke_claude, invoke_codex
 from .runtime_config import (
     apply_api_key,
     apply_base_url,
+    apply_claude_api_retries,
     apply_claude_max_turns,
     apply_model,
     apply_task_budget,
@@ -695,6 +696,14 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             return _ok(request_id, run_id, "Claude Code 最大轮数已更新", apply_claude_max_turns(rt.state, max_turns))
         except ValueError:
             return _error(request_id, "invalid_max_turns", "max_turns must be 0/unlimited/无限 or a positive integer")
+    if action == "claude.retry.set":
+        if not args:
+            return _error(request_id, "missing_retry_attempts", "usage: /ai 重试 设置 <0-5>")
+        attempts = args[0].strip()
+        try:
+            return _ok(request_id, run_id, "Claude Code API 重试次数已更新", apply_claude_api_retries(rt.state, attempts))
+        except ValueError:
+            return _error(request_id, "invalid_retry_attempts", "retry attempts must be an integer from 0 to 5")
     if action == "credential.list":
         return _ok(request_id, run_id, "凭据列表已生成", {"credentials": rt.credentials.list_public()})
     if action == "credential.add":

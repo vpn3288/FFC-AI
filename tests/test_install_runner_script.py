@@ -842,6 +842,8 @@ PY
             config = (root / "state" / "config.env").read_text(encoding="utf-8")
             self.assertIn("ANTHROPIC_AUTH_TOKEN=fixture-token", config)
             self.assertIn("CLAUDE_MAX_TURNS=0\n", config)
+            self.assertIn("CLAUDE_API_RETRY_ATTEMPTS=2\n", config)
+            self.assertIn("CLAUDE_API_RETRY_SLEEP_SECONDS=8\n", config)
             self.assertNotIn("OPENAI_API_KEY=", config)
 
     def test_dry_run_does_not_execute_real_provider_or_runner_commands(self) -> None:

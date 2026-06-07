@@ -77,6 +77,7 @@ class CommandTests(unittest.TestCase):
             "/ai 配置 查看": "provider_config.show",
             "/ai 预算 设置 1.00": "budget.set_task_reserved",
             "/ai 轮数 设置 无限": "claude.max_turns.set",
+            "/ai 重试 设置 3": "claude.retry.set",
         }
         for raw, action in cases.items():
             with self.subTest(raw=raw):

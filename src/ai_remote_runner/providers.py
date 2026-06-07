@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -374,6 +375,31 @@ def _claude_command_with_budget(command: list[str], budget_usd: float) -> list[s
 
 
 CLAUDE_UNLIMITED_MAX_TURN_VALUES = {"", "0", "none", "false", "off", "unlimited", "infinite", "inf", "无限", "不限"}
+CLAUDE_TRANSIENT_API_ERROR_MARKERS = (
+    "empty or malformed response",
+    "malformed response",
+    "service temporarily unavailable",
+    "no available accounts",
+    "http 429",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+    "rate limit",
+    "overloaded",
+    "temporarily unavailable",
+    "gateway",
+    "upstream",
+)
+CLAUDE_PERMANENT_API_ERROR_MARKERS = (
+    "invalid api key",
+    "unauthorized",
+    "forbidden",
+    "permission denied",
+    "authentication",
+    "http 401",
+    "http 403",
+)
 
 
 def _claude_max_turn_args(raw: object | None = None) -> list[str]:
@@ -402,6 +428,33 @@ def _claude_recorded_cost(first_cost_usd: float | None, retry_cost_usd: float | 
     return None
 
 
+def _claude_recorded_attempt_cost(costs: list[float | None], retry_started: bool, reserved_usd: float) -> float | None:
+    known = [float(cost) for cost in costs if cost is not None]
+    if retry_started and (not costs or costs[-1] is None or float(costs[-1]) <= 0):
+        if reserved_usd > 0:
+            return reserved_usd
+        return sum(known) if known else None
+    return sum(known) if known else None
+
+
+def _claude_positive_int_env(name: str, default: int, max_value: int = 5) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return max(0, min(parsed, max_value))
+
+
+def _claude_nonnegative_float_env(name: str, default: float, max_value: float = 120.0) -> float:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return default
+    return max(0.0, min(parsed, max_value))
+
+
 def _claude_output(result: subprocess.CompletedProcess[str]) -> tuple[dict[str, Any] | None, str]:
     raw: dict[str, Any] | None = None
     output_text = result.stdout
@@ -416,6 +469,28 @@ def _claude_output(result: subprocess.CompletedProcess[str]) -> tuple[dict[str, 
     if result.returncode != 0 and not output_text:
         output_text = result.stderr or result.stdout
     return raw, output_text
+
+
+def _claude_error_haystack(result: subprocess.CompletedProcess[str], output_text: str) -> str:
+    return "\n".join(part for part in (output_text, result.stderr, result.stdout) if part).lower()
+
+
+def _claude_is_transient_api_error(result: subprocess.CompletedProcess[str], output_text: str) -> bool:
+    if result.returncode == 0:
+        return False
+    haystack = _claude_error_haystack(result, output_text)
+    if not haystack:
+        return False
+    if any(marker in haystack for marker in CLAUDE_PERMANENT_API_ERROR_MARKERS):
+        return False
+    if "api error" not in haystack and "http " not in haystack:
+        return False
+    return any(marker in haystack for marker in CLAUDE_TRANSIENT_API_ERROR_MARKERS)
+
+
+def _claude_retry_delay_seconds(attempt_index: int) -> float:
+    base = _claude_nonnegative_float_env("CLAUDE_API_RETRY_SLEEP_SECONDS", 8.0)
+    return min(base * max(1, attempt_index), 120.0)
 
 
 def _codex_jsonl_last_agent_message(output: str) -> str:
@@ -668,7 +743,41 @@ def invoke_claude(
             emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout"})
         return ProviderResult(actual_run_id, "claude-code", "timeout", "", None, -1)
     raw, output_text = _claude_output(result)
-    first_cost_usd = _actual_cost_usd(raw)
+    attempt_raws: list[dict[str, Any] | None] = [raw]
+    attempt_costs: list[float | None] = [_actual_cost_usd(raw)]
+    transient_retry_started = False
+    transient_retries = _claude_positive_int_env("CLAUDE_API_RETRY_ATTEMPTS", 2)
+    for retry_index in range(1, transient_retries + 1):
+        if not _claude_is_transient_api_error(result, output_text):
+            break
+        transient_retry_started = True
+        if emit:
+            emit(
+                {
+                    "run_id": actual_run_id,
+                    "provider": "claude-code",
+                    "phase": "warning",
+                    "public_message_zh": f"Claude Code 网关/API 返回临时异常，正在自动重试 {retry_index}/{transient_retries}：{_preview_text(output_text, 120)}",
+                }
+            )
+        delay_seconds = _claude_retry_delay_seconds(retry_index)
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        try:
+            result = _run_claude_command(command, workspace, prompt, timeout_seconds)
+        except subprocess.TimeoutExpired:
+            actual_cost_usd = _claude_recorded_attempt_cost(attempt_costs, True, reserved_usd)
+            ledger.complete(actual_run_id, actual_cost_usd, status="timeout")
+            if emit:
+                emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout_after_api_retry"})
+            raw_for_result = {"attempts": attempt_raws} if len(attempt_raws) > 1 else raw
+            return ProviderResult(actual_run_id, "claude-code", "timeout", "", raw_for_result, -1)
+        raw, output_text = _claude_output(result)
+        attempt_raws.append(raw)
+        attempt_costs.append(_actual_cost_usd(raw))
+    if len(attempt_raws) > 1:
+        raw = {"attempts": attempt_raws, "final_attempt": raw}
+    first_cost_usd = attempt_costs[0]
     retry_cost_usd: float | None = None
     retry_started = False
     if result.returncode == 0 and permission_scope in {"chat", "full"} and not output_text.strip():
@@ -687,11 +796,12 @@ def invoke_claude(
                 retry_result = _run_claude_command(_claude_command_with_budget(command, remaining_budget_usd), workspace, _claude_chat_retry_prompt(prompt), timeout_seconds)
                 retry_raw, retry_output = _claude_output(retry_result)
                 retry_cost_usd = _actual_cost_usd(retry_raw)
+                attempt_costs.append(retry_cost_usd)
                 result = retry_result
                 raw = {"first_attempt": raw, "retry_attempt": retry_raw}
                 output_text = retry_output
             except subprocess.TimeoutExpired:
-                ledger.complete(actual_run_id, _claude_recorded_cost(first_cost_usd, None, True, reserved_usd), status="timeout")
+                ledger.complete(actual_run_id, _claude_recorded_attempt_cost(attempt_costs + [None], True, reserved_usd), status="timeout")
                 if emit:
                     emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout_after_empty_retry"})
                 return ProviderResult(actual_run_id, "claude-code", "timeout", "", raw, -1)
@@ -702,7 +812,9 @@ def invoke_claude(
         status = "empty_output"
     else:
         status = "completed" if result.returncode == 0 else "failed"
-    actual_cost_usd = _claude_recorded_cost(first_cost_usd, retry_cost_usd, retry_started, reserved_usd)
+    actual_cost_usd = _claude_recorded_attempt_cost(attempt_costs, retry_started or transient_retry_started, reserved_usd)
+    if actual_cost_usd is None and (retry_started or transient_retry_started):
+        actual_cost_usd = _claude_recorded_cost(first_cost_usd, retry_cost_usd, retry_started, reserved_usd)
     if actual_cost_usd is None:
         actual_cost_usd = _actual_cost_usd(raw)
     ledger.complete(actual_run_id, actual_cost_usd, status=status)
