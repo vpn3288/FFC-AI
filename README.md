@@ -1514,6 +1514,35 @@ sudo journalctl -u ai-telegram-bot -n 100 --no-pager
 - 是否运行过 `pair-telegram.sh`。
 - 是否被旧 webhook 占用。默认 `pair-telegram.sh` 会调用 `deleteWebhook`。
 
+### 某台机器连不上 Telegram API
+
+如果执行下面命令超时或提示网络不可达：
+
+```bash
+curl -I https://api.telegram.org
+```
+
+但同一个内网里另一台机器可以正常访问 Telegram，可以在“能访问 Telegram 的机器”上安装一个只给指定内网 IP 使用的转发：
+
+```bash
+cd ~/FFC-AI
+sudo bash scripts/install-telegram-api-proxy.sh \
+  --listen-host 0.0.0.0 \
+  --listen-port 18081 \
+  --allow-client 需要使用转发的机器IP
+```
+
+然后在“连不上 Telegram 的机器”上重新配对 Telegram，把 `能访问Telegram的机器IP` 换成刚才安装转发的机器：
+
+```bash
+cd ~/FFC-AI
+sudo bash scripts/pair-telegram.sh \
+  --telegram-id 你的Telegram数字ID \
+  --api-base http://能访问Telegram的机器IP:18081
+```
+
+安全提醒：只建议在可信内网里这样做，并且务必用 `--allow-client` 限制来源 IP。
+
 ### 反向 SSH 隧道提示 key 没授权
 
 `setup-runner-tunnel.sh` 会生成 SSH key，并打印 public key。把它加入 VPS 对应用户的：
