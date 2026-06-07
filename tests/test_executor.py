@@ -322,6 +322,22 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["error"]["code"], "daily_budget_exceeded")
             invoke.assert_not_called()
 
+    def test_unlimited_budget_preflight_allows_provider_after_daily_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            data = runtime.ledger.load()
+            data["daily_usd_limit"] = 0.5
+            data["monthly_usd_limit"] = 0.5
+            data["daily_used_usd_estimate"] = 5.0
+            data["monthly_used_usd_estimate"] = 50.0
+            runtime.ledger.save(data)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                response = execute(parsed, {"request_id": "bud-unlimited", "raw_text": "do work", "reserved_usd": 0.0}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 0.0)
+
     def test_management_only_task_rejects_before_queued_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")

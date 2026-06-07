@@ -33,6 +33,19 @@ class BudgetTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(reason, "daily_budget_exceeded")
 
+    def test_unlimited_reservation_skips_limit_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            data = ledger.load()
+            data["daily_usd_limit"] = 0.5
+            data["monthly_usd_limit"] = 0.5
+            data["daily_used_usd_estimate"] = 5.0
+            data["monthly_used_usd_estimate"] = 50.0
+            ledger.save(data)
+            ok, reason = ledger.can_reserve(0)
+            self.assertTrue(ok)
+            self.assertEqual(reason, "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

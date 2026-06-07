@@ -50,10 +50,14 @@ class BudgetLedger:
         atomic_write_json(self.path, data, ensure_ascii=True)
 
     def can_reserve(self, amount: float) -> tuple[bool, str]:
+        if amount <= 0:
+            return True, "ok"
         data = self.load()
-        if data["daily_used_usd_estimate"] + amount > data["daily_usd_limit"]:
+        daily_limit = float(data["daily_usd_limit"])
+        monthly_limit = float(data["monthly_usd_limit"])
+        if daily_limit > 0 and data["daily_used_usd_estimate"] + amount > daily_limit:
             return False, "daily_budget_exceeded"
-        if data["monthly_used_usd_estimate"] + amount > data["monthly_usd_limit"]:
+        if monthly_limit > 0 and data["monthly_used_usd_estimate"] + amount > monthly_limit:
             return False, "monthly_budget_exceeded"
         return True, "ok"
 
