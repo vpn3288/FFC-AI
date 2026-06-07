@@ -1,136 +1,42 @@
-# FFC-AI 小白部署指南
+# FFC-AI 新手安装指南
 
-本文根据当前仓库脚本和代码整理，适合第一次部署的人照着走。
+这份 README 根据 `vpn3288/FFC-AI` 当前仓库内容整理，面向第一次部署的人。你可以把它当作仓库根目录 `README.md` 使用，也可以先照着它完成一次测试机部署。
 
-先说结论：FFC-AI 不是一个新的聊天软件。它用 Telegram 和/或 Mattermost 当手机聊天入口，用本地或服务器上的 AI runner 去调用 Claude Code、VSCode、Codex 等 AI 工具。Telegram 更简单、速度快，适合当日常主入口；Mattermost 更适合自建团队频道、webhook 和 slash command。真正的 AI 执行逻辑都在 runner 里。
+FFC-AI 的核心目标是：让你在手机上通过 Telegram 或 Mattermost 发指令，远程控制一台本地、WSL、小主机或 VPS 上的 AI runner。AI runner 再去调用 Claude Code、Codex 或 VSCode 相关能力完成任务。
 
-## 1. 它到底是怎么工作的
+它不是新的聊天软件，也不是单纯的 Mattermost 安装器。真正执行 AI 任务的是 runner，Telegram 和 Mattermost 只是手机入口。
 
-```mermaid
-flowchart LR
-  phone_tg["手机 Telegram"] --> tg["Telegram bot"]
-  phone_mm["手机 Mattermost 客户端"] --> mm["Mattermost 服务器"]
-  tg --> bridge["AI bridge: /bridge/command"]
-  mm --> slash["/ai slash command"]
-  slash --> bridge
-  bridge --> runner["AI remote runner"]
-  runner --> provider["Claude Code / VSCode / Codex adapter"]
-  runner --> status["Mattermost incoming webhook 状态通知"]
-  runner --> tg_status["Telegram typing / 心跳 / 最终回复"]
-  status --> mm
-  tg_status --> phone_tg
-```
+## 目录
 
-Telegram 和 Mattermost 地位同等。你可以只用 Telegram、只用 Mattermost，或者两个都装。功能是否一样，不取决于谁排在前面，而取决于最后有没有配好同一套 runner 能力、命令表和状态通知。
+1. [先看结论](#先看结论)
+2. [系统架构](#系统架构)
+3. [新手推荐路线](#新手推荐路线)
+4. [准备工作](#准备工作)
+5. [方式 A：Telegram 快速部署](#方式-a-telegram-快速部署)
+6. [方式 B：Mattermost 完整部署](#方式-b-mattermost-完整部署)
+7. [方式 C：已有 Mattermost 或 1Panel](#方式-c-已有-mattermost-或-1panel)
+8. [安装 AI Runner](#安装-ai-runner)
+9. [连接 Runner 和 Mattermost](#连接-runner-和-mattermost)
+10. [验证是否成功](#验证是否成功)
+11. [手机端常用命令](#手机端常用命令)
+12. [常见问题](#常见问题)
+13. [升级、回滚和卸载](#升级回滚和卸载)
+14. [安全提醒](#安全提醒)
+15. [开发和测试](#开发和测试)
 
-如果用 Telegram，你需要：
+## 先看结论
 
-- BotFather 创建的 bot token。
-- 你的 Telegram ID 或发现模式拿到的 chat_id。
-- `ai-telegram-bot.service` 已安装并启动。
-- bot 能访问 runner 的命令处理逻辑。
-
-如果用 Mattermost，你可以把它部署在 VPS、1Panel、Docker、云服务器，或者其他位置。需要配好：
-
-- Mattermost 能用手机正常登录。
-- Mattermost 开启了 bot、incoming webhook、slash command。
-- 创建了 `/ai` slash command，并指向 AI bridge。
-- 创建了 incoming webhook，用来接收 runner 的状态通知。
-- runner 端保存了 Mattermost 的 URL、webhook URL、slash token、bridge shared secret。
-- Mattermost 能访问 runner 的 `/bridge/command` 地址。
-
-Telegram 和 Mattermost 的普通状态/帮助命令都会尽量同步返回；Claude Code、VSCode 或 Codex 这类长 AI 任务会先返回“已收到/后台运行”，随后持续发送排队、调用、运行、完成或失败状态，避免手机端看不出它是在思考、联网、执行工具，还是已经断开。
-
-## 2. 推荐准备
-
-### 手机入口
-
-Telegram 不需要单独部署聊天服务器，只要 BotFather token 和 Telegram ID。它最轻，速度也快，适合作为日常主入口。
-
-Mattermost 需要一台通信服务器。推荐：
-
-- 一台 VPS。
-- 一个域名，例如 `ai.example.com`。
-- 域名解析到 VPS 公网 IP。
-- 80 和 443 端口开放。
-- Ubuntu/Debian 更省心。
-
-脚本自带的通信服务器安装器会安装：
-
-- Mattermost Team Edition 最新官方 release，且不低于 `10.11.0`
-- PostgreSQL `15.10-alpine`
-- Caddy `2.8.4-alpine`
-- Docker / Docker Compose
-
-Mattermost 版本默认来自官方 GitHub latest release。这样手机 App 要求新服务端时，新安装会自动跟上。你也可以手动固定版本：
+如果你只想最快用手机控制 AI：
 
 ```bash
-sudo env MATTERMOST_VERSION=11.7.2 scripts/install-communication-vps.sh --domain ai.example.com
-```
+git clone https://github.com/vpn3288/FFC-AI.git
+cd FFC-AI
 
-脚本会拒绝安装低于 `10.11.0` 的 Mattermost 版本。PostgreSQL 和 Caddy 版本来自 `versions.lock`，并且仍然锁了 digest。
-
-### AI runner 机器
-
-AI runner 可以跑在：
-
-- 本地 Linux
-- WSL
-- 小主机
-- 另一台云服务器
-- 和 Mattermost 同一台 VPS
-
-runner 机器需要：
-
-- Python 3.10+
-- `sudo`
-- `apt-get`，如果要让脚本自动装依赖
-- `curl`、`git`、`openssl`、`gpg`
-- Claude Code、VSCode 或 Codex 相关 CLI，取决于你要用哪个 AI
-
-如果系统有 systemd，脚本会创建：
-
-```text
-/etc/systemd/system/ai-remote-runner.service
-```
-
-如果没有 systemd，比如部分 WSL 环境，脚本会生成：
-
-```text
-/opt/ai-remote-runner/run-local.sh
-```
-
-## 3. 两种通信入口思路
-
-### 方式 A：Telegram 直连 runner
-
-适合你想先最快把手机和 AI runner 打通。
-
-在 runner 安装时启用 Telegram：
-
-```bash
 AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
-# 或：
-AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
-# 或：
-AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
-sudo scripts/pair-telegram.sh --telegram-id 你的TelegramID
+sudo scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
 ```
 
-脚本会安全提示输入 BotFather token，并启动：
-
-```text
-ai-telegram-bot.service
-```
-
-Telegram 和 Mattermost 使用同一套 `/ai` 命令表、同一套 provider 选择、同一套长对话/新对话策略、同一套全权限开关。
-配对完成后，`pair-telegram.sh` 会自动运行 `validate-core-ready.sh`，只对本机启用的 provider 做真实 full-access smoke，验证 root、网络、文件、venv/安装能力。不通过就不会把 `core_ready` 标记成 true。
-
-### 方式 B：用本项目脚本部署 Mattermost
-
-适合你想让脚本帮你装 Mattermost、Caddy、PostgreSQL。
-
-在 VPS 上执行：
+如果你想自建团队频道、状态频道、slash command 和 webhook：
 
 ```bash
 git clone https://github.com/vpn3288/FFC-AI.git
@@ -140,9 +46,344 @@ scripts/install-communication-vps.sh --dry-run --domain ai.example.com
 sudo scripts/install-communication-vps.sh --domain ai.example.com
 ```
 
-把 `ai.example.com` 换成你自己的域名。
+然后再安装 runner、补全 `/ai` slash command、执行配对和验证。
 
-脚本会把 Mattermost 安装到：
+最重要的验收标准只有两个：
+
+```text
+Telegram 里发送 /ai 状态，能收到 runner 状态。
+Mattermost 里发送 /ai 状态，能收到 runner 状态。
+```
+
+只用 Telegram 时，达到第一个即可。只用 Mattermost 时，达到第二个即可。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+  phone_tg["手机 Telegram"] --> tg_bot["Telegram Bot"]
+  phone_mm["手机 Mattermost"] --> mm["Mattermost Server"]
+  tg_bot --> runner["AI Remote Runner"]
+  mm --> slash["/ai Slash Command"]
+  slash --> bridge["/bridge/command"]
+  bridge --> runner
+  runner --> provider["Claude Code / Codex / VSCode"]
+  runner --> tg_status["Telegram 状态和最终回复"]
+  runner --> mm_status["Mattermost Incoming Webhook 状态"]
+  tg_status --> phone_tg
+  mm_status --> mm
+```
+
+几个关键概念：
+
+- `AI remote runner`：真正执行命令和调用 AI provider 的 Python 服务。
+- `provider`：实际 AI 工具，目前支持 `claude-code`、`codex`、`vscode`。
+- `Telegram`：最快的手机入口，不需要自建聊天服务器。
+- `Mattermost`：自建团队通信入口，支持频道、slash command、incoming webhook。
+- `/bridge/command`：Mattermost slash command 或验证脚本访问 runner 的 HTTP 接口。
+- `AI_BRIDGE_SHARED_SECRET`：bridge 验证用共享密钥，不要发到聊天里。
+- `MATTERMOST_SLASH_TOKEN`：Mattermost slash command token，也不要发到聊天里。
+
+## 新手推荐路线
+
+### 路线 1：只用 Telegram
+
+适合：
+
+- 想最快跑通手机控制 AI。
+- 不想先折腾域名、TLS、Docker、Mattermost。
+- 个人使用为主。
+
+推荐命令：
+
+```bash
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+sudo scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
+```
+
+### 路线 2：Telegram + Codex
+
+适合：
+
+- 你已经有 OpenAI API Key 或已配置 Codex CLI。
+- 希望手机发任务，runner 用 Codex 执行。
+
+可提前设置：
+
+```bash
+export OPENAI_API_KEY="你的OpenAI API Key"
+export CODEX_MODEL="gpt-5.5"
+export CODEX_BASE_URL="https://api.openai.com/v1"
+
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+```
+
+### 路线 3：Mattermost + Runner
+
+适合：
+
+- 想自建一个 AI 操作频道。
+- 想把状态、错误、归档分频道展示。
+- 想让团队成员一起在 Mattermost 中使用 `/ai`。
+
+推荐顺序：
+
+1. 在 VPS 上部署 Mattermost。
+2. 在 runner 机器上安装 AI runner。
+3. 确认 Mattermost 能访问 runner 的 `/bridge/command`。
+4. 运行 `bootstrap-mattermost.sh` 创建 `/ai` slash command。
+5. 运行 `pair-runner.sh` 把 Mattermost token 和 bridge secret 写入 runner。
+6. 运行验证脚本。
+
+### 路线 4：已有 Mattermost 或 1Panel
+
+适合：
+
+- 你已经有 Mattermost。
+- 你通过 1Panel、Docker Compose 或其他方式部署 Mattermost。
+
+这时不一定要用 `install-communication-vps.sh`。你只要手动完成同样的集成对象：
+
+- team，例如 `ai-lab`
+- channel，例如 `ai-ops`、`ai-status`
+- incoming webhook
+- slash command，trigger 为 `ai`
+- slash command URL 指向 runner 的 `/bridge/command`
+- slash command token 写入 runner
+
+## 准备工作
+
+### Runner 机器要求
+
+runner 可以装在：
+
+- Ubuntu 或 Debian 服务器
+- WSL
+- 本地 Linux 小主机
+- 和 Mattermost 同一台 VPS
+- 单独一台 VM
+
+建议准备：
+
+```text
+Python 3.10+
+sudo
+git
+curl
+openssl
+gpg
+apt-get
+systemd，推荐但不是必须
+```
+
+如果选择 Codex，建议系统有 Node.js 20+ 和 npm。安装脚本会尝试通过 NodeSource 安装 Node.js 20，并通过 npm 安装仓库锁定的 Codex CLI 包。
+
+如果选择 Claude Code，需要 `claude` 命令可用，并且 `claude auth status --json` 能通过。
+
+如果选择 VSCode，需要 `code` 命令可用。脚本会尝试通过 Microsoft apt repository 安装 VSCode，并创建 root/full-access wrapper：
+
+```text
+/usr/local/bin/code-root
+```
+
+### Mattermost VPS 要求
+
+如果你要用项目脚本部署 Mattermost，建议准备：
+
+```text
+Ubuntu 24.04 LTS 或 Debian 12
+2 vCPU+
+4 GB RAM+
+40 GB 磁盘+
+公网 IP
+域名，例如 ai.example.com
+80 和 443 端口开放
+```
+
+域名需要提前解析到 VPS 公网 IP。
+
+脚本会安装或使用：
+
+- Docker Engine
+- Docker Compose plugin 或 `docker-compose`
+- Mattermost Team Edition
+- PostgreSQL
+- Caddy
+
+根据 `versions.lock`，数据库和 Caddy 镜像使用带 digest 的锁定版本；Mattermost 默认解析官方 latest release，但脚本要求版本不低于 `10.11.0`。
+
+### 克隆仓库
+
+在要部署的机器上执行：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl ca-certificates
+
+git clone https://github.com/vpn3288/FFC-AI.git
+cd FFC-AI
+```
+
+后文所有命令默认都在 `FFC-AI` 仓库目录下执行。
+
+## 方式 A：Telegram 快速部署
+
+Telegram 是最简单的入口。你只需要：
+
+- 一个 Telegram 账号
+- BotFather 创建的 bot token
+- 你的 Telegram 数字 chat_id 或 user_id
+- 一台已经安装 runner 的机器
+
+### 第 1 步：创建 Telegram Bot
+
+在 Telegram 里：
+
+1. 搜索 `@BotFather`。
+2. 发送 `/newbot`。
+3. 按提示设置机器人名称和用户名。
+4. 复制 BotFather 返回的 bot token。
+5. 打开你新建的 bot，先发送一条消息，例如 `/start`。
+
+### 第 2 步：安装 Runner，同时启用 Telegram
+
+选择一种 provider。新手通常先选 Codex：
+
+```bash
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+```
+
+如果你要用 Claude Code：
+
+```bash
+AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
+```
+
+如果你要用 VSCode adapter：
+
+```bash
+AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
+```
+
+注意：当前脚本要求一台 VM 只选择一种主 provider。下面这些会被拒绝：
+
+```bash
+AI_RUNNER_COMPONENTS=all sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=full sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=claude-code,codex sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,vscode sudo -E scripts/install-runner.sh
+```
+
+可以加 `telegram`，例如 `codex,telegram`，但不要在同一台机器混装多个主 provider。
+
+### 第 3 步：保存 Bot Token
+
+推荐把 token 写到 root 只读文件，不要直接放命令行里：
+
+```bash
+sudo install -m 600 /dev/null /root/ffc-ai-telegram-token
+sudo nano /root/ffc-ai-telegram-token
+sudo chmod 600 /root/ffc-ai-telegram-token
+```
+
+把 BotFather token 粘进去，保存退出。
+
+### 第 4 步：不知道 chat_id 时，先用发现模式
+
+如果你不知道自己的 Telegram 数字 ID：
+
+```bash
+sudo scripts/pair-telegram.sh \
+  --bot-token-file /root/ffc-ai-telegram-token \
+  --discover-chat-id
+```
+
+然后在 Telegram 里给 bot 发一条消息。脚本会尝试发现 chat_id。
+
+如果脚本已经退出，但你还没记住 chat_id，可以重新执行发现模式。
+
+### 第 5 步：正式配对 Telegram
+
+拿到 chat_id 后执行：
+
+```bash
+sudo scripts/pair-telegram.sh \
+  --bot-token-file /root/ffc-ai-telegram-token \
+  --telegram-id 你的Telegram数字ID
+```
+
+这个脚本会做这些事：
+
+- 调用 Telegram `getMe` 验证 bot token。
+- 默认调用 `deleteWebhook`，让 bot 使用 long polling。
+- 同步 Telegram 命令菜单。
+- 发送并编辑一条测试消息，验证状态消息可更新。
+- 写入 `/var/lib/ai-remote-runner/config.env`。
+- 启动或重启 `ai-telegram-bot.service`。
+- 默认运行 `validate-core-ready.sh`。
+
+如果机器没有 systemd，脚本会提示你手动运行：
+
+```bash
+sudo /opt/ai-remote-runner/run-telegram-local.sh
+```
+
+### 第 6 步：在 Telegram 测试
+
+发送：
+
+```text
+/ai 状态
+/ai 帮助
+/ai 功能
+```
+
+然后试一个普通任务：
+
+```text
+请总结当前项目的目录结构
+```
+
+Telegram bot 会显示 queued、calling、running、done 或 error 等状态。长任务中它会发送 typing 状态和心跳，避免你误以为断线。
+
+## 方式 B：Mattermost 完整部署
+
+这个方式会用项目脚本在 VPS 上安装 Mattermost、PostgreSQL、Caddy，并创建 FFC-AI 需要的频道和集成对象。
+
+### 第 1 步：确认域名和端口
+
+假设你的域名是：
+
+```text
+ai.example.com
+```
+
+需要确认：
+
+- DNS A 记录已经指向 VPS 公网 IP。
+- VPS 安全组或防火墙开放 80 和 443。
+- VPS 上没有其他服务占用 80 和 443。
+
+### 第 2 步：先 dry-run
+
+在 VPS 上：
+
+```bash
+git clone https://github.com/vpn3288/FFC-AI.git
+cd FFC-AI
+
+scripts/install-communication-vps.sh --dry-run --domain ai.example.com
+```
+
+`--dry-run` 只打印将要执行的动作，不会真正安装。
+
+### 第 3 步：正式安装 Mattermost
+
+```bash
+sudo scripts/install-communication-vps.sh --domain ai.example.com
+```
+
+脚本默认安装到：
 
 ```text
 /opt/ffc-ai-mattermost
@@ -157,140 +398,254 @@ sudo scripts/install-communication-vps.sh --domain ai.example.com
 /opt/ffc-ai-mattermost/install-manifest.json
 ```
 
-安装后注意两点：
+`.env` 里会保存 Mattermost 管理员账号、数据库密码、bridge shared secret、slash token 等敏感信息。不要把它发到聊天里，也不要提交到 GitHub。
 
-- `install-manifest.json` 里一开始会是 `platform_ready=false`，这是正常的。
-- 如果安装时还不知道 runner 的 bridge 地址，`/ai` slash command 会暂时不创建，后面要补。
+安装后 `install-manifest.json` 里的 `platform_ready` 一开始通常是 `false`，这是正常的。它表示还没有完成 runner 配对和集成验证。
 
-### 方式 C：用 1Panel 或已有 Mattermost
+### 第 4 步：查看 Mattermost 管理员账号
 
-可以。只要你最终手动完成同样的 Mattermost 配置，功能上没有区别。
+管理员信息在：
 
-你需要在 Mattermost 里准备：
+```text
+/opt/ffc-ai-mattermost/.env
+```
+
+可以查看字段名：
+
+```bash
+sudo awk -F= '$1 ~ /^MATTERMOST_ADMIN_/ {print $1"="substr($0,index($0,"=")+1)}' \
+  /opt/ffc-ai-mattermost/.env
+```
+
+浏览器打开：
+
+```text
+https://ai.example.com
+```
+
+使用 `.env` 里的管理员账号登录。
+
+### 第 5 步：理解脚本创建的对象
+
+`bootstrap-mattermost.sh` 会创建或复用：
+
+```text
+team: ai-lab
+channels: ai-ops, ai-status, ai-reviews, ai-errors, ai-archive
+bots: ai-bridge, master-writer-ai, claude-code-ai, codex-ai, reviewer-ai-1, reviewer-ai-2, optional-specialist-ai
+incoming webhook: 默认绑定 ai-status
+slash command: /ai，如果提供了 BRIDGE_COMMAND_URL
+```
+
+如果安装 Mattermost 时还不知道 runner 的 bridge 地址，`/ai` slash command 会暂时不创建。后面知道地址后重新运行 bootstrap 即可。
+
+## 方式 C：已有 Mattermost 或 1Panel
+
+如果你已经有 Mattermost，或者用 1Panel 部署了 Mattermost，不一定要运行 `install-communication-vps.sh`。
+
+你需要手动准备：
 
 - 一个 team，例如 `ai-lab`。
-- 几个频道，例如 `ai-ops`、`ai-status`、`ai-reviews`、`ai-errors`、`ai-archive`。
+- 一个频道接收命令，例如 `ai-ops`。
+- 一个频道接收状态，例如 `ai-status`。
 - 一个 incoming webhook，建议绑定到 `ai-status`。
 - 一个 slash command：
   - trigger：`ai`
-  - command：用户输入时就是 `/ai`
-  - request URL：runner 的 `/bridge/command`
+  - request URL：`http://runner可访问地址/bridge/command`
   - method：POST
-- 复制 slash command token。
 
-如果你想用 `scripts/bootstrap-mattermost.sh` 自动创建 team、频道、bot、webhook、slash command，需要注意：这个脚本依赖 `mmctl --local`。它默认认为 Mattermost 位于 `/opt/ffc-ai-mattermost`，并且 Docker Compose 服务名叫 `mattermost`。1Panel 的目录和服务名可能不同，所以你可能需要手动创建这些对象，或者改脚本适配你的 1Panel 部署。
+然后把以下信息保存到 runner：
 
-## 4. 安装 AI runner
+- Mattermost URL
+- incoming webhook URL
+- slash command token
+- bridge shared secret
 
-在 runner 机器上执行：
+如果想复用本仓库的 `bootstrap-mattermost.sh` 自动创建对象，需要注意：脚本依赖 `mmctl --local`，并默认认为 Mattermost 位于：
+
+```text
+/opt/ffc-ai-mattermost
+```
+
+1Panel 的目录、容器名、网络名可能不同，所以你可能需要手动创建 webhook 和 slash command，或者改脚本适配自己的 1Panel 部署。
+
+## 安装 AI Runner
+
+Runner 是 Python 包加 systemd 服务。项目的 `pyproject.toml` 声明包名为：
+
+```text
+ai-remote-runner
+```
+
+命令入口为：
+
+```text
+ai-remote-runner = ai_remote_runner.cli:main
+```
+
+### 选择 Provider
+
+必须通过 `AI_RUNNER_COMPONENTS` 显式声明这台机器要装什么。
+
+Codex 专机：
 
 ```bash
-git clone https://github.com/vpn3288/FFC-AI.git
-cd FFC-AI
+AI_RUNNER_COMPONENTS=codex sudo -E scripts/install-runner.sh
+```
 
-AI_RUNNER_COMPONENTS=codex,telegram scripts/install-runner.sh --dry-run
+Codex 专机，同时启用 Telegram：
+
+```bash
 AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
 ```
 
-现在脚本要求显式声明这台机器要装什么，避免一台机器意外装入多个 AI 工具。常用选择：
+Claude Code 专机：
 
 ```bash
-# Codex 专机，带 Telegram
+AI_RUNNER_COMPONENTS=claude-code sudo -E scripts/install-runner.sh
+```
+
+VSCode 专机：
+
+```bash
+AI_RUNNER_COMPONENTS=vscode sudo -E scripts/install-runner.sh
+```
+
+如果你想指定默认 provider：
+
+```bash
+AI_RUNNER_COMPONENTS=codex,telegram \
+AI_DEFAULT_PROVIDER=codex \
+sudo -E scripts/install-runner.sh
+```
+
+### Codex 配置
+
+如果启用 `codex`，脚本会：
+
+- 检查 `codex --version`
+- 尝试安装 Node.js 20+
+- 尝试通过 npm 安装 `@openai/codex@0.137.0`
+- 检查 `codex exec` 是否支持 runner 需要的参数
+
+可提前设置：
+
+```bash
+export OPENAI_API_KEY="你的OpenAI API Key"
+export CODEX_MODEL="gpt-5.5"
+export CODEX_BASE_URL="https://api.openai.com/v1"
+
 AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+```
 
-# Claude Code 专机，带 Telegram
+安装脚本会为 root/global 运行写入 Codex 配置。默认是 full-access VM 模式：
+
+```toml
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[shell_environment_policy]
+inherit = "all"
+
+[sandbox_workspace_write]
+network_access = true
+```
+
+这意味着 Codex 在这台 VM 里有很高权限。请只在你专门为 AI 准备的机器或 VM 中运行。
+
+### Claude Code 配置
+
+如果启用 `claude-code`，脚本会：
+
+- 检查 `claude --version`
+- 尝试安装 Claude Code
+- 检查 `claude auth status --json`
+- 检查 Claude Code 是否支持 full-access 所需参数
+
+你需要提前完成 Claude Code 登录或 API 配置，否则验证不会通过。
+
+常见环境变量：
+
+```bash
+export ANTHROPIC_API_KEY="你的Anthropic API Key"
+export ANTHROPIC_BASE_URL="https://你的兼容网关"
+export CLAUDE_MODEL="claude-opus-4-8"
+```
+
+然后：
+
+```bash
 AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
+```
 
-# VSCode 专机，带 Telegram，启用独立 vscode adapter
+### VSCode 配置
+
+如果启用 `vscode`，脚本会：
+
+- 检查 `code --version`
+- 如果缺失，尝试通过 Microsoft apt repository 安装 VSCode
+- 创建 `/usr/local/bin/code-root`
+- 写 root VSCode settings，默认关闭 workspace trust 和 telemetry
+- 使用 Claude 后端相关配置
+
+常见变量：
+
+```bash
+export VSCODE_CLAUDE_MODEL="gpt-5.5"
+
 AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
 ```
 
-`all`、`full`、`core` 这类混装入口已默认拒绝。实验室部署按“一台 VM 一种 AI/工具”拆开：Codex 专机、Claude Code 专机、VSCode 专机分别安装，Telegram 可以加在任何一台上作为同等通信入口。
+### Runner 目录
 
-带 `telegram` 的安装会额外安装 `ai-telegram-bot.service`。如果还没有 BotFather token，服务会先装好但不启动，后面配对时再启动。
-
-VSCode 组件会安装/验证 VSCode，并创建 root/full-access 包装器：
+默认路径：
 
 ```text
-/usr/local/bin/code-root
-```
-
-`code-root` 会用 root 的 VSCode 数据目录和扩展目录启动 `code`，并传入 `--no-sandbox`、`--disable-workspace-trust`，用于这类专门创建的 VM/测试机。脚本还会写入 root VSCode User settings，默认关闭 workspace trust 和 telemetry。`VSCODE_CLAUDE_MODEL` 是 VSCode adapter 的模型变量；兼容旧环境变量 `VSCODE_MODEL`。
-
-`AI_DEFAULT_PROVIDER` 只决定默认把任务发给谁，并且必须属于本机显式安装的 provider。例如 Codex 专机：
-
-```bash
-AI_RUNNER_COMPONENTS=codex,telegram AI_DEFAULT_PROVIDER=codex sudo -E scripts/install-runner.sh
-```
-
-runner 默认目录：
-
-```text
-/var/lib/ai-remote-runner        # 状态、配置、凭据、上下文
-/srv/ai-workspaces              # AI 工作区
-/opt/ai-remote-runner           # 安装代码
-```
-
-runner 配置文件：
-
-```text
+/opt/ai-remote-runner             # 安装代码和虚拟环境
+/var/lib/ai-remote-runner         # 状态、配置、凭据、上下文
+/srv/ai-workspaces                # AI 工作区
 /var/lib/ai-remote-runner/config.env
+/var/lib/ai-remote-runner/install-manifest.json
 ```
 
 systemd 服务：
 
+```text
+/etc/systemd/system/ai-remote-runner.service
+/etc/systemd/system/ai-telegram-bot.service
+```
+
+查看状态：
+
 ```bash
 sudo systemctl status ai-remote-runner
-sudo systemctl restart ai-remote-runner
+sudo systemctl status ai-telegram-bot
 ```
 
-## 5. Claude Code、VSCode 和 Codex
-
-### Claude Code
-
-如果你启用了 `claude-code`，脚本会：
-
-- 检查 `claude --version`
-- 如果没有安装，会尝试按官方 apt 源安装
-- 检查 `claude auth status --json`
-
-所以你需要提前完成 Claude Code 登录或 API 配置。否则 runner 不能进入 core ready。
-
-### Codex
-
-如果你启用了 `codex`，脚本会：
-
-- 检查 `codex --version`
-- 如果没有安装，会尝试通过 npm 安装 `@openai/codex@0.137.0`
-
-如果你提前设置了这些变量，脚本会写入 Codex 配置：
+查看日志：
 
 ```bash
-export OPENAI_API_KEY="你的 OpenAI API Key"
-export CODEX_MODEL="gpt-5.5"
-export CODEX_BASE_URL="https://api.openai.com/v1"
+sudo journalctl -u ai-remote-runner -n 100 --no-pager
+sudo journalctl -u ai-telegram-bot -n 100 --no-pager
 ```
 
-脚本默认按 root/global 模式配置 AI 工具：systemd 服务显式以 root 运行，`HOME=/root`，`CODEX_HOME=/root/.codex`，Codex 配置启用 `approval_policy="never"`、`sandbox_mode="danger-full-access"`、`openai_base_url` 和 `[sandbox_workspace_write].network_access=true`。安装预检还会确认 `codex exec` 支持 `--json`、`--ephemeral`、`--cd`、`--output-last-message`、`--add-dir /`、`--skip-git-repo-check` 以及 full-access 运行模式；这些能力会写入 install manifest 并显示在 `/ai 功能` 里。如果你显式设置 `AI_TOOL_HOME` 或 `AI_CODEX_HOME`，才会写到自定义目录。
-
-Claude 后端默认不传原生 `--max-turns` 和 `--max-budget-usd` 限制，`CLAUDE_MAX_TURNS=0`、`VSCODE_CLAUDE_MAX_TURNS=0`、`AI_TASK_RESERVED_USD=0`、`TELEGRAM_RESERVED_USD=0` 都表示无限/不由 runner 限制；单次任务预算为 `0` 时也不会触发 runner 的 daily/monthly budget preflight。需要主动限轮时，显式设置对应 adapter 的 max-turns，或在 Telegram 里执行 `/ai 轮数 设置 [claude-code|vscode] <正整数>`；恢复无限可执行 `/ai 轮数 设置 [claude-code|vscode] 无限`。
-
-模型切换分为两条命令，避免 GPT/Claude 的别名和网关配置互相污染：
+如果没有 systemd，比如部分 WSL 环境，脚本会生成：
 
 ```text
-/ai GPT模型 设置 [codex|claude-code|vscode] gpt-5.5
-/ai Claude模型 设置 [codex|claude-code|vscode] claude-opus-4-8
+/opt/ai-remote-runner/run-local.sh
+/opt/ai-remote-runner/run-telegram-local.sh
 ```
 
-`codex` 会写 `CODEX_MODEL` 和 `~/.codex/config.toml`；`claude-code` 会写 `CLAUDE_MODEL`；`vscode` 会写 `VSCODE_CLAUDE_MODEL`。当 `codex` 使用 Claude 模型，或 Claude 后端使用 GPT 模型时，当前配置的 `CODEX_BASE_URL` 或 `ANTHROPIC_BASE_URL` 网关必须支持对应模型。旧 `/ai 模型 使用 ...` 仍保留兼容，但推荐改用上面两条明确命令。
+手动运行：
 
-### VSCode
+```bash
+sudo /opt/ai-remote-runner/run-local.sh
+sudo /opt/ai-remote-runner/run-telegram-local.sh
+```
 
-脚本会检查 `code --version`。如果没有安装，并且系统支持 apt，会通过 Microsoft apt repository 安装最新 `code` 包。安装后会写入 `/usr/local/bin/code-root`，方便在 VM 内以 root/full-access 方式启动 VSCode。带 Telegram/runner 安装时，VSCode 作为独立 `vscode` provider 出现在 `/ai 提供商`、`/vscode`、`/ai GPT模型 设置 vscode ...` 和 `/ai Claude模型 设置 vscode ...` 中，配置项使用 `VSCODE_CLAUDE_*`，不会和 `claude-code` provider 共用轮数、重试和模型变量。
+## 连接 Runner 和 Mattermost
 
-## 6. 让 Mattermost 能访问 runner
-
-Mattermost 的 slash command 必须能请求到：
+Mattermost 的 `/ai` slash command 必须能访问 runner：
 
 ```text
 http://runner可访问地址/bridge/command
@@ -302,33 +657,49 @@ runner 默认监听：
 127.0.0.1:8765
 ```
 
-如果 Mattermost 和 runner 在同一台机器，可能可以用：
+### 同一台机器部署
+
+如果 Mattermost 和 runner 在同一台机器上，并且 Mattermost 不是从容器里访问宿主机，可能可以用：
 
 ```text
 http://127.0.0.1:8765/bridge/command
 ```
 
-但如果 Mattermost 跑在 Docker 容器里，`127.0.0.1` 可能指的是 Mattermost 容器自己，不是宿主机。这时要换成容器能访问到的宿主机地址、内网地址、VPN 地址，或自己配置 `host.docker.internal` / host-gateway。
+### Mattermost 在 Docker 里
 
-如果 runner 在家里、WSL 或本地机器，可以用反向 SSH 隧道。脚本提供：
+如果 Mattermost 在 Docker 容器里，`127.0.0.1` 通常指 Mattermost 容器自己，不是 VPS 宿主机，也不是 runner。
+
+这时你需要使用容器能访问到的地址，例如：
+
+```text
+http://宿主机内网IP:8765/bridge/command
+http://host.docker.internal:8765/bridge/command
+http://VPN地址:8765/bridge/command
+```
+
+如果 slash command URL 使用 `127.0.0.1`、内网 IP 或 `host.docker.internal`，`bootstrap-mattermost.sh` 会尝试把该 host 写入 Mattermost 的 `AllowedUntrustedInternalConnections`，并在可判断时重启 Mattermost 让配置生效。
+
+### Runner 在家里或 WSL，Mattermost 在 VPS
+
+可以用反向 SSH 隧道：
 
 ```bash
 sudo scripts/setup-runner-tunnel.sh --vps-host YOUR_VPS_IP
 ```
 
-它会创建：
+默认会创建：
 
 ```text
 /etc/systemd/system/ai-remote-runner-tunnel.service
 ```
 
-默认把 VPS 的：
+默认把 VPS 上的：
 
 ```text
 127.0.0.1:18765
 ```
 
-转发到 runner 本机的：
+转发到 runner 本机：
 
 ```text
 127.0.0.1:8765
@@ -340,95 +711,62 @@ sudo scripts/setup-runner-tunnel.sh --vps-host YOUR_VPS_IP
 bridge command URL from the VPS is http://127.0.0.1:18765/bridge/command
 ```
 
-再次提醒：这个 URL 是 VPS 主机视角。Mattermost 容器不一定能直接访问 VPS 主机的 `127.0.0.1`。
+注意：这是 VPS 主机视角。Mattermost 容器里不一定能直接访问 VPS 主机的 `127.0.0.1:18765`。如果 Mattermost 在容器里，还需要处理 Docker 网络视角。
 
-## 7. 创建或补全 `/ai` slash command
+### 创建或更新 `/ai` slash command
 
-如果你用项目脚本部署 Mattermost，并且现在已经知道 `BRIDGE_COMMAND_URL`，可以在 VPS 上重新运行 bootstrap：
+知道 bridge URL 后，在 Mattermost VPS 上执行：
 
 ```bash
-cd FFC-AI
-
 sudo env MATTERMOST_INSTALL_DIR=/opt/ffc-ai-mattermost \
-  BRIDGE_COMMAND_URL="http://你的-bridge-地址/bridge/command" \
+  BRIDGE_COMMAND_URL="http://你的bridge地址/bridge/command" \
   bash scripts/bootstrap-mattermost.sh
 ```
 
-这个脚本会：
-
-- 创建或复用 `ai-lab` team。
-- 创建或复用 `ai-ops`、`ai-status` 等频道。
-- 创建 bot 身份。
-- 把管理员账号、邮箱、密码同步到 `.env` 中记录的值。
-- 开启 bot、webhook、commands。
-- 创建 incoming webhook。
-- 如果提供了 `BRIDGE_COMMAND_URL`，创建 `/ai` slash command。
-- 如果 slash command 指向 `127.0.0.1`、内网 IP 或 `host.docker.internal`，自动配置 Mattermost 允许访问这个内网 bridge host，并在可判断服务类型时重启 Mattermost 让配置生效。
-- 把 slash token 写入 `/opt/ffc-ai-mattermost/.env`。
-
-incoming webhook 的 ID 会在：
+成功后，`/opt/ffc-ai-mattermost/.env` 会包含：
 
 ```text
-/opt/ffc-ai-mattermost/mattermost-objects.json
+MATTERMOST_SLASH_TOKEN=...
 ```
 
-如果 ID 是 `abc123`，你的 webhook URL 通常是：
+`/opt/ffc-ai-mattermost/mattermost-objects.json` 会包含 incoming webhook ID。假设 ID 是 `abc123`，webhook URL 通常是：
 
 ```text
 https://ai.example.com/hooks/abc123
 ```
 
-## 8. 配对 runner 和 Mattermost
+### 把 Mattermost 配置写入 Runner
 
-runner 需要知道：
+`pair-runner.sh` 会把 Mattermost URL、webhook URL、slash token、bridge secret 写入 runner 的：
 
-- Mattermost 地址
-- incoming webhook URL
-- slash command token
-- bridge shared secret
+```text
+/var/lib/ai-remote-runner/config.env
+```
 
-当前 `pair-runner.sh` 要求 secret 和 slash token 从文件或 stdin 读取，不建议直接写在命令参数里。
-
-先准备两个只给 root 读的文件：
+先准备两个 root 只读文件：
 
 ```bash
 sudo install -m 600 /dev/null /root/ffc-ai-bridge-secret
 sudo install -m 600 /dev/null /root/ffc-ai-slash-token
 ```
 
-把 bridge secret 写入 `/root/ffc-ai-bridge-secret`。
-
-如果 runner 已经安装过，可以从 runner 配置里取：
+如果 Mattermost 是项目脚本部署的，可以从 VPS `.env` 里读取：
 
 ```bash
 sudo awk -F= '$1=="AI_BRIDGE_SHARED_SECRET"{print $2}' \
-  /var/lib/ai-remote-runner/config.env | sudo tee /root/ffc-ai-bridge-secret >/dev/null
-sudo chmod 600 /root/ffc-ai-bridge-secret
-```
+  /opt/ffc-ai-mattermost/.env | sudo tee /root/ffc-ai-bridge-secret >/dev/null
 
-如果你要使用通信脚本生成的 secret，可以从 VPS 的：
-
-```text
-/opt/ffc-ai-mattermost/.env
-```
-
-读取 `AI_BRIDGE_SHARED_SECRET`，再通过 SSH、密钥管理器或其他安全方式传到 runner。
-
-把 slash token 写入 `/root/ffc-ai-slash-token`。
-
-如果你用项目脚本创建了 slash command，可以从 VPS 的 `.env` 里读取：
-
-```bash
 sudo awk -F= '$1=="MATTERMOST_SLASH_TOKEN"{print $2}' \
   /opt/ffc-ai-mattermost/.env | sudo tee /root/ffc-ai-slash-token >/dev/null
-sudo chmod 600 /root/ffc-ai-slash-token
+
+sudo chmod 600 /root/ffc-ai-bridge-secret /root/ffc-ai-slash-token
 ```
+
+如果 runner 和 Mattermost 不在同一台机器，请通过 SSH、密钥管理器或其他安全方式传输这些文件，不要通过聊天发送。
 
 然后在 runner 机器上执行：
 
 ```bash
-cd FFC-AI
-
 sudo scripts/pair-runner.sh \
   --platform-url "https://ai.example.com" \
   --webhook-url "https://ai.example.com/hooks/你的WebhookID" \
@@ -437,101 +775,23 @@ sudo scripts/pair-runner.sh \
   --slash-token-file /root/ffc-ai-slash-token
 ```
 
-配对脚本会写入：
+`--transfer-method` 可选值：
 
 ```text
-/var/lib/ai-remote-runner/config.env
+ssh
+broker
+manual-secure
 ```
 
-`pair-runner.sh` 写完配置后会在 systemd 环境中自动重启 `ai-remote-runner.service`，让新的 slash token 生效。
+当前脚本要求 bridge secret 和 slash token 从文件或 stdin 读取，不支持把 bridge secret 直接写到命令参数里。这是为了避免 shell history 或进程列表泄露密钥。
 
-```bash
-sudo systemctl restart ai-remote-runner
-```
+## 验证是否成功
 
-如果你是在无 systemd 环境中运行，或者你想手动确认，可以重新启动：
-
-```bash
-sudo /opt/ai-remote-runner/run-local.sh
-```
-
-## 9. 配对 Telegram
-
-Telegram 不需要再部署聊天服务器，只需要一个 Telegram BotFather token。它和 Mattermost 是同等级入口；你完全可以把 Telegram 当日常主要入口。
-
-在 Telegram 里：
-
-- 找到 `@BotFather`。
-- 发送 `/newbot` 创建机器人。
-- 复制 BotFather 给你的 bot token。
-- 打开你自己的 bot，随便发一条消息，比如 `/start`。
-
-如果你已经知道 Telegram ID，可以直接配对：
-
-```bash
-cd FFC-AI
-sudo scripts/pair-telegram.sh \
-  --telegram-id 你的TelegramID
-```
-
-脚本会提示输入 BotFather 给你的机器人密钥，输入时不会回显。配对时会先调用 Telegram `getMe` 验证 token，默认调用 `deleteWebhook` 清掉旧 webhook，避免 long polling 启动后收不到消息；随后同步 Telegram 命令菜单，发送一条配对测试消息并立刻用 `editMessageText` 原地编辑它，验证实时状态更新路径可用；最后写入配置并启动 `ai-telegram-bot.service`。`--reserved-usd` 支持数字，也支持 `0`、`unlimited`、`无限` 表示不由 Telegram 配对配置限制预算。
-
-如果你要自动化部署，也可以把 token 放到 runner 机器的 root 只读文件里：
-
-```bash
-sudo install -m 600 /dev/null /root/ffc-ai-telegram-token
-sudo nano /root/ffc-ai-telegram-token
-```
-
-如果你还不知道自己的 Telegram `chat_id`，先用发现模式启动：
-
-```bash
-cd FFC-AI
-sudo scripts/pair-telegram.sh \
-  --bot-token-file /root/ffc-ai-telegram-token \
-  --discover-chat-id
-```
-
-然后给 bot 发送 `/ai 状态`，它会回复未配对提示，里面包含 `chat_id`。这个模式不会执行 AI 命令。
-
-拿到 `chat_id` 后，重新配对成只允许你的 chat：
-
-```bash
-sudo scripts/pair-telegram.sh \
-  --bot-token-file /root/ffc-ai-telegram-token \
-  --telegram-id 你的TelegramID
-```
-
-配对脚本会写入：
-
-```text
-/var/lib/ai-remote-runner/config.env
-```
-
-并启动或重启：
-
-```text
-ai-telegram-bot.service
-```
-
-之后你可以在 Telegram 里发送：
-
-```text
-/ai 状态
-/ai 帮助
-请总结这个项目现在还有哪些待办
-```
-
-当 AI 任务正在运行时，Telegram bot 会发送 `typing` 状态，并用一条状态消息原地更新 queued、calling、running command、writing files、done/error 等状态；Codex 会把 `codex exec --json` 的 JSONL 事件转换成这些手机端状态。如果编辑失败才回退为发送新消息。如果长时间没有最终回复，先看这些心跳和 runner 日志，而不是判断为没有连接。群聊默认是 `TELEGRAM_GROUP_MODE=mention`，也就是只处理 `/ai`、`/codex` 这类命令、@bot 的消息或回复 bot 的消息；需要吃掉群内所有消息时才改成 `all`。
-
-## 10. 验证是否打通
-
-### 验证 runner 自己
+### 验证 Runner 核心能力
 
 在 runner 机器上：
 
 ```bash
-cd FFC-AI
 sudo scripts/validate-core-ready.sh
 ```
 
@@ -541,20 +801,28 @@ sudo scripts/validate-core-ready.sh
 [validate-core-ready] core_ready=true
 ```
 
-`validate-core-ready.sh` 会读取本机配置里的 `AI_RUNNER_PROVIDERS`，只实际调用本机启用 provider 的 full-access smoke test。Codex 专机只测 Codex，Claude Code 专机只测 Claude Code，VSCode 专机只测 vscode adapter；只有空 provider 的 management-only 机器才只验证 runner 命令和 bridge loopback。启用的 provider 不能以 root/full-access 方式运行时，不会写入 `core_ready=true`。
+这个脚本会根据本机 `AI_RUNNER_PROVIDERS` 只测试启用的 provider：
 
-这个脚本会检查：
+- Codex 专机只测 Codex。
+- Claude Code 专机只测 Claude Code。
+- VSCode 专机只测 VSCode adapter。
+- management-only 机器只测 runner 命令和 bridge loopback。
 
-- provider 命令是否存在。
-- `/ai 状态` 是否能通过 bridge loopback 执行。
-- `AI_BRIDGE_SHARED_SECRET` 是否配置。
+它会做真实 full-access smoke test，包括：
 
-### 验证 Mattermost + runner 集成
+- 文件读写
+- `/tmp` 访问
+- 网络访问
+- Python venv 和本地包安装
+- bridge loopback
 
-在能访问两边配置的机器上：
+只安装成功不等于 `core_ready=true`。通过验证才算真的能用。
+
+### 验证 Mattermost 集成
+
+在能访问 Mattermost 配置和 runner 的机器上：
 
 ```bash
-cd FFC-AI
 sudo scripts/validate-integration.sh
 ```
 
@@ -565,78 +833,122 @@ sudo scripts/validate-integration.sh
 [validate-integration] Mattermost /ai commands and credential confirmation passed
 ```
 
-如果当前机器只能访问 bridge，不能登录 Mattermost REST API，可以临时跳过 slash command 层测试做诊断：
+如果这台机器只能访问 runner bridge，不能访问 Mattermost REST API，可以临时跳过 Mattermost slash command 层验证：
 
 ```bash
 sudo env VALIDATE_MATTERMOST_COMMAND=false scripts/validate-integration.sh
 ```
 
-注意：跳过 slash command 时只会验证 runner bridge，不会把 Mattermost 的 `platform_ready` 标记为 validated。
+注意：跳过 slash command 时，只能证明 bridge 可访问，不能把 Mattermost 的 `platform_ready` 标记为完整 validated。
 
-如果你要在真实验收时连同 Mattermost 后台 AI 任务派发一起测，可以显式打开：
+如果你想连真实后台 AI 任务派发一起测：
 
 ```bash
 sudo env VALIDATE_MATTERMOST_BACKGROUND_TASK=true scripts/validate-integration.sh
 ```
 
-默认不打开这个开关，是为了避免普通集成检查消耗 provider 预算；`validate-core-ready.sh` 已经单独对本机启用的 provider 做 full-access 文件写读、网络、venv/安装能力 smoke。
+默认不打开这个选项，是为了避免普通验证消耗 provider 预算。
 
-完整验证通过后，脚本会把：
+### 手机端验证
 
-```text
-/var/lib/ai-remote-runner/install-manifest.json
-/opt/ffc-ai-mattermost/install-manifest.json
-```
-
-里的集成状态更新为 validated。runner 的 `core_ready` 仍由 `scripts/validate-core-ready.sh` 负责验证和更新。
-
-### 手机上验证
-
-打开 Mattermost，在频道里输入：
+Telegram：
 
 ```text
 /ai 状态
-```
-
-再试：
-
-```text
 /ai 帮助
 /ai 提供商 列表
-/ai 工作区 列表
-/ai 上下文
 ```
 
-如果这些能返回结果，说明 slash command 已经能到达 runner。
+Mattermost：
 
-## 11. 当前支持的 `/ai` 命令
+```text
+/ai 状态
+/ai 帮助
+/ai 功能
+```
 
-下面是当前 `src/ai_remote_runner/commands.py` 和 `executor.py` 实际支持的主要命令。
+如果这些命令能返回，说明手机入口已经能到达 runner。
 
-基础：
+## 手机端常用命令
+
+下面命令来自当前 `src/ai_remote_runner/commands.py` 的实际命令表。
+
+### 基础命令
 
 ```text
 /ai 状态
 /ai 帮助
 /ai 命令
+/ai 索引
 /ai 功能
 /ai 确认 <token>
 ```
 
-上下文和会话：
+### 直接执行任务
+
+在 Telegram 里，配对后可以直接发普通消息让默认 provider 执行任务。
+
+在 Mattermost 里，通常使用：
+
+```text
+/ai 请总结这个项目
+/ai 帮我检查 scripts 目录里的安装脚本
+```
+
+Mattermost 中 AI 长任务会先返回“已收到任务，正在后台运行”，然后通过 incoming webhook 发送状态和最终结果。
+
+### Provider
+
+```text
+/ai 提供商 列表
+/ai 提供商 使用 codex
+/ai 提供商 使用 claude-code
+/ai 提供商 使用 vscode
+```
+
+### 模型和 API 配置
+
+推荐使用明确命令：
+
+```text
+/ai GPT模型 设置 codex gpt-5.5
+/ai GPT模型 设置 vscode gpt-5.5
+/ai Claude模型 设置 claude-code claude-opus-4-8
+/ai Claude模型 设置 vscode claude-opus-4-8
+```
+
+兼容旧命令仍存在：
+
+```text
+/ai 模型 设置 ...
+/ai 模型 使用 ...
+```
+
+也可以查看和设置 API key 或代理：
+
+```text
+/ai 配置 查看
+/ai 密钥 设置 codex sk-...
+/ai 代理 设置 claude-code https://...
+```
+
+提醒：不建议把 API key 直接发到普通聊天里。更安全的方式是用凭据流程或在服务器本地写配置。
+
+### 上下文和对话
 
 ```text
 /ai 上下文
 /ai 压缩
 /ai 新对话
 /ai 继续
+/ai 对话
 /ai 每次新对话
 /ai 持续对话
 /ai 自动压缩 开启
 /ai 自动压缩 关闭
 ```
 
-权限模式：
+### 权限模式
 
 ```text
 /ai 聊天模式 开启
@@ -647,9 +959,38 @@ sudo env VALIDATE_MATTERMOST_BACKGROUND_TASK=true scripts/validate-integration.s
 /ai root权限 开启
 ```
 
-默认就是 `完全访问`。Claude Code 的 `编辑模式` 和 `shell模式` 会直接切换到可执行对应工具的权限；只有你显式设置 `AI_REQUIRE_SHELL_CONFIRMATION=1` 时，shell 任务才会逐次确认。Codex 当前只按 full-access 执行，如果你把权限改成非 full 又选择 Codex，runner 会明确报“不支持该 scope”，不会悄悄用 full access 继续跑。
+默认是 full-access 思路。请只在专用 VM 或测试机里运行。
 
-指令文件：
+Codex 当前按 full-access 执行。如果你切到非 full 权限又选择 Codex，runner 会返回不支持该 scope，而不是偷偷继续 full-access。
+
+### 预算和轮数
+
+```text
+/ai 预算
+/ai 预算 设置 0
+/ai 预算 设置 无限
+/ai 预算 单次 0.5
+
+/ai 轮数 设置 claude-code 20
+/ai 轮数 设置 vscode 无限
+/ai 重试 设置 claude-code 3
+```
+
+`0`、`unlimited`、`无限` 表示不由 runner 传原生预算或轮数限制。
+
+### 工作区
+
+```text
+/ai 工作区 列表
+/ai 工作区 创建 demo
+/ai 工作区 使用 demo
+```
+
+工作区名建议只用英文字母、数字、短横线和下划线。
+
+### 指令文件
+
+全局指令：
 
 ```text
 /ai 全局 查看
@@ -658,7 +999,11 @@ sudo env VALIDATE_MATTERMOST_BACKGROUND_TASK=true scripts/validate-integration.s
 /ai 全局 替换 <文本>
 /ai 全局 回滚 <snapshot>
 /ai 全局 应用
+```
 
+项目指令：
+
+```text
 /ai 项目 查看
 /ai 项目 设置 <文本>
 /ai 项目 追加 <文本>
@@ -667,139 +1012,223 @@ sudo env VALIDATE_MATTERMOST_BACKGROUND_TASK=true scripts/validate-integration.s
 /ai 项目 应用
 ```
 
-工作区：
+`设置`、`替换`、`回滚` 这类高风险操作会要求确认：
 
 ```text
-/ai 工作区 列表
-/ai 工作区 创建 <名字>
-/ai 工作区 使用 <名字>
+/ai 确认 <token>
 ```
 
-工作区名字只能用英文字母、数字、短横线、下划线。
-
-提供商：
-
-```text
-/ai 提供商 列表
-/ai 提供商 使用 claude-code
-/ai 提供商 使用 codex
-```
-
-凭据：
+### 凭据
 
 ```text
 /ai 凭据 添加 <handle>
 /ai 凭据 列表
 /ai 凭据 测试 <handle>
 /ai 凭据 删除 <handle>
+/ai 凭据 授权 <handle> <agent> <action> <duration>
 ```
 
-密钥不要发到聊天里。当前代码会创建凭据句柄，然后要求通过本地命令或 bridge upload URL 写入密文。
+凭据设计目标是：聊天里只出现 handle，不出现明文密码、API key、SSH 私钥。
 
-扩展索引：
+### 本机命令
 
 ```text
-/ai 扩展 列表
-/ai 工具 列表
-/ai mcp 列表
-/ai 说明 生成 <id>
+/ai shell pwd
+/ai 执行 bash scripts/smoke-test.sh
+/ai 脚本 运行 scripts/smoke-test.sh
 ```
 
-注意：当前扩展、工具、MCP 列表主要是占位索引，还没有实现一键安装扩展。
+这是高权限能力，请只在你信任的专用 runner 机器中使用。
 
-取消命令：
+### 取消
 
 ```text
 /ai 停止
 /ai 取消
 ```
 
-当前取消会记录取消标记，并明确提示“不会强制终止已经启动的 provider 进程”。
+当前版本会记录取消标记，并提示不会强制终止已经启动的 provider 进程。
 
-## 12. 常见问题
+### 扩展索引
 
-### 1. 用 1Panel 部署 Mattermost，会不会少功能？
+```text
+/ai 扩展 列表
+/ai 工具 列表
+/ai mcp 列表
+/ai 说明
+/ai 说明 生成 <id>
+```
 
-不会。只要最后 Mattermost 的 webhook、slash command、token、频道、bot 都配好，功能上和脚本部署没有区别。
+当前扩展、工具、MCP 主要是索引和说明能力，还不是完整的一键安装系统。
 
-区别只是：脚本会尝试自动创建这些对象；1Panel 通常只负责把 Mattermost 跑起来，集成对象要你手动配。
+## 常见问题
 
-### 2. `/ai` 没反应怎么办？
+### `AI_RUNNER_COMPONENTS is required`
 
-按顺序查：
+安装 runner 时必须显式声明组件。
 
-- Mattermost 的 slash command trigger 是否是 `ai`。
-- slash command URL 是否是 `/bridge/command`。
-- Mattermost 服务器是否能访问这个 URL。
-- runner 服务是否在运行。
-- runner 是否重启过，确认已加载最新 `MATTERMOST_SLASH_TOKEN`。
-- `/var/lib/ai-remote-runner/config.env` 里是否有 `MATTERMOST_SLASH_TOKEN`。
+正确示例：
 
-查看 runner：
+```bash
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+```
+
+错误示例：
+
+```bash
+sudo scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=all sudo -E scripts/install-runner.sh
+```
+
+### `/ai` 在 Mattermost 里没反应
+
+按顺序检查：
 
 ```bash
 sudo systemctl status ai-remote-runner
 sudo journalctl -u ai-remote-runner -n 100 --no-pager
 ```
 
-### 3. `validate-core-ready.sh` 失败怎么办？
+再确认：
 
-常见原因：
+- Mattermost slash command trigger 是否是 `ai`。
+- slash command URL 是否以 `/bridge/command` 结尾。
+- Mattermost 容器是否能访问这个 URL。
+- runner 是否监听 `127.0.0.1:8765`。
+- `/var/lib/ai-remote-runner/config.env` 里是否有 `MATTERMOST_SLASH_TOKEN`。
+- 修改 token 后是否重启过 `ai-remote-runner.service`。
 
-- `AI_BRIDGE_SHARED_SECRET` 没有写入 `/var/lib/ai-remote-runner/config.env`。
+### 出现 `bad_mattermost_slash_token`
+
+说明 Mattermost 发来的 slash token 和 runner 配置里的 `MATTERMOST_SLASH_TOKEN` 不一致。
+
+从 Mattermost VPS 复制 token：
+
+```bash
+sudo awk -F= '$1=="MATTERMOST_SLASH_TOKEN"{print $2}' \
+  /opt/ffc-ai-mattermost/.env
+```
+
+重新写入 runner：
+
+```bash
+sudo scripts/pair-runner.sh \
+  --platform-url "https://ai.example.com" \
+  --webhook-url "https://ai.example.com/hooks/你的WebhookID" \
+  --transfer-method manual-secure \
+  --bridge-secret-file /root/ffc-ai-bridge-secret \
+  --slash-token-file /root/ffc-ai-slash-token
+```
+
+### Mattermost 容器访问不到 `127.0.0.1:8765`
+
+这是 Docker 网络视角问题。容器里的 `127.0.0.1` 是容器自己。
+
+可选解决：
+
+- 用宿主机内网 IP。
+- 配置 `host.docker.internal`。
+- 配置 Docker `host-gateway`。
+- 用 VPN 地址。
+- 用反向 SSH 隧道，并确认 Mattermost 容器能访问隧道地址。
+
+### `core_ready` 一直是 false
+
+执行：
+
+```bash
+sudo scripts/validate-core-ready.sh
+```
+
+常见失败原因：
+
+- `AI_BRIDGE_SHARED_SECRET` 没配置。
 - runner 服务没启动。
-- runner 服务还在用旧 secret，需要重启。
-- 启用了 `claude-code`，但 `claude auth status --json` 没通过。
-- 启用了 `codex`，但 `codex` 命令不存在。
+- Codex 命令不存在或版本不支持需要的 `exec` 参数。
+- Claude Code 没登录，`claude auth status --json` 不通过。
+- VSCode provider 缺少 `code` 或 Claude 后端。
+- provider 无法完成 full-access smoke test。
 
-### 4. `setup-runner-tunnel.sh` 提示 SSH key 没授权
+### Telegram bot 没回应
 
-脚本会打印一段公钥。把这段公钥加入 VPS 对应用户的：
+检查：
+
+```bash
+sudo systemctl status ai-telegram-bot
+sudo journalctl -u ai-telegram-bot -n 100 --no-pager
+```
+
+再确认：
+
+- `TELEGRAM_BOT_TOKEN` 是否写入 `/var/lib/ai-remote-runner/config.env`。
+- `TELEGRAM_ALLOWED_CHAT_IDS` 是否包含你的 chat_id。
+- 是否运行过 `pair-telegram.sh`。
+- 是否被旧 webhook 占用。默认 `pair-telegram.sh` 会调用 `deleteWebhook`。
+
+### 反向 SSH 隧道提示 key 没授权
+
+`setup-runner-tunnel.sh` 会生成 SSH key，并打印 public key。把它加入 VPS 对应用户的：
 
 ```text
 ~/.ssh/authorized_keys
 ```
 
-然后重新运行隧道脚本。
-
-### 5. Mattermost 容器访问不到 `127.0.0.1:18765`
-
-这是 Docker 网络视角问题。`127.0.0.1` 在容器里通常是容器自己。
-
-可选解决思路：
-
-- 使用 Mattermost 容器能访问的宿主机地址。
-- 配置 Docker `host-gateway`。
-- 让 SSH 隧道监听在 VPS 内网地址。
-- 用 VPN 或内网穿透提供一个容器可访问的 bridge URL。
-
-如果 `/ai` 的 URL 使用 `127.0.0.1`、内网 IP 或 `host.docker.internal`，重新运行 `bootstrap-mattermost.sh` 会自动把该 host 加入 Mattermost 的 `AllowedUntrustedInternalConnections`。如果仍然失败，再检查 Docker 网络视角下这个地址是否真的能连到 runner。
-
-### 6. `/ai 状态` 里 core_ready 还是 false
-
-`/ai 状态` 会读取 runner 的 install manifest。如果它仍然是 false，通常表示 core 验证或 Mattermost 集成验证还没跑完，重新执行：
+然后重新运行：
 
 ```bash
-sudo scripts/validate-core-ready.sh
-sudo scripts/validate-integration.sh
+sudo scripts/setup-runner-tunnel.sh --vps-host YOUR_VPS_IP
 ```
 
-然后再在手机里发送 `/ai 状态`。
+### Mattermost 手机版提示服务端太旧
 
-## 13. 回滚和卸载
+项目脚本默认 Mattermost 版本来自官方 latest release，并且要求不低于 `10.11.0`。如果你手动固定版本，确保不要低于这个版本：
 
-### 回滚 runner
+```bash
+sudo env MATTERMOST_VERSION=11.7.2 \
+  scripts/install-communication-vps.sh --domain ai.example.com
+```
+
+### 安装在 WSL 里没有 systemd
+
+无 systemd 时，脚本不会安装 systemd service，而是生成本地启动脚本：
+
+```bash
+sudo /opt/ai-remote-runner/run-local.sh
+sudo /opt/ai-remote-runner/run-telegram-local.sh
+```
+
+你需要自己保持这些进程运行。
+
+## 升级、回滚和卸载
+
+### 升级仓库代码
+
+```bash
+cd FFC-AI
+git pull
+```
+
+然后根据你安装的组件重新运行对应脚本。脚本按当前实现尽量保持幂等。
+
+Runner：
+
+```bash
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+```
+
+Mattermost：
+
+```bash
+sudo scripts/install-communication-vps.sh --domain ai.example.com
+```
+
+### 回滚 Runner
 
 ```bash
 sudo scripts/rollback-install.sh
 ```
 
-它会：
-
-- 停止并删除 `ai-remote-runner.service`。
-- 删除 `/opt/ai-remote-runner/run-local.sh`。
-- 尝试恢复旧的 `config.env`。
-- 默认保留工作区和凭据。
+它会停止并删除 runner systemd 服务，默认保留工作区和凭据。
 
 ### 停止 Mattermost 通信平台
 
@@ -807,9 +1236,9 @@ sudo scripts/rollback-install.sh
 sudo scripts/rollback-communication.sh
 ```
 
-它会停止容器，但保留数据。
+默认会停止容器并保留数据。
 
-如果你明确要删除数据：
+如果你确认要删除 Mattermost 数据：
 
 ```bash
 sudo scripts/rollback-communication.sh --delete-volumes
@@ -821,57 +1250,129 @@ sudo scripts/rollback-communication.sh --delete-volumes
 /opt/ffc-ai-mattermost
 ```
 
-请确认你真的不需要里面的数据。
+请先备份再执行。
 
-## 14. 本地测试
+### 建议备份
 
-开发或改脚本后可以跑：
+至少备份这些目录和文件：
+
+```text
+/var/lib/ai-remote-runner
+/srv/ai-workspaces
+/opt/ffc-ai-mattermost/.env
+/opt/ffc-ai-mattermost/mattermost-objects.json
+/opt/ffc-ai-mattermost/docker-compose.yml
+/opt/ffc-ai-mattermost/db
+/opt/ffc-ai-mattermost/data
+```
+
+## 安全提醒
+
+这个项目默认把 runner 当作你专门创建的 VM 或测试机来使用。它会让 Claude Code、Codex 或 VSCode 在该机器中获得很高权限。
+
+请认真遵守：
+
+- 不要在你的日常主力电脑或重要生产服务器上随便开启 full-access。
+- 不要把 API key、SSH 私钥、密码发到 Telegram 或 Mattermost 普通聊天里。
+- 不要把 `/var/lib/ai-remote-runner/config.env` 提交到 GitHub。
+- 不要把 `/opt/ffc-ai-mattermost/.env` 提交到 GitHub。
+- bridge secret、slash token、bot token 都按密钥处理。
+- `pair-runner.sh` 要求 secret 从文件或 stdin 读取，这是有意设计。
+- Telegram 必须通过明确 chat_id 配对，避免任何人都能给 bot 下命令。
+- 群聊默认 `TELEGRAM_GROUP_MODE=mention`，只处理 `/ai`、`/codex`、@bot 或回复 bot 的消息。
+
+## 开发和测试
+
+本地开发或改脚本后，可以运行：
 
 ```bash
 scripts/smoke-test.sh
 ```
 
-它会：
+它会检查：
 
-- 检查所有 shell 脚本语法。
-- 跑 Python 单元测试。
-- 测试 `/ai 状态` 解析。
-- 测试命令索引、provider 探测、指令追加、预算记录。
+- shell 脚本语法
+- Python 单元测试
+- `/ai 状态` 解析
+- 命令索引
+- provider 探测
+- 指令追加
+- 预算记录
 
-## 15. 安全提醒
+也可以直接运行 pytest：
 
-- 不要把 `AI_BRIDGE_SHARED_SECRET` 发到聊天里。
-- 不要把 Mattermost slash token 发到聊天里。
-- 不要把 API key、SSH 私钥、GitHub token 写进 `global.md` 或 `project.md`。
-- 凭据应该走 credential broker，本地加密保存。
-- `pair-runner.sh` 已经要求 secret 从文件或 stdin 读取，这是为了避免 shell history 和进程列表泄露。
-
-## 16. 当前脚本状态总结
-
-当前仓库已经有了核心骨架：
-
-- Mattermost 安装脚本。
-- Mattermost team/channel/bot/webhook/slash command bootstrap。
-- AI runner 安装脚本。
-- bridge HTTP 服务。
-- Mattermost slash command 接入。
-- Claude Code、VSCode、Codex provider 探测和调用。
-- VSCode 安装和 root/full-access wrapper。
-- 指令文件、工作区、凭据、预算、上下文的基础实现。
-- 校验和回滚脚本。
-
-但它还不是完全无脑的一键安装器：
-
-- 1Panel 部署需要你手动创建或适配 Mattermost 集成对象。
-- Docker Mattermost 到本机 runner 的网络地址需要你确认。
-- systemd 环境下 `pair-runner.sh` 写配置后会自动重启 runner 服务；无 systemd 环境需要手动重新运行本地脚本。
-- `/ai 停止`、`/ai 取消` 当前会记录取消标记，但不会强杀已经启动的 provider 进程。
-- 扩展、工具、MCP 目前主要是列表占位，还没有完整安装流程。
-
-如果你按这份 README 部署，最重要的验收标准是：
-
-```text
-手机 Mattermost 输入 /ai 状态，runner 能收到并返回结果。
+```bash
+python -m pytest
 ```
 
-做到这一步，通信层就打通了。后面再继续完善 provider、权限、凭据和自动化能力。
+项目关键目录：
+
+```text
+scripts/                         # 安装、配对、验证、回滚脚本
+src/ai_remote_runner/            # runner Python 实现
+tests/                           # 单元测试
+outputs/                         # 项目规格和说明文档
+versions.lock                    # 版本和镜像锁定信息
+```
+
+核心 Python CLI：
+
+```bash
+python -m ai_remote_runner.cli status
+python -m ai_remote_runner.cli index
+python -m ai_remote_runner.cli providers
+python -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
+python -m ai_remote_runner.cli telegram
+```
+
+## 当前能力总结
+
+当前仓库已经实现或提供脚本支持：
+
+- Telegram bot 手机入口
+- Mattermost VPS 安装脚本
+- Mattermost team、channel、bot、webhook、slash command bootstrap
+- AI runner 安装脚本
+- systemd 服务和无 systemd 本地启动脚本
+- Claude Code、Codex、VSCode provider 探测和调用
+- Codex JSONL 状态事件转手机状态
+- Mattermost `/ai` slash command bridge
+- Telegram 和 Mattermost 命令表对齐
+- 工作区、指令文件、上下文、预算、凭据基础能力
+- full-access provider smoke 验证
+- 集成验证
+- 回滚脚本
+
+仍需注意：
+
+- 它不是完全无脑的一键安装器。
+- 1Panel 和自定义 Mattermost 需要你手动适配集成对象。
+- Docker 网络地址需要你根据实际部署确认。
+- `/ai 停止` 和 `/ai 取消` 当前不会强杀已经启动的 provider 进程。
+- 扩展、工具、MCP 当前主要是索引和说明，还不是完整安装系统。
+
+## 资料来源
+
+本文根据以下仓库文件整理：
+
+- 仓库主页：https://github.com/vpn3288/FFC-AI
+- `README.md`
+- `pyproject.toml`
+- `versions.lock`
+- `scripts/install-runner.sh`
+- `scripts/pair-telegram.sh`
+- `scripts/install-communication-vps.sh`
+- `scripts/bootstrap-mattermost.sh`
+- `scripts/pair-runner.sh`
+- `scripts/setup-runner-tunnel.sh`
+- `scripts/validate-core-ready.sh`
+- `scripts/validate-integration.sh`
+- `src/ai_remote_runner/commands.py`
+- `src/ai_remote_runner/providers.py`
+- `src/ai_remote_runner/bridge.py`
+
+整理时参考的仓库提交：
+
+```text
+1dbae0d132c752f8b841f3f52cb9777c0c2bf122
+```
