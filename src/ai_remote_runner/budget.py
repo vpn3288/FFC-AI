@@ -53,8 +53,8 @@ class BudgetLedger:
         if amount <= 0:
             return True, "ok"
         data = self.load()
-        daily_limit = float(data["daily_usd_limit"])
-        monthly_limit = float(data["monthly_usd_limit"])
+        daily_limit = float(data.get("daily_usd_limit") or 0.0)
+        monthly_limit = float(data.get("monthly_usd_limit") or 0.0)
         if daily_limit > 0 and data["daily_used_usd_estimate"] + amount > daily_limit:
             return False, "daily_budget_exceeded"
         if monthly_limit > 0 and data["monthly_used_usd_estimate"] + amount > monthly_limit:
