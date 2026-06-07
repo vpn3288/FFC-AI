@@ -37,7 +37,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
 
 read_lock() {
-  grep "^$1=" "$REPO_ROOT/versions.lock" | cut -d= -f2-
+  grep "^$1=" "$REPO_ROOT/versions.lock" | cut -d= -f2- | tr -d '\r'
 }
 
 usage() {
