@@ -246,14 +246,14 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn("你好", provider_prompt)
             self.assertIn("不要返回空内容", provider_prompt)
 
-    def test_task_run_default_budget_reservation_is_chat_sized(self) -> None:
+    def test_task_run_default_budget_reservation_is_unlimited(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
             parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
             fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
             with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
                 execute(parsed, {"request_id": "r8b", "raw_text": "do work"}, runtime)
-            self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 1.00)
+            self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 0.0)
 
     def test_default_permission_scope_is_full_access(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,6 +358,11 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn("VSCODE_CLAUDE_MODEL=gpt-5.5", config_env)
             self.assertIn("CLAUDE_MODEL=gpt-5.5", config_env)
             self.assertIn("AI_TASK_RESERVED_USD=1.25", config_env)
+            unlimited = execute(parse_command("/ai 预算 设置 无限"), {"request_id": "budget-unlimited", "raw_text": "/ai 预算 设置 无限"}, runtime)
+            self.assertEqual(unlimited["data"]["task_reserved_usd"], 0.0)
+            self.assertTrue(unlimited["data"]["budget_unlimited"])
+            config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("AI_TASK_RESERVED_USD=0", config_env)
             settings = json.loads((root / "root-home" / ".claude" / "settings.json").read_text(encoding="utf-8"))
             self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://cc-vibe.com")
             self.assertEqual(settings["env"]["CLAUDE_MODEL"], "gpt-5.5")

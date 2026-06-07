@@ -348,6 +348,24 @@ class ProviderTests(unittest.TestCase):
             self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.03)
             self.assertTrue(any(event.get("phase") == "warning" and "重试" in event.get("public_message_zh", "") for event in events))
 
+    def test_invoke_claude_omits_native_budget_when_unlimited(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": ""}), stderr="")
+        ok = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok", "total_cost_usd": 0.03}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, ok]) as run:
+                result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.0)
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(run.call_count, 2)
+            self.assertNotIn("--max-budget-usd", run.call_args_list[0].args[0])
+            self.assertNotIn("--max-budget-usd", run.call_args_list[1].args[0])
+            self.assertEqual(ledger.load()["runs"][result.run_id]["reserved_usd"], 0.0)
+            self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.03)
+
     def test_invoke_claude_short_empty_chat_uses_safe_fallback(self) -> None:
         import tempfile
         import subprocess

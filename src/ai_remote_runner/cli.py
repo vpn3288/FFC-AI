@@ -9,7 +9,7 @@ from .budget import BudgetLedger
 from .commands import command_index, parse_command
 from .context import estimate_tokens
 from .credentials import CredentialBroker
-from .executor import RunnerRuntime, current_status, execute
+from .executor import RunnerRuntime, current_status, execute, parse_reserved_usd
 from .instructions import InstructionStore
 from .paths import ensure_runtime_dirs, state_root, workspace_root
 from .providers import invoke_claude, invoke_codex, provider_status
@@ -50,7 +50,7 @@ def main() -> int:
     smoke_p.add_argument("--prompt-file", default="")
     smoke_p.add_argument("--expect-contains", default="")
     smoke_p.add_argument("--timeout-seconds", type=int, default=180)
-    smoke_p.add_argument("--reserved-usd", type=float, default=0.20)
+    smoke_p.add_argument("--reserved-usd", default="0")
     budget_p = sub.add_parser("budget")
     budget_p.add_argument("--reserve-run")
     budget_p.add_argument("--provider", default="claude-code")
@@ -97,7 +97,7 @@ def main() -> int:
                 workspace,
                 ledger,
                 instruction_prompt="Provider smoke test. Use full VM access configuration.",
-                reserved_usd=args.reserved_usd,
+                reserved_usd=parse_reserved_usd(args.reserved_usd),
                 timeout_seconds=args.timeout_seconds,
             )
         else:
@@ -106,7 +106,7 @@ def main() -> int:
                 workspace,
                 "Provider smoke test. Use full VM access configuration.",
                 ledger,
-                reserved_usd=args.reserved_usd,
+                reserved_usd=parse_reserved_usd(args.reserved_usd),
                 timeout_seconds=args.timeout_seconds,
                 permission_scope="full",
             )

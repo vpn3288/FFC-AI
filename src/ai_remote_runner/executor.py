@@ -37,7 +37,8 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("anthropic_or_openai_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")),
     ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*(?!<|\\$|\\{)[A-Za-z0-9_-]{32,}\b")),
 )
-DEFAULT_TASK_RESERVED_USD = 1.00
+DEFAULT_TASK_RESERVED_USD = 0.0
+UNLIMITED_BUDGET_VALUES = {"", "0", "off", "none", "no", "false", "unlimited", "infinite", "inf", "无限", "不限", "关闭"}
 DEFAULT_LOCAL_EXEC_TIMEOUT_SECONDS = 300
 DEFAULT_LOCAL_EXEC_MAX_OUTPUT_BYTES = 120000
 
@@ -194,13 +195,19 @@ def _context_threshold(policy: dict[str, Any]) -> int:
     return min(90, max(70, value))
 
 
-def _default_reserved_usd() -> float:
-    raw = os.environ.get("AI_TASK_RESERVED_USD", str(DEFAULT_TASK_RESERVED_USD))
+def parse_reserved_usd(raw: object, default: float = DEFAULT_TASK_RESERVED_USD) -> float:
+    value = str(raw).strip()
+    if value.lower() in UNLIMITED_BUDGET_VALUES:
+        return 0.0
     try:
-        value = float(raw)
-    except ValueError:
-        return DEFAULT_TASK_RESERVED_USD
-    return max(0.0, value)
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, parsed)
+
+
+def _default_reserved_usd() -> float:
+    return parse_reserved_usd(os.environ.get("AI_TASK_RESERVED_USD", str(DEFAULT_TASK_RESERVED_USD)))
 
 
 def _local_exec_timeout_seconds() -> int:
@@ -517,7 +524,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         configured = _configured_provider_names()
         if configured is not None and provider not in configured:
             return _error(request_id, "ai_provider_not_configured", f"{provider} 没有配置在这台机器上；当前配置: {','.join(configured) or 'none'}")
-        reserved_usd = float(envelope.get("reserved_usd", _default_reserved_usd()))
+        reserved_usd = parse_reserved_usd(envelope.get("reserved_usd", _default_reserved_usd()))
         budget_ok, budget_reason = rt.ledger.can_reserve(reserved_usd)
         if not budget_ok:
             return _error(request_id, budget_reason, f"Budget preflight failed before provider start: {budget_reason}")
@@ -675,10 +682,9 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "budget.set_task_reserved":
         if not args:
             return _error(request_id, "missing_budget", "usage: /ai 预算 设置 <usd>")
-        try:
-            reserved_usd = float(args[0])
-        except ValueError:
-            return _error(request_id, "invalid_budget", "budget must be a number, for example 1.00")
+        reserved_usd = args[0].strip()
+        if parse_reserved_usd(reserved_usd, -1.0) < 0:
+            return _error(request_id, "invalid_budget", "budget must be a number, 0, unlimited, or 无限")
         return _ok(request_id, run_id, "单次任务预算已更新", apply_task_budget(rt.state, reserved_usd))
     if action == "credential.list":
         return _ok(request_id, run_id, "凭据列表已生成", {"credentials": rt.credentials.list_public()})

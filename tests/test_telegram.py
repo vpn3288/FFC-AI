@@ -81,10 +81,19 @@ def wait_for_text(client: FakeTelegramClient, text: str, timeout: float = 1.0) -
 
 
 class TelegramBotTests(unittest.TestCase):
-    def test_default_reserved_budget_is_chat_sized(self) -> None:
+    def test_default_reserved_budget_is_unlimited(self) -> None:
         with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "token", "TELEGRAM_ALLOWED_CHAT_IDS": "123"}, clear=True):
             config = TelegramConfig.from_env()
-        self.assertEqual(config.reserved_usd, 1.00)
+        self.assertEqual(config.reserved_usd, 0.0)
+
+    def test_unlimited_reserved_budget_alias_is_supported(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"TELEGRAM_BOT_TOKEN": "token", "TELEGRAM_ALLOWED_CHAT_IDS": "123", "TELEGRAM_RESERVED_USD": "无限"},
+            clear=True,
+        ):
+            config = TelegramConfig.from_env()
+        self.assertEqual(config.reserved_usd, 0.0)
 
     def test_unpaired_chat_gets_pairing_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

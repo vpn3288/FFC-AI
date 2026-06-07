@@ -11,14 +11,14 @@ from typing import Any, Callable
 from urllib import error, request
 
 from .commands import parse_command
-from .executor import RunnerRuntime, execute
+from .executor import RunnerRuntime, execute, parse_reserved_usd
 from .paths import state_root, workspace_root
 from .phone_render import render_event_text, render_response_text
 from .storage import atomic_write_json
 
 
 MAX_TELEGRAM_MESSAGE_CHARS = 3900
-DEFAULT_TELEGRAM_RESERVED_USD = 1.00
+DEFAULT_TELEGRAM_RESERVED_USD = 0.0
 
 
 def _new_draft_id() -> int:
@@ -70,7 +70,7 @@ class TelegramConfig:
             allowed_chat_ids=allowed,
             api_base=os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
             poll_timeout_seconds=int(os.environ.get("TELEGRAM_POLL_TIMEOUT_SECONDS", "30")),
-            reserved_usd=float(os.environ.get("TELEGRAM_RESERVED_USD", str(DEFAULT_TELEGRAM_RESERVED_USD))),
+            reserved_usd=parse_reserved_usd(os.environ.get("TELEGRAM_RESERVED_USD", str(DEFAULT_TELEGRAM_RESERVED_USD))),
             status_interval_seconds=max(0.0, float(os.environ.get("TELEGRAM_STATUS_INTERVAL_SECONDS", "5"))),
             status_min_update_seconds=max(0.0, float(os.environ.get("TELEGRAM_STATUS_MIN_UPDATE_SECONDS", "0.8"))),
             task_ttl_seconds=max(60, int(os.environ.get("TELEGRAM_TASK_TTL_SECONDS", "21600"))),
@@ -672,7 +672,7 @@ class TelegramBot:
             "sender_id": str(message.get("from", {}).get("id", "")),
             "sender_name": message.get("from", {}).get("username") or message.get("from", {}).get("first_name", ""),
             "raw_text": text,
-            "reserved_usd": float(os.environ.get("TELEGRAM_RESERVED_USD", str(self.config.reserved_usd))),
+            "reserved_usd": parse_reserved_usd(os.environ.get("TELEGRAM_RESERVED_USD", str(self.config.reserved_usd))),
         }
         parsed_args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
         requested_provider = parsed_args.get("provider") if isinstance(parsed_args, dict) else None

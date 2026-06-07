@@ -256,10 +256,22 @@ def apply_base_url(state: Path, target: str, base_url: str) -> dict[str, Any]:
     return {"target": target, "base_url": base_url}
 
 
-def apply_task_budget(state: Path, reserved_usd: float) -> dict[str, Any]:
-    value = f"{max(0.0, reserved_usd):.6f}".rstrip("0").rstrip(".") or "0"
+UNLIMITED_BUDGET_VALUES = {"", "0", "off", "none", "no", "false", "unlimited", "infinite", "inf", "无限", "不限", "关闭"}
+
+
+def _task_budget_value(reserved_usd: float | str) -> tuple[str, float, bool]:
+    raw = str(reserved_usd).strip()
+    if raw.lower() in UNLIMITED_BUDGET_VALUES:
+        return "0", 0.0, True
+    value = max(0.0, float(raw))
+    formatted = f"{value:.6f}".rstrip("0").rstrip(".") or "0"
+    return formatted, value, value == 0.0
+
+
+def apply_task_budget(state: Path, reserved_usd: float | str) -> dict[str, Any]:
+    value, parsed, unlimited = _task_budget_value(reserved_usd)
     apply_config_env(state, {"AI_TASK_RESERVED_USD": value, "TELEGRAM_RESERVED_USD": value})
-    return {"task_reserved_usd": float(value), "telegram_reserved_usd": float(value)}
+    return {"task_reserved_usd": parsed, "telegram_reserved_usd": parsed, "budget_unlimited": unlimited}
 
 
 def _toml_string_value(text: str, key: str) -> str:

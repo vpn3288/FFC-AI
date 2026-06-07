@@ -349,16 +349,33 @@ def _run_claude_command(command: list[str], workspace: Path, prompt: str, timeou
     return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
 
 
+def _format_budget_usd(budget_usd: float) -> str:
+    return f"{max(0.0, budget_usd):.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def _claude_budget_limited(reserved_usd: float) -> bool:
+    return reserved_usd > 0
+
+
 def _claude_command_with_budget(command: list[str], budget_usd: float) -> list[str]:
     updated = list(command)
-    index = updated.index("--max-budget-usd")
-    updated[index + 1] = f"{max(0.0, budget_usd):.6f}".rstrip("0").rstrip(".") or "0"
+    if "--max-budget-usd" in updated:
+        index = updated.index("--max-budget-usd")
+        if _claude_budget_limited(budget_usd):
+            updated[index + 1] = _format_budget_usd(budget_usd)
+        else:
+            del updated[index : index + 2]
+        return updated
+    if not _claude_budget_limited(budget_usd):
+        return updated
+    insert_at = updated.index("--append-system-prompt") if "--append-system-prompt" in updated else len(updated)
+    updated[insert_at:insert_at] = ["--max-budget-usd", _format_budget_usd(budget_usd)]
     return updated
 
 
 def _claude_recorded_cost(first_cost_usd: float | None, retry_cost_usd: float | None, retry_started: bool, reserved_usd: float) -> float | None:
     if retry_started and (retry_cost_usd is None or retry_cost_usd <= 0):
-        return reserved_usd
+        return first_cost_usd if reserved_usd <= 0 else reserved_usd
     if first_cost_usd is not None and retry_cost_usd is not None:
         return first_cost_usd + retry_cost_usd
     if retry_cost_usd is not None:
@@ -611,11 +628,10 @@ def invoke_claude(
         *template,
         "--max-turns",
         os.environ.get("CLAUDE_MAX_TURNS", "12"),
-        "--max-budget-usd",
-        str(reserved_usd),
         "--append-system-prompt",
         instruction_prompt,
     ]
+    command = _claude_command_with_budget(command, reserved_usd)
     claude_model = os.environ.get("CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL).strip()
     if claude_model:
         command.extend(["--model", claude_model])
@@ -645,8 +661,9 @@ def invoke_claude(
             output_text = fallback
             if emit:
                 emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "warning", "public_message_zh": "模型返回空内容，已使用短消息安全回复。"})
+        budget_limited = _claude_budget_limited(reserved_usd)
         remaining_budget_usd = reserved_usd - first_cost_usd if first_cost_usd is not None else 0.0
-        if not fallback and remaining_budget_usd > 0:
+        if not fallback and (not budget_limited or remaining_budget_usd > 0):
             if emit:
                 emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "warning", "public_message_zh": "模型返回空内容，正在自动重试一次。"})
             try:
