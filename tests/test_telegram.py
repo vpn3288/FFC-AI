@@ -84,7 +84,7 @@ class TelegramBotTests(unittest.TestCase):
     def test_default_reserved_budget_is_chat_sized(self) -> None:
         with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "token", "TELEGRAM_ALLOWED_CHAT_IDS": "123"}, clear=True):
             config = TelegramConfig.from_env()
-        self.assertEqual(config.reserved_usd, 0.20)
+        self.assertEqual(config.reserved_usd, 1.00)
 
     def test_unpaired_chat_gets_pairing_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

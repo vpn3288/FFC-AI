@@ -37,7 +37,7 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("anthropic_or_openai_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")),
     ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*(?!<|\\$|\\{)[A-Za-z0-9_-]{32,}\b")),
 )
-DEFAULT_TASK_RESERVED_USD = 0.20
+DEFAULT_TASK_RESERVED_USD = 1.00
 DEFAULT_LOCAL_EXEC_TIMEOUT_SECONDS = 300
 DEFAULT_LOCAL_EXEC_MAX_OUTPUT_BYTES = 120000
 

@@ -60,7 +60,7 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
     ("模型", "查看"): CommandSpec("model.list", "查询当前 API key 可用模型；可加 claude-code/codex/vscode。"),
     ("models",): CommandSpec("model.list", "查询当前 API key 可用模型。"),
     ("model", "list"): CommandSpec("model.list", "查询当前 API key 可用模型。"),
-    ("模型", "使用"): CommandSpec("model.select", "切换目标模型，例如 /ai 模型 使用 vscode claude-opus-4-6。"),
+    ("模型", "使用"): CommandSpec("model.select", "切换目标模型，例如 /ai 模型 使用 vscode gpt-5.5。"),
     ("模型", "设置"): CommandSpec("model.select", "切换目标模型，例如 /ai 模型 设置 codex gpt-5.5。"),
     ("model", "set"): CommandSpec("model.select", "切换目标模型。"),
     ("model", "use"): CommandSpec("model.select", "切换目标模型。"),

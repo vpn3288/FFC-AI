@@ -11,6 +11,7 @@ from .storage import atomic_write_text
 
 
 CLAUDE_MODEL_FALLBACKS = [
+    "gpt-5.5",
     "claude-opus-4-6-thinking",
     "claude-opus-4-6",
     "claude-opus-4-7-thinking",

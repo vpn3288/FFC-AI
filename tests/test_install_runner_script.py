@@ -661,7 +661,7 @@ SETUP
         self.assertIn("stage 04: skip Codex CLI provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
         self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
         self.assertIn("AI_RUNNER_PROVIDERS=claude-code", result.stdout)
-        self.assertIn("VSCode Claude model=claude-opus-4-6", result.stdout)
+        self.assertIn("VSCode Claude model=gpt-5.5", result.stdout)
         self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
         self.assertNotIn("enabling both claude-code and codex", result.stdout)
 
@@ -745,7 +745,7 @@ PY
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             settings = json.loads((root_home / ".claude" / "settings.json").read_text(encoding="utf-8"))
-            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "claude-opus-4-6")
+            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "gpt-5.5")
             self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://example.invalid")
             self.assertEqual(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "fixture-token")
             self.assertFalse((root_home / ".anthropic-api-key").exists())

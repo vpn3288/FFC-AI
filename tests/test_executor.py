@@ -253,7 +253,7 @@ class ExecutorTests(unittest.TestCase):
             fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
             with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
                 execute(parsed, {"request_id": "r8b", "raw_text": "do work"}, runtime)
-            self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 0.20)
+            self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 1.00)
 
     def test_default_permission_scope_is_full_access(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -344,7 +344,7 @@ class ExecutorTests(unittest.TestCase):
             }
             fake_key = "sk-" + "a" * 24
             with patch.dict("os.environ", env, clear=False):
-                model = execute(parse_command("/ai 模型 使用 vscode claude-opus-4-6"), {"request_id": "model-vscode", "raw_text": "/ai 模型 使用 vscode claude-opus-4-6"}, runtime)
+                model = execute(parse_command("/ai 模型 使用 vscode gpt-5.5"), {"request_id": "model-vscode", "raw_text": "/ai 模型 使用 vscode gpt-5.5"}, runtime)
                 key = execute(parse_command(f"/ai 密钥 设置 codex {fake_key}"), {"request_id": "key-codex", "raw_text": "/ai 密钥 设置 codex <redacted>"}, runtime)
                 proxy = execute(parse_command("/ai 代理 设置 claude-code https://cc-vibe.com"), {"request_id": "proxy-claude", "raw_text": "/ai 代理 设置 claude-code https://cc-vibe.com"}, runtime)
                 budget = execute(parse_command("/ai 预算 设置 1.25"), {"request_id": "budget-set", "raw_text": "/ai 预算 设置 1.25"}, runtime)
@@ -355,12 +355,12 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(proxy["data"]["base_url"], "https://cc-vibe.com")
             self.assertEqual(budget["data"]["task_reserved_usd"], 1.25)
             config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
-            self.assertIn("VSCODE_CLAUDE_MODEL=claude-opus-4-6", config_env)
-            self.assertIn("CLAUDE_MODEL=claude-opus-4-6", config_env)
+            self.assertIn("VSCODE_CLAUDE_MODEL=gpt-5.5", config_env)
+            self.assertIn("CLAUDE_MODEL=gpt-5.5", config_env)
             self.assertIn("AI_TASK_RESERVED_USD=1.25", config_env)
             settings = json.loads((root / "root-home" / ".claude" / "settings.json").read_text(encoding="utf-8"))
             self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://cc-vibe.com")
-            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "claude-opus-4-6")
+            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "gpt-5.5")
             auth = json.loads((root / "root-home" / ".codex" / "auth.json").read_text(encoding="utf-8"))
             self.assertEqual(auth["OPENAI_API_KEY"], fake_key)
 

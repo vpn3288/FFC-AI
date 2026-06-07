@@ -18,7 +18,7 @@ from .storage import atomic_write_json
 
 
 MAX_TELEGRAM_MESSAGE_CHARS = 3900
-DEFAULT_TELEGRAM_RESERVED_USD = 0.20
+DEFAULT_TELEGRAM_RESERVED_USD = 1.00
 
 
 def _new_draft_id() -> int:
