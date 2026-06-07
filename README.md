@@ -8,42 +8,205 @@ FFC-AI 的核心目标是：让你在手机上通过 Telegram 或 Mattermost 发
 
 ## 目录
 
-1. [先看结论](#先看结论)
-2. [系统架构](#系统架构)
-3. [新手推荐路线](#新手推荐路线)
-4. [准备工作](#准备工作)
-5. [方式 A：Telegram 快速部署](#方式-a-telegram-快速部署)
-6. [方式 B：Mattermost 完整部署](#方式-b-mattermost-完整部署)
-7. [方式 C：已有 Mattermost 或 1Panel](#方式-c-已有-mattermost-或-1panel)
-8. [安装 AI Runner](#安装-ai-runner)
-9. [连接 Runner 和 Mattermost](#连接-runner-和-mattermost)
-10. [验证是否成功](#验证是否成功)
-11. [手机端常用命令](#手机端常用命令)
-12. [常见问题](#常见问题)
-13. [升级、回滚和卸载](#升级回滚和卸载)
-14. [安全提醒](#安全提醒)
-15. [开发和测试](#开发和测试)
+1. [一键复制安装](#一键复制安装)
+2. [先看结论](#先看结论)
+3. [系统架构](#系统架构)
+4. [新手推荐路线](#新手推荐路线)
+5. [准备工作](#准备工作)
+6. [方式 A：Telegram 快速部署](#方式-a-telegram-快速部署)
+7. [方式 B：Mattermost 完整部署](#方式-b-mattermost-完整部署)
+8. [方式 C：已有 Mattermost 或 1Panel](#方式-c-已有-mattermost-或-1panel)
+9. [安装 AI Runner](#安装-ai-runner)
+10. [连接 Runner 和 Mattermost](#连接-runner-和-mattermost)
+11. [验证是否成功](#验证是否成功)
+12. [手机端常用命令](#手机端常用命令)
+13. [常见问题](#常见问题)
+14. [升级、回滚和卸载](#升级回滚和卸载)
+15. [安全提醒](#安全提醒)
+16. [开发和测试](#开发和测试)
+
+## 一键复制安装
+
+新手先看这里。下面的命令都是完整命令块，可以直接复制粘贴到服务器终端里执行。
+
+请注意三件事：
+
+- 先选一种安装方案，不要把 Codex、Claude Code、VSCode 三个安装块都执行一遍。
+- 命令会自动进入 `/root/FFC-AI`，不要在 `~` 目录里直接运行 `scripts/install-runner.sh`。
+- Telegram 配对需要 BotFather token 和你的 Telegram 数字 ID，这一步脚本会提示你输入 token。
+
+### 方案 1：Codex + Telegram，推荐新手先用
+
+复制整段执行：
+
+```bash
+set -e
+
+cd /root
+apt-get update
+apt-get install -y sudo git curl ca-certificates
+
+if [ -d /root/FFC-AI/.git ]; then
+  cd /root/FFC-AI
+  git pull --ff-only
+else
+  git clone https://github.com/vpn3288/FFC-AI.git /root/FFC-AI
+  cd /root/FFC-AI
+fi
+
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
+```
+
+安装完成后，继续配对 Telegram。把 `你的Telegram数字ID` 换成你的数字 ID：
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
+```
+
+脚本会提示输入 BotFather 给你的 bot token。输入时终端不会显示字符，这是正常的。
+
+### 方案 2：Claude Code + Telegram
+
+如果你准备用 Claude Code，复制整段执行：
+
+```bash
+set -e
+
+cd /root
+apt-get update
+apt-get install -y sudo git curl ca-certificates
+
+if [ -d /root/FFC-AI/.git ]; then
+  cd /root/FFC-AI
+  git pull --ff-only
+else
+  git clone https://github.com/vpn3288/FFC-AI.git /root/FFC-AI
+  cd /root/FFC-AI
+fi
+
+AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
+```
+
+然后配对 Telegram：
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
+```
+
+### 方案 3：VSCode + Telegram
+
+如果你准备用 VSCode adapter，复制整段执行：
+
+```bash
+set -e
+
+cd /root
+apt-get update
+apt-get install -y sudo git curl ca-certificates
+
+if [ -d /root/FFC-AI/.git ]; then
+  cd /root/FFC-AI
+  git pull --ff-only
+else
+  git clone https://github.com/vpn3288/FFC-AI.git /root/FFC-AI
+  cd /root/FFC-AI
+fi
+
+AI_RUNNER_COMPONENTS=vscode,telegram sudo -E bash scripts/install-runner.sh
+```
+
+然后配对 Telegram：
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
+```
+
+### 不知道 Telegram 数字 ID 怎么办
+
+先创建 Telegram bot，并给你的 bot 发一条消息，例如 `/start`。然后复制执行：
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/pair-telegram.sh --discover-chat-id
+```
+
+脚本会提示输入 BotFather token，并尝试发现 chat_id。看到数字 ID 后，再执行正式配对：
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
+```
+
+### 安装完成后怎么测试
+
+在 Telegram 里发送：
+
+```text
+/ai 状态
+/ai 帮助
+/ai 功能
+```
+
+服务器上也可以执行：
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/validate-core-ready.sh
+```
+
+### Mattermost 服务器一键安装
+
+如果你要自建 Mattermost，把 `ai.example.com` 换成你自己的域名，复制整段在 VPS 上执行：
+
+```bash
+set -e
+
+cd /root
+apt-get update
+apt-get install -y sudo git curl ca-certificates
+
+if [ -d /root/FFC-AI/.git ]; then
+  cd /root/FFC-AI
+  git pull --ff-only
+else
+  git clone https://github.com/vpn3288/FFC-AI.git /root/FFC-AI
+  cd /root/FFC-AI
+fi
+
+sudo bash scripts/install-communication-vps.sh --domain ai.example.com
+```
+
+安装 Mattermost 前，请先确认域名已经解析到 VPS，并且 80、443 端口开放。
 
 ## 先看结论
 
 如果你只想最快用手机控制 AI：
 
 ```bash
+cd /root
+apt-get update
+apt-get install -y sudo git curl ca-certificates
 git clone https://github.com/vpn3288/FFC-AI.git
-cd FFC-AI
+cd /root/FFC-AI
 
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
-sudo scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
+sudo bash scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
 ```
 
 如果你想自建团队频道、状态频道、slash command 和 webhook：
 
 ```bash
+cd /root
+apt-get update
+apt-get install -y sudo git curl ca-certificates
 git clone https://github.com/vpn3288/FFC-AI.git
-cd FFC-AI
+cd /root/FFC-AI
 
-scripts/install-communication-vps.sh --dry-run --domain ai.example.com
-sudo scripts/install-communication-vps.sh --domain ai.example.com
+bash scripts/install-communication-vps.sh --dry-run --domain ai.example.com
+sudo bash scripts/install-communication-vps.sh --domain ai.example.com
 ```
 
 然后再安装 runner、补全 `/ai` slash command、执行配对和验证。
@@ -97,8 +260,8 @@ flowchart LR
 推荐命令：
 
 ```bash
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
-sudo scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
+sudo bash scripts/pair-telegram.sh --telegram-id 你的Telegram数字ID
 ```
 
 ### 路线 2：Telegram + Codex
@@ -115,7 +278,7 @@ export OPENAI_API_KEY="你的OpenAI API Key"
 export CODEX_MODEL="gpt-5.5"
 export CODEX_BASE_URL="https://api.openai.com/v1"
 
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 ### 路线 3：Mattermost + Runner
@@ -250,28 +413,28 @@ Telegram 是最简单的入口。你只需要：
 选择一种 provider。新手通常先选 Codex：
 
 ```bash
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 如果你要用 Claude Code：
 
 ```bash
-AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 如果你要用 VSCode adapter：
 
 ```bash
-AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=vscode,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 注意：当前脚本要求一台 VM 只选择一种主 provider。下面这些会被拒绝：
 
 ```bash
-AI_RUNNER_COMPONENTS=all sudo -E scripts/install-runner.sh
-AI_RUNNER_COMPONENTS=full sudo -E scripts/install-runner.sh
-AI_RUNNER_COMPONENTS=claude-code,codex sudo -E scripts/install-runner.sh
-AI_RUNNER_COMPONENTS=codex,vscode sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=all sudo -E bash scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=full sudo -E bash scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=claude-code,codex sudo -E bash scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,vscode sudo -E bash scripts/install-runner.sh
 ```
 
 可以加 `telegram`，例如 `codex,telegram`，但不要在同一台机器混装多个主 provider。
@@ -293,7 +456,7 @@ sudo chmod 600 /root/ffc-ai-telegram-token
 如果你不知道自己的 Telegram 数字 ID：
 
 ```bash
-sudo scripts/pair-telegram.sh \
+sudo bash scripts/pair-telegram.sh \
   --bot-token-file /root/ffc-ai-telegram-token \
   --discover-chat-id
 ```
@@ -307,7 +470,7 @@ sudo scripts/pair-telegram.sh \
 拿到 chat_id 后执行：
 
 ```bash
-sudo scripts/pair-telegram.sh \
+sudo bash scripts/pair-telegram.sh \
   --bot-token-file /root/ffc-ai-telegram-token \
   --telegram-id 你的Telegram数字ID
 ```
@@ -369,10 +532,11 @@ ai.example.com
 在 VPS 上：
 
 ```bash
-git clone https://github.com/vpn3288/FFC-AI.git
-cd FFC-AI
+cd /root
+git clone https://github.com/vpn3288/FFC-AI.git /root/FFC-AI
+cd /root/FFC-AI
 
-scripts/install-communication-vps.sh --dry-run --domain ai.example.com
+bash scripts/install-communication-vps.sh --dry-run --domain ai.example.com
 ```
 
 `--dry-run` 只打印将要执行的动作，不会真正安装。
@@ -380,7 +544,7 @@ scripts/install-communication-vps.sh --dry-run --domain ai.example.com
 ### 第 3 步：正式安装 Mattermost
 
 ```bash
-sudo scripts/install-communication-vps.sh --domain ai.example.com
+sudo bash scripts/install-communication-vps.sh --domain ai.example.com
 ```
 
 脚本默认安装到：
@@ -490,25 +654,25 @@ ai-remote-runner = ai_remote_runner.cli:main
 Codex 专机：
 
 ```bash
-AI_RUNNER_COMPONENTS=codex sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex sudo -E bash scripts/install-runner.sh
 ```
 
 Codex 专机，同时启用 Telegram：
 
 ```bash
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 Claude Code 专机：
 
 ```bash
-AI_RUNNER_COMPONENTS=claude-code sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=claude-code sudo -E bash scripts/install-runner.sh
 ```
 
 VSCode 专机：
 
 ```bash
-AI_RUNNER_COMPONENTS=vscode sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=vscode sudo -E bash scripts/install-runner.sh
 ```
 
 如果你想指定默认 provider：
@@ -516,7 +680,7 @@ AI_RUNNER_COMPONENTS=vscode sudo -E scripts/install-runner.sh
 ```bash
 AI_RUNNER_COMPONENTS=codex,telegram \
 AI_DEFAULT_PROVIDER=codex \
-sudo -E scripts/install-runner.sh
+sudo -E bash scripts/install-runner.sh
 ```
 
 ### Codex 配置
@@ -535,7 +699,7 @@ export OPENAI_API_KEY="你的OpenAI API Key"
 export CODEX_MODEL="gpt-5.5"
 export CODEX_BASE_URL="https://api.openai.com/v1"
 
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 安装脚本会为 root/global 运行写入 Codex 配置。默认是 full-access VM 模式：
@@ -575,7 +739,7 @@ export CLAUDE_MODEL="claude-opus-4-8"
 然后：
 
 ```bash
-AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 ### VSCode 配置
@@ -593,7 +757,7 @@ AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
 ```bash
 export VSCODE_CLAUDE_MODEL="gpt-5.5"
 
-AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=vscode,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 ### Runner 目录
@@ -684,7 +848,7 @@ http://VPN地址:8765/bridge/command
 可以用反向 SSH 隧道：
 
 ```bash
-sudo scripts/setup-runner-tunnel.sh --vps-host YOUR_VPS_IP
+sudo bash scripts/setup-runner-tunnel.sh --vps-host YOUR_VPS_IP
 ```
 
 默认会创建：
@@ -767,7 +931,7 @@ sudo chmod 600 /root/ffc-ai-bridge-secret /root/ffc-ai-slash-token
 然后在 runner 机器上执行：
 
 ```bash
-sudo scripts/pair-runner.sh \
+sudo bash scripts/pair-runner.sh \
   --platform-url "https://ai.example.com" \
   --webhook-url "https://ai.example.com/hooks/你的WebhookID" \
   --transfer-method manual-secure \
@@ -792,7 +956,7 @@ manual-secure
 在 runner 机器上：
 
 ```bash
-sudo scripts/validate-core-ready.sh
+sudo bash scripts/validate-core-ready.sh
 ```
 
 成功时会看到：
@@ -823,7 +987,7 @@ sudo scripts/validate-core-ready.sh
 在能访问 Mattermost 配置和 runner 的机器上：
 
 ```bash
-sudo scripts/validate-integration.sh
+sudo bash scripts/validate-integration.sh
 ```
 
 成功时会看到：
@@ -1070,14 +1234,14 @@ Codex 当前按 full-access 执行。如果你切到非 full 权限又选择 Cod
 正确示例：
 
 ```bash
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 错误示例：
 
 ```bash
-sudo scripts/install-runner.sh
-AI_RUNNER_COMPONENTS=all sudo -E scripts/install-runner.sh
+sudo bash scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=all sudo -E bash scripts/install-runner.sh
 ```
 
 ### `/ai` 在 Mattermost 里没反应
@@ -1112,7 +1276,7 @@ sudo awk -F= '$1=="MATTERMOST_SLASH_TOKEN"{print $2}' \
 重新写入 runner：
 
 ```bash
-sudo scripts/pair-runner.sh \
+sudo bash scripts/pair-runner.sh \
   --platform-url "https://ai.example.com" \
   --webhook-url "https://ai.example.com/hooks/你的WebhookID" \
   --transfer-method manual-secure \
@@ -1137,7 +1301,7 @@ sudo scripts/pair-runner.sh \
 执行：
 
 ```bash
-sudo scripts/validate-core-ready.sh
+sudo bash scripts/validate-core-ready.sh
 ```
 
 常见失败原因：
@@ -1176,7 +1340,7 @@ sudo journalctl -u ai-telegram-bot -n 100 --no-pager
 然后重新运行：
 
 ```bash
-sudo scripts/setup-runner-tunnel.sh --vps-host YOUR_VPS_IP
+sudo bash scripts/setup-runner-tunnel.sh --vps-host YOUR_VPS_IP
 ```
 
 ### Mattermost 手机版提示服务端太旧
@@ -1213,19 +1377,19 @@ git pull
 Runner：
 
 ```bash
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 Mattermost：
 
 ```bash
-sudo scripts/install-communication-vps.sh --domain ai.example.com
+sudo bash scripts/install-communication-vps.sh --domain ai.example.com
 ```
 
 ### 回滚 Runner
 
 ```bash
-sudo scripts/rollback-install.sh
+sudo bash scripts/rollback-install.sh
 ```
 
 它会停止并删除 runner systemd 服务，默认保留工作区和凭据。
@@ -1233,7 +1397,7 @@ sudo scripts/rollback-install.sh
 ### 停止 Mattermost 通信平台
 
 ```bash
-sudo scripts/rollback-communication.sh
+sudo bash scripts/rollback-communication.sh
 ```
 
 默认会停止容器并保留数据。
@@ -1241,7 +1405,7 @@ sudo scripts/rollback-communication.sh
 如果你确认要删除 Mattermost 数据：
 
 ```bash
-sudo scripts/rollback-communication.sh --delete-volumes
+sudo bash scripts/rollback-communication.sh --delete-volumes
 ```
 
 这会删除：
@@ -1286,7 +1450,7 @@ sudo scripts/rollback-communication.sh --delete-volumes
 本地开发或改脚本后，可以运行：
 
 ```bash
-scripts/smoke-test.sh
+bash scripts/smoke-test.sh
 ```
 
 它会检查：
