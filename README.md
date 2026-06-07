@@ -2,7 +2,7 @@
 
 本文根据当前仓库脚本和代码整理，适合第一次部署的人照着走。
 
-先说结论：FFC-AI 不是一个新的聊天软件。它用 Telegram 和/或 Mattermost 当手机聊天入口，用本地或服务器上的 AI runner 去调用 Claude Code、Codex 等 AI 工具。Telegram 更简单、速度快，适合当日常主入口；Mattermost 更适合自建团队频道、webhook 和 slash command。真正的 AI 执行逻辑都在 runner 里。
+先说结论：FFC-AI 不是一个新的聊天软件。它用 Telegram 和/或 Mattermost 当手机聊天入口，用本地或服务器上的 AI runner 去调用 Claude Code、VSCode、Codex 等 AI 工具。Telegram 更简单、速度快，适合当日常主入口；Mattermost 更适合自建团队频道、webhook 和 slash command。真正的 AI 执行逻辑都在 runner 里。
 
 ## 1. 它到底是怎么工作的
 
@@ -14,7 +14,7 @@ flowchart LR
   mm --> slash["/ai slash command"]
   slash --> bridge
   bridge --> runner["AI remote runner"]
-  runner --> provider["Claude Code / Codex CLI"]
+  runner --> provider["Claude Code / VSCode / Codex adapter"]
   runner --> status["Mattermost incoming webhook 状态通知"]
   runner --> tg_status["Telegram typing / 心跳 / 最终回复"]
   status --> mm
@@ -39,7 +39,7 @@ Telegram 和 Mattermost 地位同等。你可以只用 Telegram、只用 Matterm
 - runner 端保存了 Mattermost 的 URL、webhook URL、slash token、bridge shared secret。
 - Mattermost 能访问 runner 的 `/bridge/command` 地址。
 
-Telegram 和 Mattermost 的普通状态/帮助命令都会尽量同步返回；Claude/Codex 这类长 AI 任务会先返回“已收到/后台运行”，随后持续发送排队、调用、运行、完成或失败状态，避免手机端看不出它是在思考、联网、执行工具，还是已经断开。
+Telegram 和 Mattermost 的普通状态/帮助命令都会尽量同步返回；Claude Code、VSCode 或 Codex 这类长 AI 任务会先返回“已收到/后台运行”，随后持续发送排队、调用、运行、完成或失败状态，避免手机端看不出它是在思考、联网、执行工具，还是已经断开。
 
 ## 2. 推荐准备
 
@@ -86,7 +86,7 @@ runner 机器需要：
 - `sudo`
 - `apt-get`，如果要让脚本自动装依赖
 - `curl`、`git`、`openssl`、`gpg`
-- Claude Code CLI 或 Codex CLI，取决于你要用哪个 AI
+- Claude Code、VSCode 或 Codex 相关 CLI，取决于你要用哪个 AI
 
 如果系统有 systemd，脚本会创建：
 
@@ -112,6 +112,8 @@ runner 机器需要：
 AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
 # 或：
 AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
+# 或：
+AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
 sudo scripts/pair-telegram.sh --telegram-id 你的TelegramID
 ```
 
@@ -122,7 +124,7 @@ ai-telegram-bot.service
 ```
 
 Telegram 和 Mattermost 使用同一套 `/ai` 命令表、同一套 provider 选择、同一套长对话/新对话策略、同一套全权限开关。
-配对完成后，`pair-telegram.sh` 会自动运行 `validate-core-ready.sh`，只对本机启用的 provider 做真实 full-access smoke，验证 root、网络、文件、venv/安装能力；VSCode-only/management-only 机器只验证 runner 命令和 bridge loopback。不通过就不会把 `core_ready` 标记成 true。
+配对完成后，`pair-telegram.sh` 会自动运行 `validate-core-ready.sh`，只对本机启用的 provider 做真实 full-access smoke，验证 root、网络、文件、venv/安装能力。不通过就不会把 `core_ready` 标记成 true。
 
 ### 方式 B：用本项目脚本部署 Mattermost
 
@@ -199,7 +201,7 @@ AI_RUNNER_COMPONENTS=codex,telegram sudo -E scripts/install-runner.sh
 # Claude Code 专机，带 Telegram
 AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E scripts/install-runner.sh
 
-# VSCode 专机，带 Telegram 管理机器人，不安装 AI provider
+# VSCode 专机，带 Telegram，启用独立 vscode adapter
 AI_RUNNER_COMPONENTS=vscode,telegram sudo -E scripts/install-runner.sh
 ```
 
@@ -213,7 +215,7 @@ VSCode 组件会安装/验证 VSCode，并创建 root/full-access 包装器：
 /usr/local/bin/code-root
 ```
 
-`code-root` 会用 root 的 VSCode 数据目录和扩展目录启动 `code`，并传入 `--no-sandbox`、`--disable-workspace-trust`，用于这类专门创建的 VM/测试机。
+`code-root` 会用 root 的 VSCode 数据目录和扩展目录启动 `code`，并传入 `--no-sandbox`、`--disable-workspace-trust`，用于这类专门创建的 VM/测试机。脚本还会写入 root VSCode User settings，默认关闭 workspace trust 和 telemetry。`VSCODE_CLAUDE_MODEL` 是 VSCode adapter 的模型变量；兼容旧环境变量 `VSCODE_MODEL`。
 
 `AI_DEFAULT_PROVIDER` 只决定默认把任务发给谁，并且必须属于本机显式安装的 provider。例如 Codex 专机：
 
@@ -242,7 +244,7 @@ sudo systemctl status ai-remote-runner
 sudo systemctl restart ai-remote-runner
 ```
 
-## 5. Claude Code 和 Codex
+## 5. Claude Code、VSCode 和 Codex
 
 ### Claude Code
 
@@ -269,13 +271,13 @@ export CODEX_MODEL="gpt-5.5"
 export CODEX_BASE_URL="https://api.openai.com/v1"
 ```
 
-脚本默认按 root/global 模式配置 AI 工具：systemd 服务显式以 root 运行，`HOME=/root`，`CODEX_HOME=/root/.codex`，Codex 配置启用 `approval_policy="never"`、`sandbox_mode="danger-full-access"`、`openai_base_url` 和 `[sandbox_workspace_write].network_access=true`。如果你显式设置 `AI_TOOL_HOME` 或 `AI_CODEX_HOME`，才会写到自定义目录。
+脚本默认按 root/global 模式配置 AI 工具：systemd 服务显式以 root 运行，`HOME=/root`，`CODEX_HOME=/root/.codex`，Codex 配置启用 `approval_policy="never"`、`sandbox_mode="danger-full-access"`、`openai_base_url` 和 `[sandbox_workspace_write].network_access=true`。安装预检还会确认 `codex exec` 支持 `--json`、`--ephemeral`、`--cd`、`--output-last-message`、`--add-dir /`、`--skip-git-repo-check` 以及 full-access 运行模式；这些能力会写入 install manifest 并显示在 `/ai 功能` 里。如果你显式设置 `AI_TOOL_HOME` 或 `AI_CODEX_HOME`，才会写到自定义目录。
 
-Claude Code 默认不传原生 `--max-turns` 和 `--max-budget-usd` 限制，`CLAUDE_MAX_TURNS=0`、`AI_TASK_RESERVED_USD=0`、`TELEGRAM_RESERVED_USD=0` 都表示无限/不由 runner 限制；单次任务预算为 `0` 时也不会触发 runner 的 daily/monthly budget preflight。需要主动限轮时，显式设置 `CLAUDE_MAX_TURNS=<正整数>`，或在 Telegram 里执行 `/ai 轮数 设置 <正整数>`；恢复无限可执行 `/ai 轮数 设置 无限`。
+Claude 后端默认不传原生 `--max-turns` 和 `--max-budget-usd` 限制，`CLAUDE_MAX_TURNS=0`、`VSCODE_CLAUDE_MAX_TURNS=0`、`AI_TASK_RESERVED_USD=0`、`TELEGRAM_RESERVED_USD=0` 都表示无限/不由 runner 限制；单次任务预算为 `0` 时也不会触发 runner 的 daily/monthly budget preflight。需要主动限轮时，显式设置对应 adapter 的 max-turns，或在 Telegram 里执行 `/ai 轮数 设置 [claude-code|vscode] <正整数>`；恢复无限可执行 `/ai 轮数 设置 [claude-code|vscode] 无限`。
 
 ### VSCode
 
-脚本会检查 `code --version`。如果没有安装，并且系统支持 apt，会通过 Microsoft apt repository 安装最新 `code` 包。安装后会写入 `/usr/local/bin/code-root`，方便在 VM 内以 root/full-access 方式启动 VSCode。
+脚本会检查 `code --version`。如果没有安装，并且系统支持 apt，会通过 Microsoft apt repository 安装最新 `code` 包。安装后会写入 `/usr/local/bin/code-root`，方便在 VM 内以 root/full-access 方式启动 VSCode。带 Telegram/runner 安装时，VSCode 作为独立 `vscode` provider 出现在 `/ai 提供商`、`/vscode` 和 `/ai 模型 使用 vscode ...` 中，配置项使用 `VSCODE_CLAUDE_*`，不会和 `claude-code` provider 共用轮数、重试和模型变量。
 
 ## 6. 让 Mattermost 能访问 runner
 
@@ -463,7 +465,7 @@ sudo scripts/pair-telegram.sh \
   --telegram-id 你的TelegramID
 ```
 
-脚本会提示输入 BotFather 给你的机器人密钥，输入时不会回显。配对时会先调用 Telegram `getMe` 验证 token，默认调用 `deleteWebhook` 清掉旧 webhook，避免 long polling 启动后收不到消息；然后写入配置并启动 `ai-telegram-bot.service`。
+脚本会提示输入 BotFather 给你的机器人密钥，输入时不会回显。配对时会先调用 Telegram `getMe` 验证 token，默认调用 `deleteWebhook` 清掉旧 webhook，避免 long polling 启动后收不到消息；随后同步 Telegram 命令菜单，发送一条配对测试消息并立刻用 `editMessageText` 原地编辑它，验证实时状态更新路径可用；最后写入配置并启动 `ai-telegram-bot.service`。`--reserved-usd` 支持数字，也支持 `0`、`unlimited`、`无限` 表示不由 Telegram 配对配置限制预算。
 
 如果你要自动化部署，也可以把 token 放到 runner 机器的 root 只读文件里：
 
@@ -511,7 +513,7 @@ ai-telegram-bot.service
 请总结这个项目现在还有哪些待办
 ```
 
-当 AI 任务正在运行时，Telegram bot 会发送 `typing` 状态，并用一条状态消息原地更新 queued、calling、running command、writing files、done/error 等状态；如果编辑失败才回退为发送新消息。如果长时间没有最终回复，先看这些心跳和 runner 日志，而不是判断为没有连接。
+当 AI 任务正在运行时，Telegram bot 会发送 `typing` 状态，并用一条状态消息原地更新 queued、calling、running command、writing files、done/error 等状态；Codex 会把 `codex exec --json` 的 JSONL 事件转换成这些手机端状态。如果编辑失败才回退为发送新消息。如果长时间没有最终回复，先看这些心跳和 runner 日志，而不是判断为没有连接。群聊默认是 `TELEGRAM_GROUP_MODE=mention`，也就是只处理 `/ai`、`/codex` 这类命令、@bot 的消息或回复 bot 的消息；需要吃掉群内所有消息时才改成 `all`。
 
 ## 10. 验证是否打通
 
@@ -530,7 +532,7 @@ sudo scripts/validate-core-ready.sh
 [validate-core-ready] core_ready=true
 ```
 
-`validate-core-ready.sh` 会读取本机配置里的 `AI_RUNNER_PROVIDERS`，只实际调用本机启用 provider 的 full-access smoke test。Codex 专机只测 Codex，Claude Code 专机只测 Claude Code；VSCode-only/management-only 机器不会调用 AI provider，只验证 runner 命令和 bridge loopback。启用的 provider 不能以 root/full-access 方式运行时，不会写入 `core_ready=true`。
+`validate-core-ready.sh` 会读取本机配置里的 `AI_RUNNER_PROVIDERS`，只实际调用本机启用 provider 的 full-access smoke test。Codex 专机只测 Codex，Claude Code 专机只测 Claude Code，VSCode 专机只测 vscode adapter；只有空 provider 的 management-only 机器才只验证 runner 命令和 bridge loopback。启用的 provider 不能以 root/full-access 方式运行时，不会写入 `core_ready=true`。
 
 这个脚本会检查：
 
@@ -844,7 +846,7 @@ scripts/smoke-test.sh
 - AI runner 安装脚本。
 - bridge HTTP 服务。
 - Mattermost slash command 接入。
-- Claude Code / Codex provider 探测和调用。
+- Claude Code、VSCode、Codex provider 探测和调用。
 - VSCode 安装和 root/full-access wrapper。
 - 指令文件、工作区、凭据、预算、上下文的基础实现。
 - 校验和回滚脚本。

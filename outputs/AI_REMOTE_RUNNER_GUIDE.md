@@ -213,7 +213,7 @@ project_md_append
 context_status
 ```
 
-`core_ready` requires every enabled provider on this machine to pass real full-access smoke tests, plus communication bridge readiness, phone command readiness, credential broker readiness, and instruction file readiness. `validate-core-ready.sh` MUST NOT write `core_ready=true` unless all enabled providers can complete their full-access smoke tests. A `vscode,telegram` management-only machine has no enabled AI provider and MUST validate runner commands plus bridge loopback without probing Claude Code or Codex.
+`core_ready` requires every enabled provider on this machine to pass real full-access smoke tests, plus communication bridge readiness, phone command readiness, credential broker readiness, and instruction file readiness. `validate-core-ready.sh` MUST NOT write `core_ready=true` unless all enabled providers can complete their full-access smoke tests. A management-only machine with an empty provider list has no enabled AI provider and MUST validate runner commands plus bridge loopback without probing Claude Code, VSCode, or Codex.
 
 `codex_ready=true` is required for `core_ready` only on machines where Codex is explicitly requested.
 

@@ -15,6 +15,7 @@ from .executor import RunnerRuntime, execute
 from .events import status_event
 from .phone_render import render_response_text
 from .runtime_config import redact_secret
+from .providers import normalize_provider_name
 from .security import NonceStore, verify_header_preamble, verify_headers
 from .storage import atomic_write_json
 
@@ -169,9 +170,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return None
         providers: list[str] = []
         for item in raw.split(","):
-            provider = item.strip()
-            if provider == "claude":
-                provider = "claude-code"
+            provider = normalize_provider_name(item)
             if provider:
                 providers.append(provider)
         return providers
@@ -179,7 +178,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _mattermost_task_provider(self, item: dict) -> str | None:
         configured = self._configured_provider_names()
         if item.get("provider"):
-            provider = str(item["provider"])
+            provider = normalize_provider_name(str(item["provider"]))
             if configured is not None and provider not in configured:
                 return None
             return provider
@@ -187,8 +186,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                provider = data.get("provider")
-                if provider in {"claude-code", "codex"} and (configured is None or provider in configured):
+                provider = normalize_provider_name(str(data.get("provider") or ""))
+                if provider in {"claude-code", "vscode", "codex"} and (configured is None or provider in configured):
                     return str(provider)
             except json.JSONDecodeError:
                 pass

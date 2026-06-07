@@ -12,7 +12,7 @@ from .credentials import CredentialBroker
 from .executor import RunnerRuntime, current_status, execute, parse_reserved_usd
 from .instructions import InstructionStore
 from .paths import ensure_runtime_dirs, state_root, workspace_root
-from .providers import invoke_claude, invoke_codex, provider_status
+from .providers import invoke_claude, invoke_codex, invoke_vscode, provider_status
 
 
 def load_config_env() -> None:
@@ -44,7 +44,7 @@ def main() -> int:
     sub.add_parser("index")
     sub.add_parser("providers")
     smoke_p = sub.add_parser("provider-smoke")
-    smoke_p.add_argument("--provider", choices=["claude-code", "codex"], required=True)
+    smoke_p.add_argument("--provider", choices=["claude-code", "vscode", "codex"], required=True)
     smoke_p.add_argument("--workspace", default=None)
     smoke_p.add_argument("--prompt", default="Return exactly: ok")
     smoke_p.add_argument("--prompt-file", default="")
@@ -99,6 +99,16 @@ def main() -> int:
                 instruction_prompt="Provider smoke test. Use full VM access configuration.",
                 reserved_usd=parse_reserved_usd(args.reserved_usd),
                 timeout_seconds=args.timeout_seconds,
+            )
+        elif args.provider == "vscode":
+            result = invoke_vscode(
+                prompt,
+                workspace,
+                "Provider smoke test. Use full VM access configuration.",
+                ledger,
+                reserved_usd=parse_reserved_usd(args.reserved_usd),
+                timeout_seconds=args.timeout_seconds,
+                permission_scope="full",
             )
         else:
             result = invoke_claude(

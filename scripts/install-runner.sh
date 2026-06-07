@@ -12,13 +12,18 @@ AI_TOOL_HOME="${AI_TOOL_HOME:-/root}"
 CODEX_HOME="${AI_CODEX_HOME:-$AI_TOOL_HOME/.codex}"
 VSCODE_ROOT_WRAPPER="${AI_VSCODE_ROOT_WRAPPER:-/usr/local/bin/code-root}"
 VSCODE_ROOT_DIR="${AI_VSCODE_ROOT_DIR:-/root/.vscode-root}"
+VSCODE_SETTINGS_DIR="${AI_VSCODE_SETTINGS_DIR:-$VSCODE_ROOT_DIR/User}"
 SERVICE_PATH="${AI_SERVICE_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 AI_SERVICE_TERM="${AI_SERVICE_TERM:-xterm-256color}"
 RUNNER_PYTHON="$INSTALL_ROOT/.venv/bin/python"
 CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 CLAUDE_API_RETRY_ATTEMPTS="${CLAUDE_API_RETRY_ATTEMPTS:-}"
 CLAUDE_API_RETRY_SLEEP_SECONDS="${CLAUDE_API_RETRY_SLEEP_SECONDS:-}"
-VSCODE_CLAUDE_MODEL="${VSCODE_CLAUDE_MODEL:-gpt-5.5}"
+VSCODE_CLAUDE_MODEL="${VSCODE_CLAUDE_MODEL:-${VSCODE_MODEL:-gpt-5.5}}"
+VSCODE_CLAUDE_MAX_TURNS="${VSCODE_CLAUDE_MAX_TURNS:-}"
+VSCODE_CLAUDE_API_RETRY_ATTEMPTS="${VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-}"
+VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS="${VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-}"
+AI_TASK_RESERVED_USD="${AI_TASK_RESERVED_USD:-}"
 AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-}"
 AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
 AI_PERMISSION_SCOPE="${AI_PERMISSION_SCOPE:-full}"
@@ -44,7 +49,8 @@ log() {
 normalize_provider() {
   case "$1" in
     claude) printf 'claude-code' ;;
-    claude-code|codex) printf '%s' "$1" ;;
+    code|vs-code) printf 'vscode' ;;
+    claude-code|vscode|codex) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -201,6 +207,33 @@ path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) +
 path.chmod(0o600)
 PY
   sudo chown -R root:root "$AI_TOOL_HOME/.claude" 2>/dev/null || true
+}
+
+write_vscode_root_settings() {
+  log 'stage 05c: write VSCode root user settings'
+  if [ "$DRY_RUN" = true ]; then
+    log "would write $VSCODE_SETTINGS_DIR/settings.json for root VSCode operation"
+    return 0
+  fi
+  sudo mkdir -p "$VSCODE_SETTINGS_DIR"
+  sudo env \
+    VSCODE_SETTINGS_DIR="$VSCODE_SETTINGS_DIR" \
+    python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["VSCODE_SETTINGS_DIR"]) / "settings.json"
+try:
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+except json.JSONDecodeError:
+    data = {}
+data.setdefault("security.workspace.trust.enabled", False)
+data.setdefault("telemetry.telemetryLevel", "off")
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+  sudo chown -R root:root "$VSCODE_ROOT_DIR" 2>/dev/null || true
 }
 
 should_write_claude_settings() {
@@ -409,27 +442,31 @@ if [ "$PRIMARY_TOOL_COUNT" -gt 1 ]; then
 fi
 if [ "$REQUEST_VSCODE" = true ] && [ "$REQUEST_RUNNER" = true ]; then
   REQUEST_VSCODE_CLAUDE_BACKEND=true
-  if [ -z "$CLAUDE_MODEL" ]; then
-    CLAUDE_MODEL="$VSCODE_CLAUDE_MODEL"
-  fi
 fi
 AI_RUNNER_PROVIDERS=""
+AI_ADAPTER_TYPE="management"
 if [ "$REQUEST_CLAUDE" = true ]; then
   AI_RUNNER_PROVIDERS="claude-code"
+  AI_ADAPTER_TYPE="claude-code"
 fi
 if [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
-  AI_RUNNER_PROVIDERS="claude-code"
+  AI_RUNNER_PROVIDERS="vscode"
+  AI_ADAPTER_TYPE="vscode"
 fi
 if [ "$REQUEST_CODEX" = true ]; then
   AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:+$AI_RUNNER_PROVIDERS,}codex"
+  AI_ADAPTER_TYPE="codex"
+fi
+if [ "$REQUEST_VSCODE" = true ] && [ "$REQUEST_RUNNER" != true ]; then
+  AI_ADAPTER_TYPE="vscode"
 fi
 if [ -z "$AI_DEFAULT_PROVIDER" ]; then
   case "$AI_RUNNER_PROVIDERS" in
-    claude-code|codex) AI_DEFAULT_PROVIDER="$AI_RUNNER_PROVIDERS" ;;
+    claude-code|vscode|codex) AI_DEFAULT_PROVIDER="$AI_RUNNER_PROVIDERS" ;;
   esac
 fi
 if [ "$REQUEST_RUNNER" = true ] && [ -n "$AI_DEFAULT_PROVIDER" ]; then
-  AI_DEFAULT_PROVIDER="$(normalize_provider "$AI_DEFAULT_PROVIDER")" || { log 'AI_DEFAULT_PROVIDER must be claude-code, claude, or codex'; exit 2; }
+  AI_DEFAULT_PROVIDER="$(normalize_provider "$AI_DEFAULT_PROVIDER")" || { log 'AI_DEFAULT_PROVIDER must be claude-code, claude, vscode, code, or codex'; exit 2; }
   case ",$AI_RUNNER_PROVIDERS," in
     *",$AI_DEFAULT_PROVIDER,"*) ;;
     *) log "AI_DEFAULT_PROVIDER=$AI_DEFAULT_PROVIDER must be included in AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS"; exit 2 ;;
@@ -521,6 +558,14 @@ CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.137.0}"
 CODEX_READY=false
 CODEX_STATUS="install_required"
 CODEX_REMEDIATION_ZH="Codex CLI 必须由安装脚本全局安装；若失败请检查网络、Node.js/npm、以及版本锁。"
+CODEX_EXEC_JSON_AVAILABLE=false
+CODEX_EXEC_EPHEMERAL_AVAILABLE=false
+CODEX_EXEC_CD_AVAILABLE=false
+CODEX_EXEC_OUTPUT_LAST_MESSAGE_AVAILABLE=false
+CODEX_EXEC_ADD_DIR_AVAILABLE=false
+CODEX_EXEC_SKIP_GIT_REPO_CHECK_AVAILABLE=false
+CODEX_EXEC_FULL_ACCESS_MODE="unavailable"
+CODEX_TELEGRAM_REALTIME_STATUS=false
 if [ "$REQUEST_CODEX" = true ]; then
   if root_has_command codex; then
     root_env_run codex --version
@@ -606,6 +651,7 @@ fi
 VSCODE_READY=false
 if [ "$REQUEST_VSCODE" = true ]; then
   install_vscode
+  write_vscode_root_settings
   write_vscode_claude_settings
 else
   log 'stage 05: skip VSCode because AI_RUNNER_COMPONENTS does not request it'
@@ -619,11 +665,13 @@ if [ "$REQUEST_RUNNER" != true ]; then
 {
   "component": "ai-tool-components",
   "requested_components": "$AI_RUNNER_COMPONENTS",
+  "adapter_type": "$AI_ADAPTER_TYPE",
   "runner_enabled": false,
   "ai_tool_home": "$AI_TOOL_HOME",
   "vscode_ready": $VSCODE_READY,
   "vscode_root_wrapper": "$VSCODE_ROOT_WRAPPER",
-  "vscode_root_dir": "$VSCODE_ROOT_DIR"
+  "vscode_root_dir": "$VSCODE_ROOT_DIR",
+  "vscode_settings_dir": "$VSCODE_SETTINGS_DIR"
 }
 EOF
     sudo chmod 0600 "$STATE_ROOT/install-manifest.json"
@@ -686,17 +734,27 @@ if [ "$DRY_RUN" = false ]; then
   PREVIOUS_TELEGRAM_ALLOWED_UPDATES="$(config_value TELEGRAM_ALLOWED_UPDATES)"
   PREVIOUS_TELEGRAM_NATIVE_DRAFT_PROGRESS="$(config_value TELEGRAM_NATIVE_DRAFT_PROGRESS)"
   PREVIOUS_TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS="$(config_value TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS)"
+  PREVIOUS_TELEGRAM_GROUP_MODE="$(config_value TELEGRAM_GROUP_MODE)"
   PREVIOUS_AI_LOCAL_EXEC_TIMEOUT_SECONDS="$(config_value AI_LOCAL_EXEC_TIMEOUT_SECONDS)"
   PREVIOUS_AI_LOCAL_EXEC_MAX_OUTPUT_BYTES="$(config_value AI_LOCAL_EXEC_MAX_OUTPUT_BYTES)"
+  PREVIOUS_AI_TASK_RESERVED_USD="$(config_value AI_TASK_RESERVED_USD)"
   PREVIOUS_CLAUDE_MAX_TURNS="$(config_value CLAUDE_MAX_TURNS)"
   PREVIOUS_CLAUDE_API_RETRY_ATTEMPTS="$(config_value CLAUDE_API_RETRY_ATTEMPTS)"
   PREVIOUS_CLAUDE_API_RETRY_SLEEP_SECONDS="$(config_value CLAUDE_API_RETRY_SLEEP_SECONDS)"
+  PREVIOUS_VSCODE_CLAUDE_MAX_TURNS="$(config_value VSCODE_CLAUDE_MAX_TURNS)"
+  PREVIOUS_VSCODE_CLAUDE_API_RETRY_ATTEMPTS="$(config_value VSCODE_CLAUDE_API_RETRY_ATTEMPTS)"
+  PREVIOUS_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS="$(config_value VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS)"
+  EFFECTIVE_AI_TASK_RESERVED_USD="${AI_TASK_RESERVED_USD:-${PREVIOUS_AI_TASK_RESERVED_USD:-0}}"
   EFFECTIVE_CLAUDE_MAX_TURNS="${CLAUDE_MAX_TURNS:-${PREVIOUS_CLAUDE_MAX_TURNS:-0}}"
-  EFFECTIVE_CLAUDE_API_RETRY_ATTEMPTS="${CLAUDE_API_RETRY_ATTEMPTS:-${PREVIOUS_CLAUDE_API_RETRY_ATTEMPTS:-2}}"
-  EFFECTIVE_CLAUDE_API_RETRY_SLEEP_SECONDS="${CLAUDE_API_RETRY_SLEEP_SECONDS:-${PREVIOUS_CLAUDE_API_RETRY_SLEEP_SECONDS:-8}}"
+  EFFECTIVE_CLAUDE_API_RETRY_ATTEMPTS="${CLAUDE_API_RETRY_ATTEMPTS:-${PREVIOUS_CLAUDE_API_RETRY_ATTEMPTS:-3}}"
+  EFFECTIVE_CLAUDE_API_RETRY_SLEEP_SECONDS="${CLAUDE_API_RETRY_SLEEP_SECONDS:-${PREVIOUS_CLAUDE_API_RETRY_SLEEP_SECONDS:-12}}"
+  EFFECTIVE_VSCODE_CLAUDE_MAX_TURNS="${VSCODE_CLAUDE_MAX_TURNS:-${PREVIOUS_VSCODE_CLAUDE_MAX_TURNS:-0}}"
+  EFFECTIVE_VSCODE_CLAUDE_API_RETRY_ATTEMPTS="${VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-${PREVIOUS_VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-3}}"
+  EFFECTIVE_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS="${VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-${PREVIOUS_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-12}}"
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
+AI_ADAPTER_TYPE=$AI_ADAPTER_TYPE
 AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS
 AI_PERMISSION_SCOPE=$AI_PERMISSION_SCOPE
 AI_REQUIRE_SHELL_CONFIRMATION=$AI_REQUIRE_SHELL_CONFIRMATION
@@ -704,14 +762,20 @@ HOME=$AI_TOOL_HOME
 CODEX_HOME=$CODEX_HOME
 PATH=$SERVICE_PATH
 TERM=$AI_SERVICE_TERM
-CLAUDE_MODEL=$CLAUDE_MODEL
-CLAUDE_MAX_TURNS=$EFFECTIVE_CLAUDE_MAX_TURNS
-CLAUDE_API_RETRY_ATTEMPTS=$EFFECTIVE_CLAUDE_API_RETRY_ATTEMPTS
-CLAUDE_API_RETRY_SLEEP_SECONDS=$EFFECTIVE_CLAUDE_API_RETRY_SLEEP_SECONDS
+AI_TASK_RESERVED_USD=$EFFECTIVE_AI_TASK_RESERVED_USD
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 EOF
+  if [ "$REQUEST_CLAUDE" = true ]; then
+    printf 'CLAUDE_MODEL=%s\n' "$CLAUDE_MODEL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    printf 'CLAUDE_MAX_TURNS=%s\n' "$EFFECTIVE_CLAUDE_MAX_TURNS" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    printf 'CLAUDE_API_RETRY_ATTEMPTS=%s\n' "$EFFECTIVE_CLAUDE_API_RETRY_ATTEMPTS" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    printf 'CLAUDE_API_RETRY_SLEEP_SECONDS=%s\n' "$EFFECTIVE_CLAUDE_API_RETRY_SLEEP_SECONDS" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  fi
   if [ "$REQUEST_VSCODE" = true ]; then
     printf 'VSCODE_CLAUDE_MODEL=%s\n' "$VSCODE_CLAUDE_MODEL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    printf 'VSCODE_CLAUDE_MAX_TURNS=%s\n' "$EFFECTIVE_VSCODE_CLAUDE_MAX_TURNS" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    printf 'VSCODE_CLAUDE_API_RETRY_ATTEMPTS=%s\n' "$EFFECTIVE_VSCODE_CLAUDE_API_RETRY_ATTEMPTS" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    printf 'VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS=%s\n' "$EFFECTIVE_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
   if [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
     if [ -n "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC+x}" ]; then
@@ -736,7 +800,7 @@ EOF
   if [ "$REQUEST_CODEX" = true ] && [ -n "${CODEX_BASE_URL:-}" ]; then
     printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
-  for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_CHAT_IDS TELEGRAM_API_BASE TELEGRAM_RESERVED_USD TELEGRAM_STATUS_INTERVAL_SECONDS TELEGRAM_STATUS_MIN_UPDATE_SECONDS TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP TELEGRAM_SYNC_COMMANDS_ON_STARTUP TELEGRAM_ALLOWED_UPDATES TELEGRAM_NATIVE_DRAFT_PROGRESS TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS AI_LOCAL_EXEC_TIMEOUT_SECONDS AI_LOCAL_EXEC_MAX_OUTPUT_BYTES; do
+  for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_CHAT_IDS TELEGRAM_API_BASE TELEGRAM_RESERVED_USD TELEGRAM_STATUS_INTERVAL_SECONDS TELEGRAM_STATUS_MIN_UPDATE_SECONDS TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP TELEGRAM_SYNC_COMMANDS_ON_STARTUP TELEGRAM_ALLOWED_UPDATES TELEGRAM_NATIVE_DRAFT_PROGRESS TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS TELEGRAM_GROUP_MODE AI_LOCAL_EXEC_TIMEOUT_SECONDS AI_LOCAL_EXEC_MAX_OUTPUT_BYTES; do
     value="$(printenv "$key" || true)"
     if [ -z "$value" ]; then
       case "$key" in
@@ -748,7 +812,7 @@ EOF
         TELEGRAM_BOT_TOKEN) value="$PREVIOUS_TELEGRAM_BOT_TOKEN" ;;
         TELEGRAM_ALLOWED_CHAT_IDS) value="$PREVIOUS_TELEGRAM_ALLOWED_CHAT_IDS" ;;
         TELEGRAM_API_BASE) value="$PREVIOUS_TELEGRAM_API_BASE" ;;
-        TELEGRAM_RESERVED_USD) value="$PREVIOUS_TELEGRAM_RESERVED_USD" ;;
+        TELEGRAM_RESERVED_USD) value="${PREVIOUS_TELEGRAM_RESERVED_USD:-$EFFECTIVE_AI_TASK_RESERVED_USD}" ;;
         TELEGRAM_STATUS_INTERVAL_SECONDS) value="${PREVIOUS_TELEGRAM_STATUS_INTERVAL_SECONDS:-5}" ;;
         TELEGRAM_STATUS_MIN_UPDATE_SECONDS) value="${PREVIOUS_TELEGRAM_STATUS_MIN_UPDATE_SECONDS:-0.8}" ;;
         TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP) value="${PREVIOUS_TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP:-1}" ;;
@@ -756,6 +820,7 @@ EOF
         TELEGRAM_ALLOWED_UPDATES) value="${PREVIOUS_TELEGRAM_ALLOWED_UPDATES:-message,edited_message,callback_query}" ;;
         TELEGRAM_NATIVE_DRAFT_PROGRESS) value="${PREVIOUS_TELEGRAM_NATIVE_DRAFT_PROGRESS:-0}" ;;
         TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS) value="$PREVIOUS_TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS" ;;
+        TELEGRAM_GROUP_MODE) value="${PREVIOUS_TELEGRAM_GROUP_MODE:-mention}" ;;
         AI_LOCAL_EXEC_TIMEOUT_SECONDS) value="${PREVIOUS_AI_LOCAL_EXEC_TIMEOUT_SECONDS:-300}" ;;
         AI_LOCAL_EXEC_MAX_OUTPUT_BYTES) value="${PREVIOUS_AI_LOCAL_EXEC_MAX_OUTPUT_BYTES:-120000}" ;;
       esac
@@ -771,8 +836,8 @@ EOF
 import json
 import sys
 provider = sys.argv[1]
-if provider not in {"claude-code", "codex"}:
-    raise SystemExit("AI_DEFAULT_PROVIDER must be claude-code or codex")
+if provider not in {"claude-code", "vscode", "codex"}:
+    raise SystemExit("AI_DEFAULT_PROVIDER must be claude-code, vscode, or codex")
 print(json.dumps({"provider": provider}, indent=2, sort_keys=True))
 PY
     sudo chmod 0600 "$STATE_ROOT/provider-selection.json"
@@ -907,20 +972,36 @@ fi
 log 'stage 11: run provider CLI/auth preflight; full-access smoke is enforced by validate-core-ready.sh'
 runner_cli providers
 if [ "$DRY_RUN" = false ] && { [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; }; then
-  root_has_command claude || { log 'claude is required before core_ready for requested provider claude-code'; exit 1; }
-  root_env_run claude auth status --json >/dev/null || { log 'claude auth/API config is required before core_ready for requested provider claude-code'; exit 1; }
+  CLAUDE_PREFLIGHT_LABEL="claude-code"
+  if [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ] && [ "$REQUEST_CLAUDE" != true ]; then
+    CLAUDE_PREFLIGHT_LABEL="vscode Claude backend"
+  fi
+  root_has_command claude || { log "claude is required before core_ready for requested provider $CLAUDE_PREFLIGHT_LABEL"; exit 1; }
+  root_env_run claude auth status --json >/dev/null || { log "claude auth/API config is required before core_ready for requested provider $CLAUDE_PREFLIGHT_LABEL"; exit 1; }
 fi
 if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
   root_has_command codex || { log 'codex is required before core_ready for requested provider codex'; exit 1; }
   CODEX_EXEC_HELP_TEXT="$(root_env_run codex exec --help 2>&1)" || { log 'codex exec is required before core_ready for requested provider codex'; exit 1; }
   root_env_run codex exec --strict-config --help >/dev/null || { log 'codex config.toml is not accepted by this Codex CLI under --strict-config'; exit 1; }
   grep -q -- '--json' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --json is required for realtime Codex status events'; exit 1; }
+  CODEX_EXEC_JSON_AVAILABLE=true
   grep -q -- '--ephemeral' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --ephemeral is required so phone-triggered runs do not persist sessions'; exit 1; }
+  CODEX_EXEC_EPHEMERAL_AVAILABLE=true
   grep -q -- '--cd' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --cd is required before core_ready for requested provider codex'; exit 1; }
+  CODEX_EXEC_CD_AVAILABLE=true
   grep -q -- '--output-last-message' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --output-last-message is required before core_ready for requested provider codex'; exit 1; }
+  CODEX_EXEC_OUTPUT_LAST_MESSAGE_AVAILABLE=true
   grep -q -- '--add-dir' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --add-dir is required for VM-wide full-access operation'; exit 1; }
+  CODEX_EXEC_ADD_DIR_AVAILABLE=true
   grep -q -- '--skip-git-repo-check' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --skip-git-repo-check is required for arbitrary workspace operation'; exit 1; }
-  if grep -Eq -- '--dangerously-bypass-approvals-and-sandbox|--sandbox' <<< "$CODEX_EXEC_HELP_TEXT"; then
+  CODEX_EXEC_SKIP_GIT_REPO_CHECK_AVAILABLE=true
+  if grep -q -- '--dangerously-bypass-approvals-and-sandbox' <<< "$CODEX_EXEC_HELP_TEXT"; then
+    CODEX_EXEC_FULL_ACCESS_MODE="bypass"
+    CODEX_TELEGRAM_REALTIME_STATUS=true
+    log 'codex full-access exec flag is available'
+  elif grep -q -- '--sandbox' <<< "$CODEX_EXEC_HELP_TEXT"; then
+    CODEX_EXEC_FULL_ACCESS_MODE="sandbox"
+    CODEX_TELEGRAM_REALTIME_STATUS=true
     log 'codex full-access exec flag is available'
   else
     log 'codex full-access exec flag is unavailable'
@@ -941,6 +1022,7 @@ if [ "$DRY_RUN" = false ]; then
 {
   "component": "ai-remote-runner",
   "requested_components": "$AI_RUNNER_COMPONENTS",
+  "adapter_type": "$AI_ADAPTER_TYPE",
   "state_root": "$STATE_ROOT",
   "workspace_root": "$WORKSPACE_ROOT",
   "install_root": "$INSTALL_ROOT",
@@ -957,13 +1039,27 @@ if [ "$DRY_RUN" = false ]; then
   "codex_ready": $CODEX_READY,
   "codex_status": "$CODEX_STATUS",
   "codex_remediation_zh": "$CODEX_REMEDIATION_ZH",
+  "codex_exec_json_available": $CODEX_EXEC_JSON_AVAILABLE,
+  "codex_exec_ephemeral_available": $CODEX_EXEC_EPHEMERAL_AVAILABLE,
+  "codex_exec_cd_available": $CODEX_EXEC_CD_AVAILABLE,
+  "codex_exec_output_last_message_available": $CODEX_EXEC_OUTPUT_LAST_MESSAGE_AVAILABLE,
+  "codex_exec_add_dir_available": $CODEX_EXEC_ADD_DIR_AVAILABLE,
+  "codex_exec_skip_git_repo_check_available": $CODEX_EXEC_SKIP_GIT_REPO_CHECK_AVAILABLE,
+  "codex_exec_full_access_mode": "$CODEX_EXEC_FULL_ACCESS_MODE",
+  "codex_telegram_realtime_status": $CODEX_TELEGRAM_REALTIME_STATUS,
   "vscode_ready": $VSCODE_READY,
   "vscode_root_wrapper": "$VSCODE_ROOT_WRAPPER",
   "vscode_root_dir": "$VSCODE_ROOT_DIR",
+  "vscode_settings_dir": "$VSCODE_SETTINGS_DIR",
   "claude_model": "$CLAUDE_MODEL",
-  "claude_api_retry_attempts": "$EFFECTIVE_CLAUDE_API_RETRY_ATTEMPTS",
-  "claude_api_retry_sleep_seconds": "$EFFECTIVE_CLAUDE_API_RETRY_SLEEP_SECONDS",
+  "claude_max_turns": "$(if [ "$REQUEST_CLAUDE" = true ]; then printf '%s' "$EFFECTIVE_CLAUDE_MAX_TURNS"; fi)",
+  "claude_api_retry_attempts": "$(if [ "$REQUEST_CLAUDE" = true ]; then printf '%s' "$EFFECTIVE_CLAUDE_API_RETRY_ATTEMPTS"; fi)",
+  "claude_api_retry_sleep_seconds": "$(if [ "$REQUEST_CLAUDE" = true ]; then printf '%s' "$EFFECTIVE_CLAUDE_API_RETRY_SLEEP_SECONDS"; fi)",
   "vscode_claude_model": "$(if [ "$REQUEST_VSCODE" = true ]; then printf '%s' "$VSCODE_CLAUDE_MODEL"; fi)",
+  "vscode_claude_max_turns": "$(if [ "$REQUEST_VSCODE" = true ]; then printf '%s' "$EFFECTIVE_VSCODE_CLAUDE_MAX_TURNS"; fi)",
+  "vscode_claude_api_retry_attempts": "$(if [ "$REQUEST_VSCODE" = true ]; then printf '%s' "$EFFECTIVE_VSCODE_CLAUDE_API_RETRY_ATTEMPTS"; fi)",
+  "vscode_claude_api_retry_sleep_seconds": "$(if [ "$REQUEST_VSCODE" = true ]; then printf '%s' "$EFFECTIVE_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS"; fi)",
+  "task_reserved_usd": "$EFFECTIVE_AI_TASK_RESERVED_USD",
   "permission_scope": "$AI_PERMISSION_SCOPE",
   "shell_confirmation_required": "$AI_REQUIRE_SHELL_CONFIRMATION",
   "telegram_enabled": $ENABLE_TELEGRAM,

@@ -21,6 +21,9 @@ SMOKE_TMP="/tmp/ffc-ai-full-access-smoke-$SMOKE_TOKEN"
 CLAUDE_FILE_PROMPT="$SMOKE_TMP/claude-file-prompt.txt"
 CLAUDE_NET_PROMPT="$SMOKE_TMP/claude-net-prompt.txt"
 CLAUDE_VENV_PROMPT="$SMOKE_TMP/claude-venv-prompt.txt"
+VSCODE_FILE_PROMPT="$SMOKE_TMP/vscode-file-prompt.txt"
+VSCODE_NET_PROMPT="$SMOKE_TMP/vscode-net-prompt.txt"
+VSCODE_VENV_PROMPT="$SMOKE_TMP/vscode-venv-prompt.txt"
 CODEX_FILE_PROMPT="$SMOKE_TMP/codex-file-prompt.txt"
 CODEX_NET_PROMPT="$SMOKE_TMP/codex-net-prompt.txt"
 CODEX_VENV_PROMPT="$SMOKE_TMP/codex-venv-prompt.txt"
@@ -75,7 +78,7 @@ build-backend = "setuptools.build_meta"
 name = "full-access-smoke-pkg"
 version = "0.0.0"
 EOF
-for provider in claude codex; do
+for provider in claude vscode codex; do
   cat > "$SMOKE_TMP/$provider-file-tmp.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -111,6 +114,21 @@ EOF
 cat > "$CLAUDE_VENV_PROMPT" <<EOF
 请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
 bash $SMOKE_TMP/claude-venv.sh
+成功后只回复：$SMOKE_TOKEN VENV_INSTALL_OK
+EOF
+cat > "$VSCODE_FILE_PROMPT" <<EOF
+请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
+bash $SMOKE_TMP/vscode-file-tmp.sh
+成功后只回复：$SMOKE_TOKEN FILE_TMP_OK
+EOF
+cat > "$VSCODE_NET_PROMPT" <<EOF
+请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
+bash $SMOKE_TMP/vscode-net.sh
+成功后只回复：$SMOKE_TOKEN NETWORK_OK
+EOF
+cat > "$VSCODE_VENV_PROMPT" <<EOF
+请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
+bash $SMOKE_TMP/vscode-venv.sh
 成功后只回复：$SMOKE_TOKEN VENV_INSTALL_OK
 EOF
 cat > "$CODEX_FILE_PROMPT" <<EOF
@@ -165,6 +183,34 @@ if [[ ",$AI_RUNNER_PROVIDERS," == *",claude-code,"* ]]; then
   }
   "$SMOKE_TMP/claude-venv/bin/python" -c 'import full_access_smoke_pkg' >/dev/null || {
     printf '[validate-core-ready] Claude Code local package install proof failed\n' >&2
+    exit 1
+  }
+fi
+if [[ ",$AI_RUNNER_PROVIDERS," == *",vscode,"* ]]; then
+  command -v code >/dev/null 2>&1 || { printf '[validate-core-ready] code is required for requested provider vscode\n' >&2; exit 1; }
+  command -v claude >/dev/null 2>&1 || { printf '[validate-core-ready] claude backend is required for requested provider vscode\n' >&2; exit 1; }
+  claude auth status --json >/dev/null
+  run_provider_smoke_step vscode "$VSCODE_FILE_PROMPT" file-tmp
+  grep -q "$SMOKE_TOKEN" "$SMOKE_WORKSPACE/full-access-smoke-vscode.txt" || {
+    printf '[validate-core-ready] VSCode adapter did not prove file/tool full access in smoke workspace\n' >&2
+    exit 1
+  }
+  grep -q "$SMOKE_TOKEN" "$SMOKE_TMP/vscode-tmp.txt" || {
+    printf '[validate-core-ready] VSCode adapter did not prove broad /tmp file access\n' >&2
+    exit 1
+  }
+  run_provider_smoke_step vscode "$VSCODE_NET_PROMPT" network
+  [ -s "$SMOKE_WORKSPACE/full-access-smoke-vscode-net.txt" ] || {
+    printf '[validate-core-ready] VSCode adapter did not prove network access\n' >&2
+    exit 1
+  }
+  run_provider_smoke_step vscode "$VSCODE_VENV_PROMPT" venv-install
+  [ -x "$SMOKE_TMP/vscode-venv/bin/python" ] || {
+    printf '[validate-core-ready] VSCode adapter did not prove venv/install capability\n' >&2
+    exit 1
+  }
+  "$SMOKE_TMP/vscode-venv/bin/python" -c 'import full_access_smoke_pkg' >/dev/null || {
+    printf '[validate-core-ready] VSCode adapter local package install proof failed\n' >&2
     exit 1
   }
 fi

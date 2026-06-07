@@ -12,19 +12,21 @@ CHAT_IDS=""
 DISCOVER_CHAT_ID=false
 API_BASE=""
 RESERVED_USD=""
+NORMALIZED_RESERVED_USD=""
 STATUS_INTERVAL_SECONDS="${TELEGRAM_STATUS_INTERVAL_SECONDS:-5}"
 STATUS_MIN_UPDATE_SECONDS="${TELEGRAM_STATUS_MIN_UPDATE_SECONDS:-0.8}"
 SYNC_COMMANDS_ON_STARTUP="${TELEGRAM_SYNC_COMMANDS_ON_STARTUP:-1}"
 ALLOWED_UPDATES="${TELEGRAM_ALLOWED_UPDATES:-message,edited_message,callback_query}"
 NATIVE_DRAFT_PROGRESS="${TELEGRAM_NATIVE_DRAFT_PROGRESS:-0}"
 NATIVE_DRAFT_ALLOW_CHAT_IDS="${TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS:-}"
+GROUP_MODE="${TELEGRAM_GROUP_MODE:-mention}"
 VERIFY_TELEGRAM="${PAIR_TELEGRAM_VERIFY_API:-true}"
 DELETE_WEBHOOK="${PAIR_TELEGRAM_DELETE_WEBHOOK:-true}"
 DISCOVER_TIMEOUT_SECONDS="${PAIR_TELEGRAM_DISCOVER_TIMEOUT_SECONDS:-45}"
 BOT_INFO_JSON=""
 
 usage() {
-  printf 'usage: %s [--bot-token TOKEN|--bot-token-file PATH|--bot-token-stdin] [--telegram-id ID|--chat-id ID[,ID...]|--discover-chat-id] [--api-base URL] [--reserved-usd USD] [--status-interval SECONDS] [--status-min-update SECONDS] [--native-draft-progress] [--keep-webhook]\n' "$0"
+  printf 'usage: %s [--bot-token TOKEN|--bot-token-file PATH|--bot-token-stdin] [--telegram-id ID|--chat-id ID[,ID...]|--discover-chat-id] [--api-base URL] [--reserved-usd USD] [--status-interval SECONDS] [--status-min-update SECONDS] [--group-mode mention|reply|all] [--native-draft-progress] [--keep-webhook]\n' "$0"
 }
 
 validate_chat_ids() {
@@ -53,6 +55,24 @@ validate_optional_value() {
   esac
 }
 
+normalize_reserved_usd() {
+  python3 - "$1" <<'PY'
+import sys
+
+raw = sys.argv[1].strip()
+if raw.lower() in {"", "0", "off", "none", "no", "false", "unlimited", "infinite", "inf", "无限", "不限", "关闭"}:
+    print("0")
+    raise SystemExit(0)
+try:
+    value = float(raw)
+except ValueError:
+    raise SystemExit(1)
+if value < 0:
+    raise SystemExit(1)
+print((f"{value:.6f}".rstrip("0").rstrip(".")) or "0")
+PY
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bot-token) BOT_TOKEN="$2"; shift ;;
@@ -68,6 +88,7 @@ while [ "$#" -gt 0 ]; do
     --native-draft-progress) NATIVE_DRAFT_PROGRESS=1 ;;
     --no-native-draft-progress) NATIVE_DRAFT_PROGRESS=0 ;;
     --native-draft-allow-chat-id) NATIVE_DRAFT_ALLOW_CHAT_IDS="${NATIVE_DRAFT_ALLOW_CHAT_IDS:+$NATIVE_DRAFT_ALLOW_CHAT_IDS,}$2"; shift ;;
+    --group-mode) GROUP_MODE="$2"; shift ;;
     --no-command-menu) SYNC_COMMANDS_ON_STARTUP=0 ;;
     --command-menu) SYNC_COMMANDS_ON_STARTUP=1 ;;
     --keep-webhook) DELETE_WEBHOOK=false ;;
@@ -125,18 +146,8 @@ if [ -n "$API_BASE" ]; then
 fi
 if [ -n "$RESERVED_USD" ]; then
   validate_optional_value "--reserved-usd" "$RESERVED_USD"
-  if ! python3 - "$RESERVED_USD" <<'PY'
-import sys
-
-try:
-    value = float(sys.argv[1])
-except ValueError:
-    raise SystemExit(1)
-if value < 0:
-    raise SystemExit(1)
-PY
-  then
-    printf '[pair-telegram] --reserved-usd must be a non-negative number\n' >&2
+  if ! NORMALIZED_RESERVED_USD="$(normalize_reserved_usd "$RESERVED_USD")"; then
+    printf '[pair-telegram] --reserved-usd must be a non-negative number, 0, unlimited, or 无限\n' >&2
     exit 2
   fi
 fi
@@ -161,6 +172,11 @@ PY
 done
 validate_optional_value "TELEGRAM_ALLOWED_UPDATES" "$ALLOWED_UPDATES"
 validate_optional_value "TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS" "$NATIVE_DRAFT_ALLOW_CHAT_IDS"
+validate_optional_value "TELEGRAM_GROUP_MODE" "$GROUP_MODE"
+case "$GROUP_MODE" in
+  mention|mentions|reply|replies|all|any) ;;
+  *) printf '[pair-telegram] --group-mode must be mention, reply, or all\n' >&2; exit 2 ;;
+esac
 
 telegram_api_base="${API_BASE:-https://api.telegram.org}"
 telegram_api_base="${telegram_api_base%/}"
@@ -214,6 +230,37 @@ if not data.get("ok"):
 PY
   else
     printf '[pair-telegram] Telegram webhook clearing skipped by --keep-webhook or PAIR_TELEGRAM_DELETE_WEBHOOK=false\n'
+  fi
+  if [ "$SYNC_COMMANDS_ON_STARTUP" = "1" ]; then
+    printf '[pair-telegram] syncing Telegram command menu\n'
+    python3 - "$telegram_api_base" "$BOT_TOKEN" <<'PY'
+import json
+import sys
+from urllib import request
+
+api_base, token = sys.argv[1:3]
+commands = [
+    {"command": "ai", "description": "运行 AI 或管理 runner"},
+    {"command": "status", "description": "查看 runner 和 Codex 状态"},
+    {"command": "help", "description": "显示 /ai 命令帮助"},
+    {"command": "features", "description": "显示可用功能和 provider"},
+    {"command": "codex", "description": "切换到 Codex 或直接让 Codex 执行任务"},
+    {"command": "vscode", "description": "切换到 VSCode 或直接让 VSCode 执行任务"},
+    {"command": "claude", "description": "切换到 Claude Code 或直接让 Claude Code 执行任务"},
+    {"command": "shell", "description": "执行本机 shell 命令"},
+]
+req = request.Request(
+    f"{api_base}/bot{token}/setMyCommands",
+    data=json.dumps({"commands": commands}, ensure_ascii=False).encode("utf-8"),
+    headers={"Content-Type": "application/json; charset=utf-8"},
+    method="POST",
+)
+data = json.loads(request.urlopen(req, timeout=15).read().decode("utf-8"))
+if not data.get("ok"):
+    raise SystemExit(f"Telegram setMyCommands failed: {data}")
+PY
+  else
+    printf '[pair-telegram] Telegram command menu sync skipped by --no-command-menu\n'
   fi
   if [ "$DISCOVER_CHAT_ID" = true ]; then
     printf '[pair-telegram] discovery mode: send any message to the bot within %ss\n' "$DISCOVER_TIMEOUT_SECONDS"
@@ -278,28 +325,47 @@ PY
     fi
   fi
   if [ "$DISCOVER_CHAT_ID" != true ]; then
-    printf '[pair-telegram] sending Telegram pairing test message\n'
+    printf '[pair-telegram] sending and editing Telegram pairing test message\n'
     python3 - "$telegram_api_base" "$BOT_TOKEN" "$CHAT_IDS" <<'PY'
 import json
 import sys
 from urllib import request
 
 api_base, token, chat_ids = sys.argv[1:4]
-for chat_id in [item for item in chat_ids.split(",") if item]:
-    payload = {
-        "chat_id": chat_id,
-        "text": "AI runner Telegram 配对测试成功。接下来可以发送 /ai 状态。",
-        "disable_web_page_preview": True,
-    }
+def call(method, payload):
     req = request.Request(
-        f"{api_base}/bot{token}/sendMessage",
+        f"{api_base}/bot{token}/{method}",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
     data = json.loads(request.urlopen(req, timeout=15).read().decode("utf-8"))
     if not data.get("ok"):
-        raise SystemExit(f"Telegram sendMessage failed for chat_id={chat_id}: {data}")
+        raise SystemExit(f"Telegram {method} failed: {data}")
+    return data
+
+for chat_id in [item for item in chat_ids.split(",") if item]:
+    data = call(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": "AI runner Telegram 配对测试成功。正在验证实时状态编辑。",
+            "disable_web_page_preview": True,
+        },
+    )
+    message = data.get("result") or {}
+    message_id = message.get("message_id")
+    if not isinstance(message_id, int):
+        raise SystemExit(f"Telegram sendMessage did not return message_id for chat_id={chat_id}: {data}")
+    call(
+        "editMessageText",
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": "AI runner Telegram 配对测试成功。实时状态编辑已验证，可以发送 /ai 状态。",
+            "disable_web_page_preview": True,
+        },
+    )
 PY
   fi
 else
@@ -322,7 +388,8 @@ if [ -f "$STATE_ROOT/config.env" ]; then
     $1 != "TELEGRAM_SYNC_COMMANDS_ON_STARTUP" &&
     $1 != "TELEGRAM_ALLOWED_UPDATES" &&
     $1 != "TELEGRAM_NATIVE_DRAFT_PROGRESS" &&
-    $1 != "TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS"
+    $1 != "TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS" &&
+    $1 != "TELEGRAM_GROUP_MODE"
   ' "$STATE_ROOT/config.env" > "$TMP_CONFIG"
   sudo cp "$TMP_CONFIG" "$STATE_ROOT/config.env"
   rm -f "$TMP_CONFIG"
@@ -336,6 +403,7 @@ TELEGRAM_STATUS_MIN_UPDATE_SECONDS=$STATUS_MIN_UPDATE_SECONDS
 TELEGRAM_SYNC_COMMANDS_ON_STARTUP=$SYNC_COMMANDS_ON_STARTUP
 TELEGRAM_ALLOWED_UPDATES=$ALLOWED_UPDATES
 TELEGRAM_NATIVE_DRAFT_PROGRESS=$NATIVE_DRAFT_PROGRESS
+TELEGRAM_GROUP_MODE=$GROUP_MODE
 EOF
 if [ -n "$NATIVE_DRAFT_ALLOW_CHAT_IDS" ]; then
   printf 'TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS=%s\n' "$NATIVE_DRAFT_ALLOW_CHAT_IDS" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
@@ -344,13 +412,13 @@ if [ -n "$API_BASE" ]; then
   printf 'TELEGRAM_API_BASE=%s\n' "$API_BASE" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
 fi
 if [ -n "$RESERVED_USD" ]; then
-  printf 'TELEGRAM_RESERVED_USD=%s\n' "$RESERVED_USD" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  printf 'TELEGRAM_RESERVED_USD=%s\n' "$NORMALIZED_RESERVED_USD" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
 fi
 sudo chmod 0600 "$STATE_ROOT/config.env"
 
 printf '[pair-telegram] Telegram pairing config written\n'
 if [ -f "$STATE_ROOT/install-manifest.json" ]; then
-  sudo env STATE_ROOT="$STATE_ROOT" DISCOVER_CHAT_ID="$DISCOVER_CHAT_ID" BOT_INFO_JSON="$BOT_INFO_JSON" TELEGRAM_CHAT_IDS="$CHAT_IDS" TELEGRAM_API_BASE_EFFECTIVE="$telegram_api_base" DELETE_WEBHOOK="$DELETE_WEBHOOK" STATUS_INTERVAL_SECONDS="$STATUS_INTERVAL_SECONDS" STATUS_MIN_UPDATE_SECONDS="$STATUS_MIN_UPDATE_SECONDS" SYNC_COMMANDS_ON_STARTUP="$SYNC_COMMANDS_ON_STARTUP" ALLOWED_UPDATES="$ALLOWED_UPDATES" NATIVE_DRAFT_PROGRESS="$NATIVE_DRAFT_PROGRESS" NATIVE_DRAFT_ALLOW_CHAT_IDS="$NATIVE_DRAFT_ALLOW_CHAT_IDS" python3 - <<'PY'
+  sudo env STATE_ROOT="$STATE_ROOT" DISCOVER_CHAT_ID="$DISCOVER_CHAT_ID" BOT_INFO_JSON="$BOT_INFO_JSON" TELEGRAM_CHAT_IDS="$CHAT_IDS" TELEGRAM_API_BASE_EFFECTIVE="$telegram_api_base" DELETE_WEBHOOK="$DELETE_WEBHOOK" STATUS_INTERVAL_SECONDS="$STATUS_INTERVAL_SECONDS" STATUS_MIN_UPDATE_SECONDS="$STATUS_MIN_UPDATE_SECONDS" SYNC_COMMANDS_ON_STARTUP="$SYNC_COMMANDS_ON_STARTUP" ALLOWED_UPDATES="$ALLOWED_UPDATES" NATIVE_DRAFT_PROGRESS="$NATIVE_DRAFT_PROGRESS" NATIVE_DRAFT_ALLOW_CHAT_IDS="$NATIVE_DRAFT_ALLOW_CHAT_IDS" GROUP_MODE="$GROUP_MODE" VERIFY_TELEGRAM="$VERIFY_TELEGRAM" RESERVED_USD="$RESERVED_USD" NORMALIZED_RESERVED_USD="$NORMALIZED_RESERVED_USD" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -366,9 +434,15 @@ data["telegram_webhook_cleared_for_polling"] = os.environ.get("DELETE_WEBHOOK") 
 data["telegram_status_interval_seconds"] = os.environ.get("STATUS_INTERVAL_SECONDS", "")
 data["telegram_status_min_update_seconds"] = os.environ.get("STATUS_MIN_UPDATE_SECONDS", "")
 data["telegram_sync_commands_on_startup"] = os.environ.get("SYNC_COMMANDS_ON_STARTUP") == "1"
+data["telegram_commands_synced_at_pairing"] = os.environ.get("VERIFY_TELEGRAM") == "true" and os.environ.get("SYNC_COMMANDS_ON_STARTUP") == "1"
 data["telegram_allowed_updates"] = [item for item in os.environ.get("ALLOWED_UPDATES", "").split(",") if item]
+data["telegram_edit_status_verified"] = os.environ.get("VERIFY_TELEGRAM") == "true" and os.environ.get("DISCOVER_CHAT_ID") != "true"
 data["telegram_native_draft_progress"] = os.environ.get("NATIVE_DRAFT_PROGRESS") == "1"
 data["telegram_native_draft_allow_chat_ids"] = [item for item in os.environ.get("NATIVE_DRAFT_ALLOW_CHAT_IDS", "").split(",") if item]
+data["telegram_group_mode"] = os.environ.get("GROUP_MODE", "mention")
+if os.environ.get("RESERVED_USD", ""):
+    data["telegram_reserved_usd_input"] = os.environ.get("RESERVED_USD", "")
+    data["telegram_reserved_usd"] = os.environ.get("NORMALIZED_RESERVED_USD", "")
 try:
     bot_info = json.loads(os.environ.get("BOT_INFO_JSON") or "{}")
 except json.JSONDecodeError:

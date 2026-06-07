@@ -228,6 +228,12 @@ PY
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertFalse(manifest["vscode_ready"])
             self.assertEqual(manifest["configured_providers"], "codex")
+            self.assertTrue(manifest["codex_exec_json_available"])
+            self.assertTrue(manifest["codex_exec_ephemeral_available"])
+            self.assertTrue(manifest["codex_exec_add_dir_available"])
+            self.assertTrue(manifest["codex_exec_skip_git_repo_check_available"])
+            self.assertEqual(manifest["codex_exec_full_access_mode"], "sandbox")
+            self.assertTrue(manifest["codex_telegram_realtime_status"])
 
     def test_enable_telegram_installs_service_without_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -644,7 +650,7 @@ SETUP
         self.assertIn("runner bridge/provider service install skipped", result.stdout)
         self.assertNotIn("stage 06: create runner directories", result.stdout)
 
-    def test_explicit_vscode_telegram_installs_claude_backend_provider(self) -> None:
+    def test_explicit_vscode_telegram_installs_vscode_adapter_with_claude_backend(self) -> None:
         env = clean_env()
         env.update({"AI_RUNNER_COMPONENTS": "vscode,telegram"})
         result = subprocess.run(
@@ -660,8 +666,9 @@ SETUP
         self.assertIn("command -v claude", result.stdout)
         self.assertIn("stage 04: skip Codex CLI provider because AI_RUNNER_COMPONENTS does not request it", result.stdout)
         self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
-        self.assertIn("AI_RUNNER_PROVIDERS=claude-code", result.stdout)
+        self.assertIn("AI_RUNNER_PROVIDERS=vscode", result.stdout)
         self.assertIn("VSCode Claude model=gpt-5.5", result.stdout)
+        self.assertIn("would write /root/.vscode-root/User/settings.json for root VSCode operation", result.stdout)
         self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
         self.assertNotIn("enabling both claude-code and codex", result.stdout)
 
@@ -726,6 +733,7 @@ PY
                     "AI_TOOL_HOME": str(root_home),
                     "AI_VSCODE_ROOT_WRAPPER": str(root / "code-root"),
                     "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
+                    "VSCODE_MODEL": "vscode-alias-model",
                     "ANTHROPIC_BASE_URL": "https://example.invalid",
                     "ANTHROPIC_AUTH_TOKEN": "fixture-token",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -745,12 +753,16 @@ PY
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             settings = json.loads((root_home / ".claude" / "settings.json").read_text(encoding="utf-8"))
-            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "gpt-5.5")
+            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "vscode-alias-model")
             self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://example.invalid")
             self.assertEqual(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "fixture-token")
+            vscode_settings = json.loads((root / "vscode-root" / "User" / "settings.json").read_text(encoding="utf-8"))
+            self.assertFalse(vscode_settings["security.workspace.trust.enabled"])
+            self.assertEqual(vscode_settings["telemetry.telemetryLevel"], "off")
             self.assertFalse((root_home / ".anthropic-api-key").exists())
             self.assertFalse((root_home / ".codex" / "config.toml").exists())
             self.assertFalse((root_home / ".codex" / "auth.json").exists())
+            self.assertIn("write VSCode root user settings", result.stdout)
             self.assertIn("write VSCode Claude model/API settings", result.stdout)
             self.assertIn("skip Codex config/auth because Codex is not requested", result.stdout)
             self.assertIn("preserve root Claude settings because VSCode is configured to use Claude model/API settings", result.stdout)
@@ -842,8 +854,8 @@ PY
             config = (root / "state" / "config.env").read_text(encoding="utf-8")
             self.assertIn("ANTHROPIC_AUTH_TOKEN=fixture-token", config)
             self.assertIn("CLAUDE_MAX_TURNS=0\n", config)
-            self.assertIn("CLAUDE_API_RETRY_ATTEMPTS=2\n", config)
-            self.assertIn("CLAUDE_API_RETRY_SLEEP_SECONDS=8\n", config)
+            self.assertIn("CLAUDE_API_RETRY_ATTEMPTS=3\n", config)
+            self.assertIn("CLAUDE_API_RETRY_SLEEP_SECONDS=12\n", config)
             self.assertNotIn("OPENAI_API_KEY=", config)
 
     def test_dry_run_does_not_execute_real_provider_or_runner_commands(self) -> None:

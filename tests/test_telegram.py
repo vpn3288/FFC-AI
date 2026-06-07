@@ -108,6 +108,73 @@ class TelegramBotTests(unittest.TestCase):
             self.assertEqual(client.sent[0][0], "456")
             self.assertIn("chat_id: 456", client.sent[0][1])
 
+    def test_group_mode_ignores_unaddressed_group_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"}, group_mode="mention")
+            client = FakeTelegramClient(config)
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            bot = TelegramBot(config, client, runtime, Path(tmp) / "state")
+            bot.bot_username = "ffc_test_bot"
+            bot.bot_user_id = "1"
+
+            with patch("ai_remote_runner.executor.invoke_claude") as invoke:
+                handled = bot.handle_update(
+                    {
+                        "message": {
+                            "chat": {"id": 123, "type": "supergroup"},
+                            "from": {"id": 2, "username": "alice"},
+                            "text": "普通群聊消息",
+                            "message_id": 6,
+                        }
+                    }
+                )
+
+            self.assertFalse(handled)
+            self.assertEqual(client.sent, [])
+            invoke.assert_not_called()
+
+    def test_group_mode_accepts_bot_mention_as_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"}, status_interval_seconds=0.01, group_mode="mention")
+            client = FakeTelegramClient(config)
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            bot = TelegramBot(config, client, runtime, Path(tmp) / "state")
+            bot.bot_username = "ffc_test_bot"
+            bot.bot_user_id = "1"
+            fake = ProviderResult("run", "codex", "completed", "mention ok", None, 0)
+
+            with (
+                patch.dict("os.environ", {"AI_RUNNER_PROVIDERS": "codex"}, clear=False),
+                patch("ai_remote_runner.executor.invoke_codex", return_value=fake) as invoke,
+            ):
+                handled = bot.handle_update(
+                    {
+                        "message": {
+                            "chat": {"id": 123, "type": "group"},
+                            "from": {"id": 2, "username": "alice"},
+                            "text": "@ffc_test_bot 请执行",
+                            "message_id": 6,
+                        }
+                    }
+                )
+                self.assertTrue(wait_for_text(client, "mention ok"))
+
+            self.assertTrue(handled)
+            provider_prompt = invoke.call_args.args[0]
+            self.assertIn("请执行", provider_prompt)
+            self.assertNotIn("@ffc_test_bot", provider_prompt)
+
+    def test_group_mentioned_shortcuts_normalize(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"}, group_mode="mention")
+            client = FakeTelegramClient(config)
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            bot = TelegramBot(config, client, runtime, Path(tmp) / "state")
+
+            bot.handle_update({"message": {"chat": {"id": 123, "type": "group"}, "text": "/status@ffc_test_bot", "message_id": 7}})
+
+            self.assertIn("状态已生成", client.sent[0][1])
+
     def test_status_command_replies_to_allowed_chat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = TelegramConfig(token="token", allowed_chat_ids={"123"}, status_interval_seconds=0.01)
@@ -161,7 +228,7 @@ class TelegramBotTests(unittest.TestCase):
                 bot.handle_update({"message": {"chat": {"id": 123}, "text": "你好", "message_id": 88}})
 
             sent_text = "\n".join(text for _, text in client.sent)
-            self.assertIn("没有配置 Claude Code 或 Codex", sent_text)
+            self.assertIn("没有配置 Claude Code、VSCode 或 Codex", sent_text)
             invoke_claude.assert_not_called()
             invoke_codex.assert_not_called()
 
@@ -197,7 +264,7 @@ class TelegramBotTests(unittest.TestCase):
                 load_config_env(state)
                 bot.handle_update({"message": {"chat": {"id": 123}, "text": "你好", "message_id": 90}})
 
-            self.assertIn("没有配置 Claude Code 或 Codex", "\n".join(text for _, text in client.sent))
+            self.assertIn("没有配置 Claude Code、VSCode 或 Codex", "\n".join(text for _, text in client.sent))
             invoke_claude.assert_not_called()
 
     def test_long_task_sends_heartbeat(self) -> None:
@@ -222,7 +289,7 @@ class TelegramBotTests(unittest.TestCase):
 
             visible_text = "\n".join([text for _, text in client.sent] + [text for _, _, text in client.edits])
             self.assertIn("仍在运行", visible_text)
-            self.assertIn("模型思考", visible_text)
+            self.assertIn("模型正在思考", visible_text)
             self.assertIn("slow ok", visible_text)
             self.assertIn(("123", "typing"), client.actions)
 

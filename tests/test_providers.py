@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_remote_runner.providers import CLAUDE_MODEL_FALLBACKS, codex_command, invoke_claude, invoke_codex, provider_status
+from ai_remote_runner.providers import CLAUDE_MODEL_FALLBACKS, codex_command, invoke_claude, invoke_codex, invoke_vscode, provider_status
 from ai_remote_runner.providers import _emit_codex_jsonl_events
 from ai_remote_runner.providers import discover_codex
 from ai_remote_runner.budget import BudgetLedger
@@ -57,6 +57,9 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("approval_config_available", capabilities)
         self.assertIn("sandbox_available", capabilities)
         self.assertIn("full_access_available", capabilities)
+        self.assertIn("full_access_mode", capabilities)
+        self.assertIn("full_access_flags", capabilities)
+        self.assertIn("telegram_live_status_available", capabilities)
         self.assertIn("output_last_message_available", capabilities)
 
     def test_provider_status_marks_unconfigured_provider_unavailable(self) -> None:
@@ -144,6 +147,29 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(any("bash -lc ls" in message for message in messages))
         self.assertTrue(any("exit=0" in message for message in messages))
         self.assertTrue(any("src/app.py" in message for message in messages))
+
+    def test_codex_jsonl_events_support_tool_patch_and_redaction_variants(self) -> None:
+        events: list[dict[str, object]] = []
+        output = "\n".join(
+            [
+                '{"type":"item.started","item":{"id":"cmd1","type":"exec_command","arguments":{"command":"curl https://api.example -H token=sk-secretsecretsecretsecretsecret"},"status":"in_progress"}}',
+                '{"type":"item.started","item":{"id":"patch1","type":"patch","files":["src/app.py","tests/test_app.py"],"status":"in_progress"}}',
+                '{"type":"item.started","item":{"id":"tool1","type":"function_call","name":"web.run","status":"in_progress"}}',
+                '{"type":"item.started","item":{"id":"search1","type":"web_search_call","status":"in_progress"}}',
+            ]
+        )
+
+        _emit_codex_jsonl_events(output, "run-1", events.append)
+
+        phases = [event["phase"] for event in events]
+        messages = "\n".join(str(event.get("public_message_zh") or "") for event in events)
+        self.assertIn("running_command", phases)
+        self.assertIn("writing_files", phases)
+        self.assertIn("calling_model", phases)
+        self.assertIn("src/app.py", messages)
+        self.assertIn("web.run", messages)
+        self.assertIn("<redacted>", messages)
+        self.assertNotIn("sk-secretsecretsecretsecretsecret", messages)
 
     def test_codex_jsonl_thread_started_is_visible(self) -> None:
         events: list[dict[str, object]] = []
@@ -241,6 +267,35 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["input"], "prompt")
             self.assertNotIn("prompt", run.call_args.args[0])
             self.assertAlmostEqual(ledger.load()["daily_used_usd_estimate"], 0.02)
+
+    def test_vscode_adapter_uses_vscode_claude_controls_and_identity(self) -> None:
+        import tempfile
+        import subprocess
+        import json
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok", "total_cost_usd": 0.02}), stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "CLAUDE_MODEL": "claude-model",
+                        "CLAUDE_MAX_TURNS": "2",
+                        "VSCODE_CLAUDE_MODEL": "vscode-model",
+                        "VSCODE_CLAUDE_MAX_TURNS": "7",
+                    },
+                    clear=False,
+                ),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+            ):
+                result = invoke_vscode("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.0, permission_scope="full")
+            command = run.call_args.args[0]
+            self.assertEqual(result.provider, "vscode")
+            self.assertEqual(ledger.load()["runs"][result.run_id]["provider"], "vscode")
+            self.assertEqual(command[command.index("--model") + 1], "vscode-model")
+            self.assertEqual(command[command.index("--max-turns") + 1], "7")
+            self.assertNotIn("claude-model", command)
 
     def test_claude_full_permission_scope_uses_bypass_template(self) -> None:
         import tempfile

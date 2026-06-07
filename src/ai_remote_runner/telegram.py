@@ -14,6 +14,7 @@ from .commands import parse_command
 from .executor import RunnerRuntime, execute, parse_reserved_usd
 from .paths import state_root, workspace_root
 from .phone_render import render_event_text, render_response_text
+from .providers import normalize_provider_name
 from .storage import atomic_write_json
 
 
@@ -54,6 +55,7 @@ class TelegramConfig:
     allowed_updates: tuple[str, ...] = ("message", "edited_message", "callback_query")
     native_draft_progress: bool = False
     native_draft_allow_chat_ids: frozenset[str] = frozenset()
+    group_mode: str = "mention"
 
     @classmethod
     def from_env(cls) -> "TelegramConfig":
@@ -79,6 +81,7 @@ class TelegramConfig:
             allowed_updates=allowed_updates or ("message", "edited_message", "callback_query"),
             native_draft_progress=os.environ.get("TELEGRAM_NATIVE_DRAFT_PROGRESS", "0").lower() in {"1", "true", "yes"},
             native_draft_allow_chat_ids=frozenset(item.strip() for item in raw_draft_allow.split(",") if item.strip()),
+            group_mode=os.environ.get("TELEGRAM_GROUP_MODE", "mention").strip().lower() or "mention",
         )
 
 
@@ -181,6 +184,10 @@ class TelegramTask:
     last_status_update_at: float = 0.0
     done: bool = False
     response: dict[str, Any] | None = None
+    last_status_detail: str = ""
+    last_event_phase: str = ""
+    last_event_at: float = 0.0
+    last_run_id: str = ""
 
 
 class TelegramBot:
@@ -194,6 +201,8 @@ class TelegramBot:
         self.tasks_path = state / "telegram-tasks.json"
         self._tasks: dict[str, TelegramTask] = {}
         self._tasks_lock = threading.Lock()
+        self.bot_username = ""
+        self.bot_user_id = ""
         self.state.mkdir(parents=True, exist_ok=True)
 
     def load_offset(self) -> int | None:
@@ -239,6 +248,10 @@ class TelegramBot:
                 "provider": task.provider,
                 "done": task.done,
                 "last_status_text": task.last_status_text,
+                "last_status_detail": task.last_status_detail,
+                "last_event_phase": task.last_event_phase,
+                "last_event_at": int(task.last_event_at) if task.last_event_at else 0,
+                "last_run_id": task.last_run_id,
                 "response_status": (task.response or {}).get("status"),
             }
             cutoff = int(time.time()) - self.config.task_ttl_seconds
@@ -376,6 +389,8 @@ class TelegramBot:
             {"command": "help", "description": "显示 /ai 命令帮助"},
             {"command": "features", "description": "显示可用功能和 provider"},
             {"command": "codex", "description": "切换到 Codex 或直接让 Codex 执行任务"},
+            {"command": "vscode", "description": "切换到 VSCode 或直接让 VSCode 执行任务"},
+            {"command": "claude", "description": "切换到 Claude Code 或直接让 Claude Code 执行任务"},
             {"command": "shell", "description": "执行本机 shell 命令"},
         ]
 
@@ -408,10 +423,36 @@ class TelegramBot:
             if head.startswith("/codex@"):
                 tail = tail.strip()
                 return "/codex " + tail if tail else "/ai 提供商 使用 codex"
+        if stripped.startswith("/vscode@"):
+            head, _, tail = stripped.partition(" ")
+            if head.startswith("/vscode@"):
+                tail = tail.strip()
+                return "/vscode " + tail if tail else "/ai 提供商 使用 vscode"
+        if stripped.startswith("/claude@"):
+            head, _, tail = stripped.partition(" ")
+            if head.startswith("/claude@"):
+                tail = tail.strip()
+                return "/claude " + tail if tail else "/ai 提供商 使用 claude-code"
         if stripped.startswith("/shell@"):
             head, _, tail = stripped.partition(" ")
             if head.startswith("/shell@"):
                 return "/shell " + tail.strip()
+        if stripped.startswith("/status@"):
+            head, _, _tail = stripped.partition(" ")
+            if head.startswith("/status@"):
+                return "/ai 状态"
+        if stripped.startswith("/features@"):
+            head, _, _tail = stripped.partition(" ")
+            if head.startswith("/features@"):
+                return "/ai 功能"
+        if stripped.startswith("/help@"):
+            head, _, _tail = stripped.partition(" ")
+            if head.startswith("/help@"):
+                return "/ai 帮助"
+        if stripped.startswith("/start@"):
+            head, _, _tail = stripped.partition(" ")
+            if head.startswith("/start@"):
+                return "/ai 帮助"
         if stripped == "/start":
             return "/ai 帮助"
         if stripped == "/help":
@@ -424,6 +465,14 @@ class TelegramBot:
             return "/ai 提供商 使用 codex"
         if stripped.startswith("/codex "):
             return stripped
+        if stripped == "/vscode":
+            return "/ai 提供商 使用 vscode"
+        if stripped.startswith("/vscode "):
+            return stripped
+        if stripped == "/claude":
+            return "/ai 提供商 使用 claude-code"
+        if stripped.startswith("/claude "):
+            return stripped
         if stripped.startswith("/shell "):
             return stripped
         return stripped
@@ -433,6 +482,14 @@ class TelegramBot:
             prompt = text.removeprefix("/codex ").strip()
             if prompt:
                 return {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": prompt, "provider": "codex"}, "requires_confirmation": False}
+        if text.startswith("/vscode "):
+            prompt = text.removeprefix("/vscode ").strip()
+            if prompt:
+                return {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": prompt, "provider": "vscode"}, "requires_confirmation": False}
+        if text.startswith("/claude "):
+            prompt = text.removeprefix("/claude ").strip()
+            if prompt:
+                return {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": prompt, "provider": "claude-code"}, "requires_confirmation": False}
         if text.startswith("/shell "):
             command = text.removeprefix("/shell ").strip()
             if command:
@@ -459,9 +516,9 @@ class TelegramBot:
         path = self.runtime.state / "provider-selection.json"
         if path.exists():
             try:
-                provider = json.loads(path.read_text(encoding="utf-8")).get("provider")
+                provider = normalize_provider_name(str(json.loads(path.read_text(encoding="utf-8")).get("provider") or ""))
                 if provider and (not configured or provider in configured):
-                    return str(provider)
+                    return provider
             except json.JSONDecodeError:
                 pass
         return configured[0] if configured else "none"
@@ -471,7 +528,7 @@ class TelegramBot:
         args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
         requested = args.get("provider") if isinstance(args, dict) else None
         if isinstance(requested, str) and requested:
-            return requested
+            return normalize_provider_name(requested)
         if action == "task.run":
             return self.default_provider()
         if action == "codex.doctor":
@@ -494,41 +551,41 @@ class TelegramBot:
     def configured_providers(self) -> list[str]:
         raw = os.environ.get("AI_RUNNER_PROVIDERS")
         if raw is None:
-            return ["claude-code", "codex"]
+            return ["claude-code", "vscode", "codex"]
         providers: list[str] = []
         for item in raw.split(","):
-            provider = item.strip()
+            provider = normalize_provider_name(item)
             if provider:
-                providers.append("claude-code" if provider == "claude" else provider)
+                providers.append(provider)
         return providers
 
     def ai_providers_configured(self) -> bool:
         return bool(self.configured_providers())
 
-    def status_interval_seconds(self) -> float:
-        raw = os.environ.get("TELEGRAM_STATUS_INTERVAL_SECONDS", "30")
-        try:
-            value = float(raw)
-        except ValueError:
-            return 30.0
-        return max(0.0, value)
-
-    def heartbeat_text(self, provider: str, started_at: float) -> str:
-        elapsed = max(1, int(time.time() - started_at))
-        return f"仍在运行，已等待 {elapsed}s。provider={provider}，状态可能是模型思考、工具执行、联网等待或生成中；不是卡死。"
+    def heartbeat_text(self, task: TelegramTask) -> str:
+        elapsed = max(1, int(time.time() - task.started_at))
+        current = task.last_status_detail or "模型思考、工具执行、联网等待或生成中。"
+        return f"{current}\nheartbeat: 仍在运行，已等待 {elapsed}s；provider={task.provider}，不是卡死。"
 
     def status_text(self, task: TelegramTask, message: str | None = None) -> str:
         elapsed = max(0, int(time.time() - task.started_at))
-        detail = message or "模型思考、工具执行、联网等待或生成中。"
-        return "\n".join(
+        detail = message or task.last_status_detail or "模型思考、工具执行、联网等待或生成中。"
+        if task.last_event_phase:
+            detail = f"{detail}\nphase: {task.last_event_phase}"
+        lines = [
+            "AI 正在运行",
+            f"provider: {task.provider}",
+            f"task: {task.task_id}",
+        ]
+        if task.last_run_id:
+            lines.append(f"run: {task.last_run_id}")
+        lines.extend(
             [
-                "AI 正在运行",
-                f"provider: {task.provider}",
-                f"task: {task.task_id}",
                 f"elapsed: {elapsed}s",
                 f"status: {detail}",
             ]
         )
+        return "\n".join(lines)
 
     def start_status_message(self, chat_id: str, provider: str, message_id: int | None) -> TelegramTask:
         task = TelegramTask(task_id=str(uuid.uuid4()), chat_id=chat_id, message_id=message_id, started_at=time.time(), provider=provider, draft_id=_new_draft_id())
@@ -537,11 +594,14 @@ class TelegramBot:
         if result and isinstance(result.get("message_id"), int):
             task.status_message_id = int(result["message_id"])
         task.last_status_text = text
+        task.last_status_detail = "排队中。"
         task.last_status_update_at = 0.0
         self.save_task_status(task)
         return task
 
-    def update_status_message(self, task: TelegramTask, message: str | None = None, force: bool = False) -> None:
+    def update_status_message(self, task: TelegramTask, message: str | None = None, force: bool = False, heartbeat: bool = False) -> None:
+        if message and not heartbeat:
+            task.last_status_detail = message
         text = self.status_text(task, message)
         if not force and text == task.last_status_text:
             return
@@ -564,6 +624,11 @@ class TelegramBot:
     def task_event_observer(self, task: TelegramTask) -> Callable[[dict[str, Any]], None]:
         def notify(event: dict[str, Any]) -> None:
             text = self.event_text(event)
+            if event.get("run_id"):
+                task.last_run_id = str(event["run_id"])
+            if event.get("phase"):
+                task.last_event_phase = str(event["phase"])
+                task.last_event_at = time.time()
             if text:
                 self.update_status_message(task, text)
 
@@ -603,7 +668,7 @@ class TelegramBot:
         while worker.is_alive():
             worker.join(interval)
             if worker.is_alive():
-                self.update_status_message(task, self.heartbeat_text(task.provider, task.started_at), force=True)
+                self.update_status_message(task, self.heartbeat_text(task), force=True, heartbeat=True)
         return holder.get("response") or {
             "request_id": envelope.get("request_id"),
             "status": "failed",
@@ -618,6 +683,43 @@ class TelegramBot:
         task.provider = provider
         self.update_status_message(task, "排队中。", force=True)
         return self.runtime.with_event_observer(self.task_event_observer(task))
+
+    def _is_group_chat(self, message: dict[str, Any]) -> bool:
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        return str(chat.get("type") or "").lower() in {"group", "supergroup"}
+
+    def _message_replies_to_bot(self, message: dict[str, Any]) -> bool:
+        reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else {}
+        sender = reply.get("from") if isinstance(reply.get("from"), dict) else {}
+        if self.bot_user_id and str(sender.get("id") or "") == self.bot_user_id:
+            return True
+        return bool(sender.get("is_bot")) and bool(self.bot_username) and str(sender.get("username") or "").lower() == self.bot_username.lower()
+
+    def _strip_bot_mention(self, text: str) -> tuple[str, bool]:
+        username = self.bot_username.strip().lstrip("@")
+        if not username:
+            return text, False
+        mention = f"@{username}".lower()
+        lower = text.lower()
+        if mention not in lower:
+            return text, False
+        stripped = " ".join(part for part in text.split() if part.lower() != mention)
+        return stripped.strip(), True
+
+    def group_text_for_message(self, message: dict[str, Any], text: str) -> str | None:
+        if not self._is_group_chat(message):
+            return text
+        mode = self.config.group_mode
+        if mode in {"all", "any"}:
+            return text
+        if text.startswith(("/ai", "/codex", "/vscode", "/claude", "/shell", "/status", "/features", "/help", "/start")):
+            return text
+        stripped, mentioned = self._strip_bot_mention(text)
+        if mode in {"mention", "mentions"} and (mentioned or self._message_replies_to_bot(message)):
+            return stripped or "/ai 状态"
+        if mode in {"reply", "replies"} and self._message_replies_to_bot(message):
+            return stripped
+        return None
 
     def confirmation_token(self, parsed: dict[str, Any]) -> str:
         if parsed.get("canonical_action") != "confirm":
@@ -647,7 +749,7 @@ class TelegramBot:
                 "data": {"configured_providers": self.configured_providers()},
                 "error": {
                     "code": "ai_provider_not_configured",
-                    "detail": "这台机器没有配置 Claude Code 或 Codex；它只能响应 /ai 状态、/ai 帮助、/ai 功能 等管理命令。请把 AI 对话发给安装了对应 AI 的 Telegram bot。",
+                    "detail": "这台机器没有配置 Claude Code、VSCode 或 Codex；它只能响应 /ai 状态、/ai 帮助、/ai 功能 等管理命令。请把 AI 对话发给安装了对应 AI 的 Telegram bot。",
                 },
             }
         if parsed.get("canonical_action") == "confirm":
@@ -677,7 +779,7 @@ class TelegramBot:
         parsed_args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
         requested_provider = parsed_args.get("provider") if isinstance(parsed_args, dict) else None
         if isinstance(requested_provider, str) and requested_provider:
-            envelope["provider"] = requested_provider
+            envelope["provider"] = normalize_provider_name(requested_provider)
         runtime = self.runtime
         if self.action_runs_in_background(parsed):
             if task is None:
@@ -780,7 +882,10 @@ class TelegramBot:
         if not self.chat_allowed(chat_id):
             self.safe_send_message(chat_id, self.pairing_hint(chat_id))
             return True
-        normalized = self.normalize_text(text)
+        scoped_text = self.group_text_for_message(message, text)
+        if scoped_text is None:
+            return False
+        normalized = self.normalize_text(scoped_text)
         parsed = self.parsed_for_text(normalized)
         if self.action_runs_in_background(parsed) or self.confirmation_runs_background(parsed):
             self.run_task_background(chat_id, message, normalized, parsed)
@@ -793,6 +898,10 @@ class TelegramBot:
         me = self.client.get_me()
         if not me.get("is_bot"):
             raise RuntimeError("telegram_token_is_not_bot")
+        if me.get("username"):
+            self.bot_username = str(me["username"]).lstrip("@")
+        if me.get("id") is not None:
+            self.bot_user_id = str(me["id"])
         if self.config.clear_webhook_on_startup:
             self.client.delete_webhook(drop_pending_updates=False)
         if self.config.sync_commands_on_startup:

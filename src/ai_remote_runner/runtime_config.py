@@ -68,6 +68,7 @@ def apply_config_env(state: Path, updates: dict[str, str]) -> dict[str, str]:
     order = [
         "AI_REMOTE_STATE",
         "AI_WORKSPACE_ROOT",
+        "AI_ADAPTER_TYPE",
         "AI_RUNNER_PROVIDERS",
         "AI_PERMISSION_SCOPE",
         "AI_REQUIRE_SHELL_CONFIRMATION",
@@ -77,11 +78,15 @@ def apply_config_env(state: Path, updates: dict[str, str]) -> dict[str, str]:
         "CLAUDE_MODEL",
         "VSCODE_CLAUDE_MODEL",
         "CLAUDE_MAX_TURNS",
+        "VSCODE_CLAUDE_MAX_TURNS",
         "CLAUDE_API_RETRY_ATTEMPTS",
         "CLAUDE_API_RETRY_SLEEP_SECONDS",
+        "VSCODE_CLAUDE_API_RETRY_ATTEMPTS",
+        "VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS",
         "CODEX_MODEL",
         "AI_TASK_RESERVED_USD",
         "TELEGRAM_RESERVED_USD",
+        "TELEGRAM_GROUP_MODE",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -224,8 +229,7 @@ def apply_model(state: Path, target: str, model: str) -> dict[str, Any]:
         _write_codex_config(text)
         updates = {"CODEX_MODEL": model}
     elif target == "vscode":
-        _write_claude_env({"CLAUDE_MODEL": model})
-        updates = {"VSCODE_CLAUDE_MODEL": model, "CLAUDE_MODEL": model}
+        updates = {"VSCODE_CLAUDE_MODEL": model}
     else:
         _write_claude_env({"CLAUDE_MODEL": model})
         updates = {"CLAUDE_MODEL": model}
@@ -287,10 +291,16 @@ def _claude_max_turns_value(max_turns: int | str) -> tuple[str, int, bool]:
     return str(parsed), parsed, parsed == 0
 
 
-def apply_claude_max_turns(state: Path, max_turns: int | str) -> dict[str, Any]:
+def _claude_control_key(target: str, suffix: str) -> str:
+    return f"VSCODE_CLAUDE_{suffix}" if target == "vscode" else f"CLAUDE_{suffix}"
+
+
+def apply_claude_max_turns(state: Path, max_turns: int | str, target: str = "claude-code") -> dict[str, Any]:
     value, parsed, unlimited = _claude_max_turns_value(max_turns)
-    apply_config_env(state, {"CLAUDE_MAX_TURNS": value})
-    return {"claude_max_turns": parsed, "max_turns_unlimited": unlimited}
+    target = normalize_target(target) or "claude-code"
+    key = _claude_control_key(target, "MAX_TURNS")
+    apply_config_env(state, {key: value})
+    return {"target": target, "config_key": key, "claude_max_turns": parsed, "max_turns_unlimited": unlimited}
 
 
 def _claude_retry_attempts_value(attempts: int | str) -> tuple[str, int]:
@@ -301,10 +311,12 @@ def _claude_retry_attempts_value(attempts: int | str) -> tuple[str, int]:
     return str(parsed), parsed
 
 
-def apply_claude_api_retries(state: Path, attempts: int | str) -> dict[str, Any]:
+def apply_claude_api_retries(state: Path, attempts: int | str, target: str = "claude-code") -> dict[str, Any]:
     value, parsed = _claude_retry_attempts_value(attempts)
-    apply_config_env(state, {"CLAUDE_API_RETRY_ATTEMPTS": value})
-    return {"claude_api_retry_attempts": parsed}
+    target = normalize_target(target) or "claude-code"
+    key = _claude_control_key(target, "API_RETRY_ATTEMPTS")
+    apply_config_env(state, {key: value})
+    return {"target": target, "config_key": key, "claude_api_retry_attempts": parsed}
 
 
 def _toml_string_value(text: str, key: str) -> str:
@@ -326,14 +338,22 @@ def config_summary(target: str) -> dict[str, Any]:
         }
     env = _read_claude_env()
     model_key = "VSCODE_CLAUDE_MODEL" if target == "vscode" else "CLAUDE_MODEL"
+    state_env = load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner")))
+    max_turns_key = "VSCODE_CLAUDE_MAX_TURNS" if target == "vscode" else "CLAUDE_MAX_TURNS"
+    retry_attempts_key = "VSCODE_CLAUDE_API_RETRY_ATTEMPTS" if target == "vscode" else "CLAUDE_API_RETRY_ATTEMPTS"
+    retry_sleep_key = "VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS" if target == "vscode" else "CLAUDE_API_RETRY_SLEEP_SECONDS"
+    if target == "vscode":
+        model = os.environ.get(model_key) or state_env.get(model_key, "")
+    else:
+        model = os.environ.get(model_key) or state_env.get(model_key) or env.get("CLAUDE_MODEL", "")
     return {
         "target": target,
-        "model": os.environ.get(model_key) or os.environ.get("CLAUDE_MODEL") or env.get("CLAUDE_MODEL", ""),
+        "model": model,
         "base_url": os.environ.get("ANTHROPIC_BASE_URL") or env.get("ANTHROPIC_BASE_URL", ""),
         "api_key_configured": bool(os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY")),
-        "claude_max_turns": os.environ.get("CLAUDE_MAX_TURNS") or load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))).get("CLAUDE_MAX_TURNS", "0"),
-        "claude_api_retry_attempts": os.environ.get("CLAUDE_API_RETRY_ATTEMPTS") or load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))).get("CLAUDE_API_RETRY_ATTEMPTS", "2"),
-        "claude_api_retry_sleep_seconds": os.environ.get("CLAUDE_API_RETRY_SLEEP_SECONDS") or load_config_env(Path(os.environ.get("AI_REMOTE_STATE", "/var/lib/ai-remote-runner"))).get("CLAUDE_API_RETRY_SLEEP_SECONDS", "8"),
+        "claude_max_turns": os.environ.get(max_turns_key) or state_env.get(max_turns_key) or os.environ.get("CLAUDE_MAX_TURNS") or state_env.get("CLAUDE_MAX_TURNS", "0"),
+        "claude_api_retry_attempts": os.environ.get(retry_attempts_key) or state_env.get(retry_attempts_key) or os.environ.get("CLAUDE_API_RETRY_ATTEMPTS") or state_env.get("CLAUDE_API_RETRY_ATTEMPTS", "3"),
+        "claude_api_retry_sleep_seconds": os.environ.get(retry_sleep_key) or state_env.get(retry_sleep_key) or os.environ.get("CLAUDE_API_RETRY_SLEEP_SECONDS") or state_env.get("CLAUDE_API_RETRY_SLEEP_SECONDS", "12"),
         "config_file": str(claude_settings_path()),
     }
 

@@ -103,6 +103,7 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertIn("TELEGRAM_SYNC_COMMANDS_ON_STARTUP=1\n", config)
             self.assertIn("TELEGRAM_ALLOWED_UPDATES=message,edited_message,callback_query\n", config)
             self.assertIn("TELEGRAM_NATIVE_DRAFT_PROGRESS=0\n", config)
+            self.assertIn("TELEGRAM_GROUP_MODE=mention\n", config)
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["telegram_status"], "paired")
             self.assertTrue(manifest["telegram_paired"])
@@ -110,7 +111,55 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertTrue(manifest["telegram_webhook_cleared_for_polling"])
             self.assertEqual(manifest["telegram_allowed_updates"], ["message", "edited_message", "callback_query"])
             self.assertFalse(manifest["telegram_native_draft_progress"])
+            self.assertEqual(manifest["telegram_group_mode"], "mention")
+            self.assertEqual(manifest["telegram_reserved_usd_input"], "0.25")
+            self.assertEqual(manifest["telegram_reserved_usd"], "0.25")
             self.assertIn("systemctl enable --now ai-telegram-bot.service", calls.read_text(encoding="utf-8"))
+
+    def test_pair_telegram_accepts_unlimited_reserved_usd_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            service = root / "ai-telegram-bot.service"
+            state.mkdir()
+            (state / "install-manifest.json").write_text(json.dumps({"telegram_status": "pending_pairing"}), encoding="utf-8")
+            service.write_text("[Service]\n", encoding="utf-8")
+            fakebin, calls = self.make_fakebin(root)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--bot-token",
+                    "new-token:ABC_def",
+                    "--chat-id",
+                    "123",
+                    "--reserved-usd",
+                    "无限",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            config = (state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("TELEGRAM_RESERVED_USD=0\n", config)
+            manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["telegram_reserved_usd_input"], "无限")
+            self.assertEqual(manifest["telegram_reserved_usd"], "0")
 
     def test_pair_telegram_rerun_rewrites_status_stream_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,6 +288,13 @@ class PairTelegramScriptTests(unittest.TestCase):
                     fi
                     if printf '%s' "$script" | grep -q 'sendMessage'; then
                       printf 'sendMessage %s %s\\n' "$3" "$4" >> "{api_calls}"
+                      if printf '%s' "$script" | grep -q 'editMessageText'; then
+                        printf 'editMessageText %s %s\\n' "$3" "$4" >> "{api_calls}"
+                      fi
+                      exit 0
+                    fi
+                    if printf '%s' "$script" | grep -q 'setMyCommands'; then
+                      printf 'setMyCommands %s\\n' "$3" >> "{api_calls}"
                       exit 0
                     fi
                     if printf '%s' "$script" | grep -q 'deleteWebhook'; then
@@ -294,6 +350,8 @@ class PairTelegramScriptTests(unittest.TestCase):
             api_log = api_calls.read_text(encoding="utf-8")
             self.assertIn("getUpdates test-token:ABC_def timeout=1", api_log)
             self.assertIn("sendMessage test-token:ABC_def 789", api_log)
+            self.assertIn("editMessageText test-token:ABC_def 789", api_log)
+            self.assertIn("setMyCommands test-token:ABC_def", api_log)
 
     def test_interactive_bot_token_and_telegram_id_pair_successfully(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -436,6 +494,11 @@ class PairTelegramScriptTests(unittest.TestCase):
                     if printf '%s' "$script" | grep -q 'urlopen'; then
                       if printf '%s' "$script" | grep -q 'sendMessage'; then
                         printf 'sendMessage %s %s\\n' "$3" "${{4:-}}" >> "{api_calls}"
+                        if printf '%s' "$script" | grep -q 'editMessageText'; then
+                          printf 'editMessageText %s %s\\n' "$3" "${{4:-}}" >> "{api_calls}"
+                        fi
+                      elif printf '%s' "$script" | grep -q 'setMyCommands'; then
+                        printf 'setMyCommands %s\\n' "$3" >> "{api_calls}"
                       else
                         printf 'getMe %s\\n' "$3" >> "{api_calls}"
                         if printf '%s' "$script" | grep -q 'deleteWebhook'; then
@@ -478,11 +541,14 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("verifying Telegram bot token with getMe", result.stdout)
             self.assertIn("clearing Telegram webhook for long polling", result.stdout)
-            self.assertIn("sending Telegram pairing test message", result.stdout)
+            self.assertIn("syncing Telegram command menu", result.stdout)
+            self.assertIn("sending and editing Telegram pairing test message", result.stdout)
             api_log = api_calls.read_text(encoding="utf-8")
             self.assertIn("getMe test-token:ABC_def", api_log)
             self.assertIn("deleteWebhook test-token:ABC_def", api_log)
+            self.assertIn("setMyCommands test-token:ABC_def", api_log)
             self.assertIn("sendMessage test-token:ABC_def 123", api_log)
+            self.assertIn("editMessageText test-token:ABC_def 123", api_log)
 
     def test_rejects_invalid_chat_id_before_writing_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

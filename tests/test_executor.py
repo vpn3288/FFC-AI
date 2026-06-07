@@ -11,7 +11,7 @@ from ai_remote_runner.commands import parse_command
 from ai_remote_runner.commands import COMMANDS
 from ai_remote_runner.executor import RunnerRuntime, execute
 from ai_remote_runner.providers import ProviderResult
-from ai_remote_runner.runtime_config import apply_base_url, config_summary
+from ai_remote_runner.runtime_config import apply_base_url, apply_model, config_summary
 
 
 class ExecutorTests(unittest.TestCase):
@@ -35,6 +35,9 @@ class ExecutorTests(unittest.TestCase):
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_BASE_URL",
             "CLAUDE_MODEL",
+            "VSCODE_CLAUDE_API_RETRY_ATTEMPTS",
+            "VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS",
+            "VSCODE_CLAUDE_MAX_TURNS",
             "VSCODE_CLAUDE_MODEL",
         ):
             os.environ.pop(key, None)
@@ -132,6 +135,15 @@ class ExecutorTests(unittest.TestCase):
             self.assertNotIn("dangerously_bypass_approvals_and_sandbox", config)
             self.assertNotIn("[model_providers.OpenAI]", config)
             self.assertEqual(summary["base_url"], "https://proxy.example/v1")
+
+    def test_vscode_config_summary_does_not_fall_back_to_claude_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            with patch.dict("os.environ", {"AI_REMOTE_STATE": str(runtime.state), "CLAUDE_MODEL": "claude-only"}, clear=False):
+                self.assertEqual(config_summary("vscode")["model"], "")
+                apply_model(runtime.state, "vscode", "vscode-model")
+                self.assertEqual(config_summary("vscode")["model"], "vscode-model")
 
     def test_status_reads_core_ready_from_install_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -376,7 +388,7 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(retry["data"]["claude_api_retry_attempts"], 3)
             config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
             self.assertIn("VSCODE_CLAUDE_MODEL=gpt-5.5", config_env)
-            self.assertIn("CLAUDE_MODEL=gpt-5.5", config_env)
+            self.assertNotIn("CLAUDE_MODEL=gpt-5.5", config_env.splitlines())
             self.assertIn("AI_TASK_RESERVED_USD=1.25", config_env)
             self.assertIn("CLAUDE_MAX_TURNS=40", config_env)
             self.assertIn("CLAUDE_API_RETRY_ATTEMPTS=3", config_env)
@@ -391,9 +403,41 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn("CLAUDE_MAX_TURNS=0", config_env)
             settings = json.loads((root / "root-home" / ".claude" / "settings.json").read_text(encoding="utf-8"))
             self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://cc-vibe.com")
-            self.assertEqual(settings["env"]["CLAUDE_MODEL"], "gpt-5.5")
+            self.assertNotIn("CLAUDE_MODEL", settings["env"])
             auth = json.loads((root / "root-home" / ".codex" / "auth.json").read_text(encoding="utf-8"))
             self.assertEqual(auth["OPENAI_API_KEY"], fake_key)
+
+    def test_vscode_provider_selection_invokes_vscode_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            with patch.dict("os.environ", {"AI_RUNNER_PROVIDERS": "vscode"}, clear=False):
+                selected = execute(parse_command("/ai 提供商 使用 code"), {"request_id": "ps-vscode", "raw_text": "/ai 提供商 使用 code"}, runtime)
+                self.assertEqual(selected["status"], "accepted")
+                self.assertEqual(selected["data"]["provider"], "vscode")
+
+                parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+                fake = ProviderResult("run", "vscode", "completed", "done", None, 0)
+                with patch("ai_remote_runner.executor.invoke_vscode", return_value=fake) as invoke:
+                    response = execute(parsed, {"request_id": "task-vscode", "raw_text": "do work"}, runtime)
+
+            self.assertEqual(response["status"], "accepted")
+            self.assertEqual(response["data"]["provider"], "vscode")
+            invoke.assert_called_once()
+            self.assertTrue((runtime.state / "contexts" / "default.vscode.json").exists())
+
+    def test_claude_controls_can_target_vscode_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            max_turns = execute(parse_command("/ai 轮数 设置 vscode 无限"), {"request_id": "turns-vscode", "raw_text": "/ai 轮数 设置 vscode 无限"}, runtime)
+            retry = execute(parse_command("/ai 重试 设置 code 3"), {"request_id": "retry-vscode", "raw_text": "/ai 重试 设置 code 3"}, runtime)
+
+            self.assertEqual(max_turns["status"], "accepted")
+            self.assertEqual(max_turns["data"]["target"], "vscode")
+            self.assertEqual(max_turns["data"]["config_key"], "VSCODE_CLAUDE_MAX_TURNS")
+            self.assertEqual(retry["data"]["config_key"], "VSCODE_CLAUDE_API_RETRY_ATTEMPTS")
+            config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("VSCODE_CLAUDE_MAX_TURNS=0", config_env)
+            self.assertIn("VSCODE_CLAUDE_API_RETRY_ATTEMPTS=3", config_env)
 
     def test_model_list_uses_fallback_when_key_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

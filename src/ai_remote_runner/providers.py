@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import shutil
 import json
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -100,6 +101,31 @@ def discover_claude() -> dict[str, Any]:
     return base
 
 
+def discover_vscode() -> dict[str, Any]:
+    base = _version("code")
+    code_available = bool(base.get("available"))
+    backend = discover_claude()
+    base["provider"] = "vscode"
+    base["backend_provider"] = "claude-code"
+    base["available"] = bool(code_available and backend.get("available"))
+    base["capabilities"] = {
+        "new_conversation": True,
+        "continue_conversation": True,
+        "manual_compact": False,
+        "auto_compact": False,
+        "context_usage": "estimated",
+        "status_events": True,
+        "file_edits": True,
+        "shell_commands": True,
+        "full_access_available": bool(backend.get("capabilities", {}).get("full_access_available")),
+        "root_safe_full_access_available": bool(backend.get("capabilities", {}).get("root_safe_full_access_available")),
+        "vscode_command_available": code_available,
+        "claude_backend_available": bool(backend.get("available")),
+        "backend": backend,
+    }
+    return base
+
+
 def discover_codex() -> dict[str, Any]:
     base = _version("codex")
     exec_available = _returns_ok(CODEX_EXEC_HELP_COMMAND)
@@ -112,6 +138,16 @@ def discover_codex() -> dict[str, Any]:
     add_dir_available = _codex_exec_help_has("--add-dir")
     skip_git_repo_check_available = _codex_exec_help_has("--skip-git-repo-check")
     full_access_available = bypass_available or sandbox_available
+    full_access_mode = "bypass" if bypass_available else "sandbox" if sandbox_available else "unavailable"
+    full_access_flags = []
+    if bypass_available:
+        full_access_flags.append("--dangerously-bypass-approvals-and-sandbox")
+    elif sandbox_available:
+        full_access_flags.extend(["--sandbox", "danger-full-access"])
+    if add_dir_available:
+        full_access_flags.extend(["--add-dir", "/"])
+    if skip_git_repo_check_available:
+        full_access_flags.append("--skip-git-repo-check")
     base["provider"] = "codex"
     base["available"] = bool(base["available"] and exec_available and json_available and output_last_message_available and cd_available and full_access_available)
     base["capabilities"] = {
@@ -128,8 +164,12 @@ def discover_codex() -> dict[str, Any]:
         "sandbox_available": sandbox_available,
         "bypass_approvals_and_sandbox_available": bypass_available,
         "full_access_available": full_access_available,
+        "full_access_mode": full_access_mode,
+        "full_access_flags": full_access_flags,
         "output_last_message_available": output_last_message_available,
         "json_available": json_available,
+        "jsonl_status_events": json_available,
+        "telegram_live_status_available": json_available and output_last_message_available,
         "cd_available": cd_available,
         "add_dir_available": add_dir_available,
         "skip_git_repo_check_available": skip_git_repo_check_available,
@@ -140,41 +180,56 @@ def discover_codex() -> dict[str, Any]:
     return base
 
 
+def normalize_provider_name(value: str) -> str:
+    provider = value.strip().lower()
+    aliases = {
+        "claude": "claude-code",
+        "claudecode": "claude-code",
+        "code": "vscode",
+        "vs-code": "vscode",
+    }
+    return aliases.get(provider, provider)
+
+
+def _unconfigured_provider(name: str) -> dict[str, Any]:
+    return {
+        "provider": name,
+        "available": False,
+        "configured": False,
+        "path": None,
+        "version": None,
+        "status": "not_configured_on_this_machine",
+        "remediation_zh": "这台机器按单机单 AI/工具模式安装，没有启用该 provider。",
+        "capabilities": {
+            "new_conversation": False,
+            "continue_conversation": False,
+            "manual_compact": False,
+            "auto_compact": False,
+            "context_usage": "none",
+            "status_events": False,
+            "file_edits": False,
+            "shell_commands": False,
+            "full_access_available": False,
+        },
+    }
+
+
 def provider_status() -> list[dict[str, Any]]:
     configured_raw = os.environ.get("AI_RUNNER_PROVIDERS")
     if configured_raw is None:
         configured = None
     else:
-        configured = {("claude-code" if item.strip() == "claude" else item.strip()) for item in configured_raw.split(",") if item.strip()}
+        configured = {normalize_provider_name(item) for item in configured_raw.split(",") if item.strip()}
     if configured is None:
-        return [discover_claude(), discover_codex()]
+        return [discover_claude(), discover_vscode(), discover_codex()]
 
     providers: list[dict[str, Any]] = []
-    for name, discover in (("claude-code", discover_claude), ("codex", discover_codex)):
+    for name, discover in (("claude-code", discover_claude), ("vscode", discover_vscode), ("codex", discover_codex)):
         if name in configured:
             provider = discover()
             provider["configured"] = True
         else:
-            provider = {
-                "provider": name,
-                "available": False,
-                "configured": False,
-                "path": None,
-                "version": None,
-                "status": "not_configured_on_this_machine",
-                "remediation_zh": "这台机器按单机单 AI/工具模式安装，没有启用该 provider。",
-                "capabilities": {
-                    "new_conversation": False,
-                    "continue_conversation": False,
-                    "manual_compact": False,
-                    "auto_compact": False,
-                    "context_usage": "none",
-                    "status_events": False,
-                    "file_edits": False,
-                    "shell_commands": False,
-                    "full_access_available": False,
-                },
-            }
+            provider = _unconfigured_provider(name)
         providers.append(provider)
     return providers
 
@@ -437,8 +492,18 @@ def _claude_recorded_attempt_cost(costs: list[float | None], retry_started: bool
     return sum(known) if known else None
 
 
-def _claude_positive_int_env(name: str, default: int, max_value: int = 5) -> int:
-    raw = os.environ.get(name, str(default)).strip()
+def _claude_adapter_env(provider_id: str, key: str, default: str = "") -> str:
+    if provider_id == "vscode":
+        value = os.environ.get(f"VSCODE_{key}")
+        return value if value is not None else default
+    value = os.environ.get(key)
+    if value is not None:
+        return value
+    return default
+
+
+def _claude_positive_int_value(raw: str, default: int, max_value: int = 5) -> int:
+    raw = raw.strip()
     try:
         parsed = int(raw)
     except ValueError:
@@ -446,13 +511,21 @@ def _claude_positive_int_env(name: str, default: int, max_value: int = 5) -> int
     return max(0, min(parsed, max_value))
 
 
-def _claude_nonnegative_float_env(name: str, default: float, max_value: float = 120.0) -> float:
-    raw = os.environ.get(name, str(default)).strip()
+def _claude_positive_int_env(name: str, default: int, max_value: int = 5) -> int:
+    return _claude_positive_int_value(os.environ.get(name, str(default)), default, max_value)
+
+
+def _claude_nonnegative_float_value(raw: str, default: float, max_value: float = 120.0) -> float:
+    raw = raw.strip()
     try:
         parsed = float(raw)
     except ValueError:
         return default
     return max(0.0, min(parsed, max_value))
+
+
+def _claude_nonnegative_float_env(name: str, default: float, max_value: float = 120.0) -> float:
+    return _claude_nonnegative_float_value(os.environ.get(name, str(default)), default, max_value)
 
 
 def _claude_output(result: subprocess.CompletedProcess[str]) -> tuple[dict[str, Any] | None, str]:
@@ -488,8 +561,8 @@ def _claude_is_transient_api_error(result: subprocess.CompletedProcess[str], out
     return any(marker in haystack for marker in CLAUDE_TRANSIENT_API_ERROR_MARKERS)
 
 
-def _claude_retry_delay_seconds(attempt_index: int) -> float:
-    base = _claude_nonnegative_float_env("CLAUDE_API_RETRY_SLEEP_SECONDS", 8.0)
+def _claude_retry_delay_seconds(attempt_index: int, provider_id: str = "claude-code") -> float:
+    base = _claude_nonnegative_float_value(_claude_adapter_env(provider_id, "CLAUDE_API_RETRY_SLEEP_SECONDS", "12"), 12.0)
     return min(base * max(1, attempt_index), 120.0)
 
 
@@ -510,43 +583,123 @@ def _codex_jsonl_last_agent_message(output: str) -> str:
     return last_message
 
 
+STATUS_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"(?i)\b(token|api[_-]?key|password|secret)=([^\s'\";&|]+)"),
+)
+
+
+def _redact_status_text(text: str) -> str:
+    redacted = text
+    for pattern in STATUS_SECRET_PATTERNS:
+        if pattern.groups >= 2:
+            redacted = pattern.sub(lambda match: f"{match.group(1)}=<redacted>", redacted)
+        else:
+            redacted = pattern.sub("<redacted>", redacted)
+    return redacted
+
+
 def _preview_text(text: str, max_chars: int = 180) -> str:
     compact = " ".join(text.split())
+    compact = _redact_status_text(compact)
     if len(compact) <= max_chars:
         return compact
     return compact[: max_chars - 6].rstrip() + " ..."
 
 
+def _stringish(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        return " ".join(_stringish(item) for item in value if item is not None)
+    return ""
+
+
+def _nested_dict(item: dict[str, Any], *keys: str) -> dict[str, Any]:
+    current: Any = item
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _first_item_text(item: dict[str, Any], keys: tuple[str, ...]) -> str:
+    candidates: list[Any] = [item.get(key) for key in keys]
+    for nested in (_nested_dict(item, "arguments"), _nested_dict(item, "args"), _nested_dict(item, "call"), _nested_dict(item, "params")):
+        candidates.extend(nested.get(key) for key in keys)
+    for candidate in candidates:
+        text = _stringish(candidate).strip()
+        if text:
+            return text
+    return ""
+
+
+def _codex_command_text(item: dict[str, Any]) -> str:
+    command = _first_item_text(item, ("command", "cmd", "shell_command"))
+    if command:
+        return command
+    argv = item.get("argv") or _nested_dict(item, "arguments").get("argv")
+    if isinstance(argv, list):
+        return " ".join(_stringish(part) for part in argv if part is not None).strip()
+    return ""
+
+
+def _codex_file_target(item: dict[str, Any]) -> str:
+    direct = _first_item_text(item, ("path", "file", "filename", "target", "uri"))
+    if direct:
+        return direct
+    files = item.get("files") or item.get("paths") or item.get("changes")
+    if isinstance(files, list):
+        values = []
+        for value in files:
+            if isinstance(value, dict):
+                values.append(_first_item_text(value, ("path", "file", "filename", "target")))
+            else:
+                values.append(_stringish(value))
+        compact = ", ".join(item for item in values if item)
+        if compact:
+            return compact
+    return ""
+
+
+def _codex_tool_name(item: dict[str, Any]) -> str:
+    return _first_item_text(item, ("name", "tool", "tool_name", "function", "server_name"))
+
+
 def _codex_item_label(item: dict[str, Any], event_type: str = "") -> str:
     item_type = str(item.get("type") or "item")
-    if item_type == "command_execution":
-        command = item.get("command")
-        command_text = _preview_text(str(command), 180) if command else ""
+    item_type_normalized = item_type.lower()
+    if item_type_normalized in {"command_execution", "exec", "exec_command", "shell_command", "local_shell_call", "terminal_command"}:
+        command_text = _preview_text(_codex_command_text(item), 180)
         if event_type == "item.completed":
-            exit_code = item.get("exit_code")
+            exit_code = item.get("exit_code", item.get("returncode"))
             if exit_code is not None:
                 return f"命令已完成：exit={exit_code} {command_text}".strip()
             return f"命令已完成：{command_text}".strip() if command_text else "命令已完成。"
         return f"运行命令：{command_text}" if command_text else "正在运行命令。"
-    if item_type == "file_change":
-        path = item.get("path") or item.get("file")
+    if item_type_normalized in {"file_change", "file_edit", "file_write", "patch", "apply_patch"}:
+        path = _preview_text(_codex_file_target(item), 160)
         if event_type == "item.completed":
             return f"文件修改已完成：{path}" if path else "文件修改已完成。"
         return f"正在修改文件：{path}" if path else "正在修改文件。"
-    if item_type == "reasoning":
+    if item_type_normalized in {"reasoning", "thinking"}:
         return "正在推理和规划。"
-    if item_type == "mcp_tool_call":
-        name = item.get("name") or item.get("tool")
+    if item_type_normalized in {"mcp_tool_call", "tool_call", "function_call", "custom_tool_call"}:
+        name = _preview_text(_codex_tool_name(item), 120)
         if event_type == "item.completed":
             return f"MCP 工具调用已完成：{name}" if name else "MCP 工具调用已完成。"
         return f"正在调用 MCP 工具：{name}" if name else "正在调用 MCP 工具。"
-    if item_type == "web_search":
+    if item_type_normalized in {"web_search", "web_search_call", "search"}:
         if event_type == "item.completed":
             return "联网检索已完成。"
         return "正在联网检索。"
-    if item_type == "plan_update":
+    if item_type_normalized == "plan_update":
         return "正在更新执行计划。"
-    if item_type == "agent_message":
+    if item_type_normalized in {"agent_message", "assistant_message", "message"}:
         text = item.get("text")
         if isinstance(text, str) and text.strip():
             return f"正在整理最终回复：{_preview_text(text)}"
@@ -555,14 +708,14 @@ def _codex_item_label(item: dict[str, Any], event_type: str = "") -> str:
 
 
 def _codex_event_phase(item: dict[str, Any], event_type: str = "") -> str:
-    item_type = str(item.get("type") or "")
-    if item_type == "command_execution":
+    item_type = str(item.get("type") or "").lower()
+    if item_type in {"command_execution", "exec", "exec_command", "shell_command", "local_shell_call", "terminal_command"}:
         return "running_command"
-    if item_type == "file_change":
+    if item_type in {"file_change", "file_edit", "file_write", "patch", "apply_patch"}:
         return "writing_files"
-    if item_type == "reasoning":
+    if item_type in {"reasoning", "thinking"}:
         return "thinking"
-    if item_type == "web_search":
+    if item_type in {"web_search", "web_search_call", "search", "mcp_tool_call", "tool_call", "function_call", "custom_tool_call"}:
         return "calling_model"
     return "running"
 
@@ -696,7 +849,9 @@ def _run_codex_command(
                 pipe.close()
 
 
-def invoke_claude(
+def _invoke_claude_backend(
+    provider_id: str,
+    public_name_zh: str,
     prompt: str,
     workspace: Path,
     instruction_prompt: str,
@@ -709,7 +864,7 @@ def invoke_claude(
     permission_scope: str = "full",
 ) -> ProviderResult:
     actual_run_id = run_id or str(uuid.uuid4())
-    ledger.reserve(actual_run_id, "claude-code", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
+    ledger.reserve(actual_run_id, provider_id, reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
     template = {
         "chat": CLAUDE_CHAT_ONLY_TEMPLATE,
         "edit": CLAUDE_EDIT_APPROVED_TEMPLATE,
@@ -718,21 +873,21 @@ def invoke_claude(
     }.get(permission_scope, CLAUDE_FULL_ACCESS_TEMPLATE)
     command = [
         *template,
-        *_claude_max_turn_args(),
+        *_claude_max_turn_args(_claude_adapter_env(provider_id, "CLAUDE_MAX_TURNS", "0")),
         "--append-system-prompt",
         instruction_prompt,
     ]
     command = _claude_command_with_budget(command, reserved_usd)
-    claude_model = os.environ.get("CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL).strip()
+    claude_model = _claude_adapter_env(provider_id, "CLAUDE_MODEL", CLAUDE_DEFAULT_MODEL).strip()
     if claude_model:
         command.extend(["--model", claude_model])
     if emit:
         emit(
             {
                 "run_id": actual_run_id,
-                "provider": "claude-code",
+                "provider": provider_id,
                 "phase": "calling_model",
-                "public_message_zh": "正在调用 Claude Code：模型思考、工具执行或联网等待中。",
+                "public_message_zh": f"正在调用 {public_name_zh}：模型思考、工具执行或联网等待中。",
             }
         )
     try:
@@ -740,13 +895,13 @@ def invoke_claude(
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
         if emit:
-            emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout"})
-        return ProviderResult(actual_run_id, "claude-code", "timeout", "", None, -1)
+            emit({"run_id": actual_run_id, "provider": provider_id, "phase": "error", "error": "timeout"})
+        return ProviderResult(actual_run_id, provider_id, "timeout", "", None, -1)
     raw, output_text = _claude_output(result)
     attempt_raws: list[dict[str, Any] | None] = [raw]
     attempt_costs: list[float | None] = [_actual_cost_usd(raw)]
     transient_retry_started = False
-    transient_retries = _claude_positive_int_env("CLAUDE_API_RETRY_ATTEMPTS", 2)
+    transient_retries = _claude_positive_int_value(_claude_adapter_env(provider_id, "CLAUDE_API_RETRY_ATTEMPTS", "3"), 3)
     for retry_index in range(1, transient_retries + 1):
         if not _claude_is_transient_api_error(result, output_text):
             break
@@ -755,12 +910,12 @@ def invoke_claude(
             emit(
                 {
                     "run_id": actual_run_id,
-                    "provider": "claude-code",
+                    "provider": provider_id,
                     "phase": "warning",
-                    "public_message_zh": f"Claude Code 网关/API 返回临时异常，正在自动重试 {retry_index}/{transient_retries}：{_preview_text(output_text, 120)}",
+                    "public_message_zh": f"{public_name_zh} 网关/API 返回临时异常，正在自动重试 {retry_index}/{transient_retries}：{_preview_text(output_text, 120)}",
                 }
             )
-        delay_seconds = _claude_retry_delay_seconds(retry_index)
+        delay_seconds = _claude_retry_delay_seconds(retry_index, provider_id)
         if delay_seconds > 0:
             time.sleep(delay_seconds)
         try:
@@ -769,9 +924,9 @@ def invoke_claude(
             actual_cost_usd = _claude_recorded_attempt_cost(attempt_costs, True, reserved_usd)
             ledger.complete(actual_run_id, actual_cost_usd, status="timeout")
             if emit:
-                emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout_after_api_retry"})
+                emit({"run_id": actual_run_id, "provider": provider_id, "phase": "error", "error": "timeout_after_api_retry"})
             raw_for_result = {"attempts": attempt_raws} if len(attempt_raws) > 1 else raw
-            return ProviderResult(actual_run_id, "claude-code", "timeout", "", raw_for_result, -1)
+            return ProviderResult(actual_run_id, provider_id, "timeout", "", raw_for_result, -1)
         raw, output_text = _claude_output(result)
         attempt_raws.append(raw)
         attempt_costs.append(_actual_cost_usd(raw))
@@ -785,12 +940,12 @@ def invoke_claude(
         if fallback:
             output_text = fallback
             if emit:
-                emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "warning", "public_message_zh": "模型返回空内容，已使用短消息安全回复。"})
+                emit({"run_id": actual_run_id, "provider": provider_id, "phase": "warning", "public_message_zh": "模型返回空内容，已使用短消息安全回复。"})
         budget_limited = _claude_budget_limited(reserved_usd)
         remaining_budget_usd = reserved_usd - first_cost_usd if first_cost_usd is not None else 0.0
         if not fallback and (not budget_limited or remaining_budget_usd > 0):
             if emit:
-                emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "warning", "public_message_zh": "模型返回空内容，正在自动重试一次。"})
+                emit({"run_id": actual_run_id, "provider": provider_id, "phase": "warning", "public_message_zh": "模型返回空内容，正在自动重试一次。"})
             try:
                 retry_started = True
                 retry_result = _run_claude_command(_claude_command_with_budget(command, remaining_budget_usd), workspace, _claude_chat_retry_prompt(prompt), timeout_seconds)
@@ -803,12 +958,12 @@ def invoke_claude(
             except subprocess.TimeoutExpired:
                 ledger.complete(actual_run_id, _claude_recorded_attempt_cost(attempt_costs + [None], True, reserved_usd), status="timeout")
                 if emit:
-                    emit({"run_id": actual_run_id, "provider": "claude-code", "phase": "error", "error": "timeout_after_empty_retry"})
-                return ProviderResult(actual_run_id, "claude-code", "timeout", "", raw, -1)
+                    emit({"run_id": actual_run_id, "provider": provider_id, "phase": "error", "error": "timeout_after_empty_retry"})
+                return ProviderResult(actual_run_id, provider_id, "timeout", "", raw, -1)
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
     if result.returncode == 0 and not output_text.strip():
-        output_text = "Claude Code 返回了空内容；runner 已按失败处理。请重试，或把问题描述得更具体。"
+        output_text = f"{public_name_zh} 返回了空内容；runner 已按失败处理。请重试，或把问题描述得更具体。"
         status = "empty_output"
     else:
         status = "completed" if result.returncode == 0 else "failed"
@@ -819,11 +974,67 @@ def invoke_claude(
         actual_cost_usd = _actual_cost_usd(raw)
     ledger.complete(actual_run_id, actual_cost_usd, status=status)
     if emit:
-        event = {"run_id": actual_run_id, "provider": "claude-code", "phase": "done" if status == "completed" else "error"}
+        event = {"run_id": actual_run_id, "provider": provider_id, "phase": "done" if status == "completed" else "error"}
         if status != "completed":
             event["error"] = output_text or f"returncode={result.returncode}"
         emit(event)
-    return ProviderResult(actual_run_id, "claude-code", status, output_text, raw, result.returncode)
+    return ProviderResult(actual_run_id, provider_id, status, output_text, raw, result.returncode)
+
+
+def invoke_claude(
+    prompt: str,
+    workspace: Path,
+    instruction_prompt: str,
+    ledger: BudgetLedger,
+    run_id: str | None = None,
+    reserved_usd: float = 1.0,
+    timeout_seconds: int = 1800,
+    max_output_bytes: int = 200000,
+    emit: Callable[[dict[str, Any]], None] | None = None,
+    permission_scope: str = "full",
+) -> ProviderResult:
+    return _invoke_claude_backend(
+        "claude-code",
+        "Claude Code",
+        prompt,
+        workspace,
+        instruction_prompt,
+        ledger,
+        run_id=run_id,
+        reserved_usd=reserved_usd,
+        timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+        emit=emit,
+        permission_scope=permission_scope,
+    )
+
+
+def invoke_vscode(
+    prompt: str,
+    workspace: Path,
+    instruction_prompt: str,
+    ledger: BudgetLedger,
+    run_id: str | None = None,
+    reserved_usd: float = 1.0,
+    timeout_seconds: int = 1800,
+    max_output_bytes: int = 200000,
+    emit: Callable[[dict[str, Any]], None] | None = None,
+    permission_scope: str = "full",
+) -> ProviderResult:
+    return _invoke_claude_backend(
+        "vscode",
+        "VSCode Claude 后端",
+        prompt,
+        workspace,
+        instruction_prompt,
+        ledger,
+        run_id=run_id,
+        reserved_usd=reserved_usd,
+        timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+        emit=emit,
+        permission_scope=permission_scope,
+    )
 
 
 def _codex_effective_prompt(prompt: str, instruction_prompt: str = "") -> str:

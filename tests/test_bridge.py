@@ -39,6 +39,9 @@ class BridgeHTTPTests(unittest.TestCase):
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_BASE_URL",
             "CLAUDE_MODEL",
+            "VSCODE_CLAUDE_API_RETRY_ATTEMPTS",
+            "VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS",
+            "VSCODE_CLAUDE_MAX_TURNS",
             "VSCODE_CLAUDE_MODEL",
             "MATTERMOST_SLASH_TOKEN",
         ):
@@ -224,9 +227,8 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(payload["response_type"], "ephemeral")
                 self.assertEqual(payload["props"]["ai_remote_response"]["status"], "accepted")
                 self.assertEqual(payload["props"]["ai_remote_response"]["data"]["default_workspace"], "default")
+                self.assertIn("recent_runs", payload["props"]["ai_remote_response"]["data"])
                 self.assertIn("状态已生成", payload["text"])
-                self.assertIn("default_workspace", payload["text"])
-                self.assertIn("recent_runs", payload["text"])
             finally:
                 server.shutdown()
                 server.server_close()
@@ -328,7 +330,7 @@ class BridgeHTTPTests(unittest.TestCase):
                 ai_response = payload["props"]["ai_remote_response"]
                 self.assertEqual(ai_response["status"], "error")
                 self.assertEqual(ai_response["error"]["code"], "ai_provider_not_configured")
-                self.assertIn("没有配置 Claude Code 或 Codex", payload["text"])
+                self.assertIn("没有配置 Claude Code、VSCode 或 Codex", payload["text"])
                 self.assertNotIn("后台运行", payload["text"])
                 invoke.assert_not_called()
                 events_path = Path(tmp) / "state" / "events.jsonl"
