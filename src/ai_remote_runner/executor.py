@@ -17,7 +17,15 @@ from .context_store import ContextStore
 from .events import EventSink, status_event
 from .instructions import InstructionStore
 from .paths import state_root, workspace_root
-from .providers import provider_status
+from .providers import (
+    DEFAULT_PROVIDER_NAME,
+    CLAUDE_BACKEND_PROVIDER_NAMES,
+    SUPPORTED_PROVIDER_NAMES,
+    SUPPORTED_PROVIDER_USAGE,
+    configured_provider_names_from_env,
+    is_supported_provider,
+    provider_status,
+)
 from .providers import build_instruction_prompt, invoke_claude, invoke_codex, invoke_vscode, normalize_provider_name
 from .runtime_config import (
     apply_api_key,
@@ -132,15 +140,7 @@ def _selected_provider(rt: RunnerRuntime) -> str | None:
 
 
 def _configured_provider_names() -> list[str] | None:
-    raw = os.environ.get("AI_RUNNER_PROVIDERS")
-    if raw is None:
-        return None
-    providers = []
-    for item in raw.split(","):
-        provider = normalize_provider_name(item)
-        if provider:
-            providers.append(provider)
-    return providers
+    return configured_provider_names_from_env()
 
 
 def _default_provider(rt: RunnerRuntime) -> str | None:
@@ -153,13 +153,13 @@ def _default_provider(rt: RunnerRuntime) -> str | None:
             return configured[0]
         if not configured:
             return None
-    return selected or "claude-code"
+    return selected or DEFAULT_PROVIDER_NAME
 
 
 def _provider_from_args(args: list[str]) -> str | None:
     provider = args[0] if args else None
     provider = normalize_provider_name(provider) if provider else None
-    if provider in {"claude-code", "vscode", "codex"}:
+    if is_supported_provider(provider):
         return provider
     return None
 
@@ -168,7 +168,7 @@ def _provider_from_value(value: object) -> str | None:
     if not value:
         return None
     provider = normalize_provider_name(str(value))
-    return provider if provider in {"claude-code", "vscode", "codex"} else None
+    return provider if is_supported_provider(provider) else None
 
 
 def _config_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | None, list[str]]:
@@ -185,12 +185,12 @@ def _config_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | 
 def _claude_control_target_from_args(rt: RunnerRuntime, args: list[str]) -> tuple[str | None, list[str]]:
     if args:
         target = normalize_target(args[0])
-        if target in {"claude-code", "vscode"}:
+        if target in CLAUDE_BACKEND_PROVIDER_NAMES:
             return target, args[1:]
     provider = _default_provider(rt)
-    if provider in {"claude-code", "vscode"}:
+    if provider in CLAUDE_BACKEND_PROVIDER_NAMES:
         return provider, args
-    return "claude-code", args
+    return DEFAULT_PROVIDER_NAME, args
 
 
 def _valid_workspace_id(workspace_id: str) -> bool:
@@ -403,7 +403,7 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "mattermost_command_validated": bool(manifest.get("mattermost_command_validated", False)),
         "integration_ready_status": manifest.get("integration_ready_status", "unknown"),
         "providers": provider_status(),
-        "configured_providers": configured_providers if configured_providers is not None else ["claude-code", "vscode", "codex"],
+        "configured_providers": configured_providers if configured_providers is not None else list(SUPPORTED_PROVIDER_NAMES),
         "budget": runtime.ledger.load(),
         "policy": runtime.load_policy(),
         "current_workspace": _selected_workspace(runtime) or "default",
@@ -664,7 +664,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "provider.select":
         provider = _provider_from_args(args)
         if provider is None:
-            return _error(request_id, "invalid_provider", "provider must be claude-code, vscode, or codex")
+            return _error(request_id, "invalid_provider", f"provider must be {SUPPORTED_PROVIDER_USAGE}")
         configured = _configured_provider_names()
         if configured is not None and provider not in configured:
             return _error(request_id, "ai_provider_not_configured", f"{provider} 没有配置在这台机器上；当前配置: {','.join(configured) or 'none'}")
@@ -673,7 +673,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "model.list":
         target, rest = _config_target_from_args(rt, args)
         if target is None:
-            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         if rest:
             normalized = normalize_target(rest[0])
             if normalized:
@@ -682,7 +682,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "model.select":
         target, rest = _config_target_from_args(rt, args)
         if target is None:
-            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         if not rest:
             return _error(request_id, "missing_model", "usage: /ai 模型 使用 [claude-code|codex|vscode] <model>")
         model = " ".join(rest).strip()
@@ -692,22 +692,22 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
     if action == "provider_config.set_api_key":
         target, rest = _config_target_from_args(rt, args)
         if target is None:
-            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         if not rest:
             return _error(request_id, "missing_api_key", "usage: /ai 密钥 设置 [claude-code|codex|vscode] <api_key>")
         return _ok(request_id, run_id, "API key 已更新", apply_api_key(rt.state, target, "".join(rest).strip()))
     if action == "provider_config.set_base_url":
         target, rest = _config_target_from_args(rt, args)
         if target is None:
-            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         if not rest:
             return _error(request_id, "missing_base_url", "usage: /ai 代理 设置 [claude-code|codex|vscode] <base_url>")
         return _ok(request_id, run_id, "第三方代理地址已更新", apply_base_url(rt.state, target, " ".join(rest).strip()))
     if action == "provider_config.show":
-        targets = [normalize_target(item) for item in args] if args else ["claude-code", "codex", "vscode"]
+        targets = [normalize_target(item) for item in args] if args else list(SUPPORTED_PROVIDER_NAMES)
         valid_targets = [target for target in targets if target]
         if not valid_targets:
-            return _error(request_id, "invalid_target", "target must be claude-code, codex, or vscode")
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         return _ok(request_id, run_id, "配置已读取", {"targets": [config_summary(target) for target in valid_targets]})
     if action == "budget.set_task_reserved":
         if not args:

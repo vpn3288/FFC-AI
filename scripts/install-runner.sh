@@ -28,6 +28,8 @@ AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-}"
 AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
 AI_PERMISSION_SCOPE="${AI_PERMISSION_SCOPE:-full}"
 AI_REQUIRE_SHELL_CONFIRMATION="${AI_REQUIRE_SHELL_CONFIRMATION:-0}"
+AI_PRIMARY_PROVIDERS_CSV="claude-code,vscode,codex"
+AI_PRIMARY_PROVIDER_USAGE="codex,telegram | claude-code,telegram | vscode,telegram | vscode"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
@@ -38,7 +40,7 @@ read_lock() {
 
 usage() {
   printf 'usage: %s [--dry-run] [--enable-telegram]\n' "$0"
-  printf '       AI_RUNNER_COMPONENTS is required: codex,telegram | claude-code,telegram | vscode,telegram | vscode\n'
+  printf '       AI_RUNNER_COMPONENTS is required: %s\n' "$AI_PRIMARY_PROVIDER_USAGE"
   printf '       all/full/core are rejected by default; use one AI/tool per VM.\n'
 }
 
@@ -390,7 +392,7 @@ if [ -z "$AI_RUNNER_COMPONENTS" ]; then
 fi
 case "$AI_RUNNER_COMPONENTS" in
   all|full|core)
-    log 'AI_RUNNER_COMPONENTS=all/full/core is disabled. Use one AI/tool per VM: codex,telegram | claude-code,telegram | vscode,telegram | vscode.'
+    log "AI_RUNNER_COMPONENTS=all/full/core is disabled. Use one AI/tool per VM: $AI_PRIMARY_PROVIDER_USAGE."
     exit 2
     ;;
   *)
@@ -418,7 +420,7 @@ case "$AI_RUNNER_COMPONENTS" in
           REQUEST_RUNNER=true
           ;;
         all|full|core)
-          log 'AI_RUNNER_COMPONENTS=all/full/core is disabled. Use one AI/tool per VM: codex,telegram | claude-code,telegram | vscode,telegram | vscode.'
+          log "AI_RUNNER_COMPONENTS=all/full/core is disabled. Use one AI/tool per VM: $AI_PRIMARY_PROVIDER_USAGE."
           exit 2
           ;;
         *)
@@ -832,12 +834,14 @@ EOF
   sudo chmod 0600 "$STATE_ROOT/config.env"
   if [ -n "$AI_DEFAULT_PROVIDER" ]; then
     sudo mkdir -p "$STATE_ROOT"
-    python3 - "$AI_DEFAULT_PROVIDER" <<'PY' | sudo tee "$STATE_ROOT/provider-selection.json" >/dev/null
+    AI_SUPPORTED_PROVIDERS="$AI_PRIMARY_PROVIDERS_CSV" python3 - "$AI_DEFAULT_PROVIDER" <<'PY' | sudo tee "$STATE_ROOT/provider-selection.json" >/dev/null
 import json
+import os
 import sys
 provider = sys.argv[1]
-if provider not in {"claude-code", "vscode", "codex"}:
-    raise SystemExit("AI_DEFAULT_PROVIDER must be claude-code, vscode, or codex")
+supported = {item for item in os.environ["AI_SUPPORTED_PROVIDERS"].split(",") if item}
+if provider not in supported:
+    raise SystemExit(f"AI_DEFAULT_PROVIDER must be one of: {', '.join(sorted(supported))}")
 print(json.dumps({"provider": provider}, indent=2, sort_keys=True))
 PY
     sudo chmod 0600 "$STATE_ROOT/provider-selection.json"

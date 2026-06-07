@@ -21,6 +21,49 @@ AUTH_PROBE_TIMEOUT_SECONDS = 60
 CODEX_EXEC_HELP_COMMAND = ["codex", "exec", "--help"]
 
 
+@dataclass(frozen=True)
+class ProviderSpec:
+    name: str
+    display_name: str
+    adapter_type: str
+    aliases: tuple[str, ...] = ()
+    claude_backend: bool = False
+
+
+PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
+    ProviderSpec("claude-code", "Claude Code", "claude-code", ("claude", "claudecode", "anthropic"), True),
+    ProviderSpec("vscode", "VSCode", "vscode", ("code", "vs-code"), True),
+    ProviderSpec("codex", "Codex", "codex", ("openai",), False),
+)
+SUPPORTED_PROVIDER_NAMES = tuple(spec.name for spec in PROVIDER_SPECS)
+CLAUDE_BACKEND_PROVIDER_NAMES = tuple(spec.name for spec in PROVIDER_SPECS if spec.claude_backend)
+DEFAULT_PROVIDER_NAME = "claude-code"
+SUPPORTED_PROVIDER_USAGE = "claude-code, vscode, or codex"
+_PROVIDER_ALIASES = {alias: spec.name for spec in PROVIDER_SPECS for alias in spec.aliases}
+_PROVIDER_ALIASES.update({spec.name: spec.name for spec in PROVIDER_SPECS})
+
+
+def normalize_provider_name(value: str) -> str:
+    provider = value.strip().lower()
+    return _PROVIDER_ALIASES.get(provider, provider)
+
+
+def is_supported_provider(value: str | None) -> bool:
+    return bool(value and normalize_provider_name(value) in SUPPORTED_PROVIDER_NAMES)
+
+
+def configured_provider_names_from_env(default_all: bool = False) -> list[str] | None:
+    raw = os.environ.get("AI_RUNNER_PROVIDERS")
+    if raw is None:
+        return list(SUPPORTED_PROVIDER_NAMES) if default_all else None
+    providers: list[str] = []
+    for item in raw.split(","):
+        provider = normalize_provider_name(item)
+        if provider in SUPPORTED_PROVIDER_NAMES and provider not in providers:
+            providers.append(provider)
+    return providers
+
+
 def _run_probe(command: list[str], timeout_seconds: int = PROBE_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(command, text=True, capture_output=True, check=False, timeout=timeout_seconds)
@@ -180,17 +223,6 @@ def discover_codex() -> dict[str, Any]:
     return base
 
 
-def normalize_provider_name(value: str) -> str:
-    provider = value.strip().lower()
-    aliases = {
-        "claude": "claude-code",
-        "claudecode": "claude-code",
-        "code": "vscode",
-        "vs-code": "vscode",
-    }
-    return aliases.get(provider, provider)
-
-
 def _unconfigured_provider(name: str) -> dict[str, Any]:
     return {
         "provider": name,
@@ -215,18 +247,20 @@ def _unconfigured_provider(name: str) -> dict[str, Any]:
 
 
 def provider_status() -> list[dict[str, Any]]:
-    configured_raw = os.environ.get("AI_RUNNER_PROVIDERS")
-    if configured_raw is None:
-        configured = None
-    else:
-        configured = {normalize_provider_name(item) for item in configured_raw.split(",") if item.strip()}
+    configured_names = configured_provider_names_from_env()
+    configured = None if configured_names is None else set(configured_names)
     if configured is None:
         return [discover_claude(), discover_vscode(), discover_codex()]
 
+    discoverers: dict[str, Callable[[], dict[str, Any]]] = {
+        "claude-code": discover_claude,
+        "vscode": discover_vscode,
+        "codex": discover_codex,
+    }
     providers: list[dict[str, Any]] = []
-    for name, discover in (("claude-code", discover_claude), ("vscode", discover_vscode), ("codex", discover_codex)):
+    for name in SUPPORTED_PROVIDER_NAMES:
         if name in configured:
-            provider = discover()
+            provider = discoverers[name]()
             provider["configured"] = True
         else:
             provider = _unconfigured_provider(name)

@@ -14,7 +14,7 @@ from .commands import parse_command
 from .executor import RunnerRuntime, execute, parse_reserved_usd
 from .paths import state_root, workspace_root
 from .phone_render import render_event_text, render_response_text
-from .providers import normalize_provider_name
+from .providers import configured_provider_names_from_env, normalize_provider_name
 from .storage import atomic_write_json
 
 
@@ -549,15 +549,7 @@ class TelegramBot:
         return isinstance(saved_parsed, dict) and self.action_runs_in_background(saved_parsed)
 
     def configured_providers(self) -> list[str]:
-        raw = os.environ.get("AI_RUNNER_PROVIDERS")
-        if raw is None:
-            return ["claude-code", "vscode", "codex"]
-        providers: list[str] = []
-        for item in raw.split(","):
-            provider = normalize_provider_name(item)
-            if provider:
-                providers.append(provider)
-        return providers
+        return configured_provider_names_from_env(default_all=True) or []
 
     def ai_providers_configured(self) -> bool:
         return bool(self.configured_providers())

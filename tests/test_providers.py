@@ -4,13 +4,36 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_remote_runner.providers import CLAUDE_MODEL_FALLBACKS, codex_command, invoke_claude, invoke_codex, invoke_vscode, provider_status
+from ai_remote_runner.providers import (
+    CLAUDE_MODEL_FALLBACKS,
+    SUPPORTED_PROVIDER_NAMES,
+    codex_command,
+    configured_provider_names_from_env,
+    invoke_claude,
+    invoke_codex,
+    invoke_vscode,
+    is_supported_provider,
+    normalize_provider_name,
+    provider_status,
+)
 from ai_remote_runner.providers import _emit_codex_jsonl_events
 from ai_remote_runner.providers import discover_codex
 from ai_remote_runner.budget import BudgetLedger
 
 
 class ProviderTests(unittest.TestCase):
+    def test_provider_registry_normalizes_aliases_and_filters_env(self) -> None:
+        self.assertEqual(normalize_provider_name("claude"), "claude-code")
+        self.assertEqual(normalize_provider_name("code"), "vscode")
+        self.assertEqual(normalize_provider_name("openai"), "codex")
+        self.assertTrue(is_supported_provider("vs-code"))
+        with patch.dict("os.environ", {"AI_RUNNER_PROVIDERS": "code,codex,code,unknown"}, clear=False):
+            self.assertEqual(configured_provider_names_from_env(), ["vscode", "codex"])
+
+    def test_provider_registry_returns_all_supported_when_unconfigured(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(configured_provider_names_from_env(default_all=True), list(SUPPORTED_PROVIDER_NAMES))
+
     def test_codex_command_uses_supported_approval_config(self) -> None:
         def supported(_: list[str], *needles: str) -> bool:
             flags = {

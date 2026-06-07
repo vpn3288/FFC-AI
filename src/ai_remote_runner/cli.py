@@ -12,7 +12,7 @@ from .credentials import CredentialBroker
 from .executor import RunnerRuntime, current_status, execute, parse_reserved_usd
 from .instructions import InstructionStore
 from .paths import ensure_runtime_dirs, state_root, workspace_root
-from .providers import invoke_claude, invoke_codex, invoke_vscode, provider_status
+from .providers import SUPPORTED_PROVIDER_NAMES, invoke_claude, invoke_codex, invoke_vscode, provider_status
 
 
 def load_config_env() -> None:
@@ -44,7 +44,7 @@ def main() -> int:
     sub.add_parser("index")
     sub.add_parser("providers")
     smoke_p = sub.add_parser("provider-smoke")
-    smoke_p.add_argument("--provider", choices=["claude-code", "vscode", "codex"], required=True)
+    smoke_p.add_argument("--provider", choices=SUPPORTED_PROVIDER_NAMES, required=True)
     smoke_p.add_argument("--workspace", default=None)
     smoke_p.add_argument("--prompt", default="Return exactly: ok")
     smoke_p.add_argument("--prompt-file", default="")

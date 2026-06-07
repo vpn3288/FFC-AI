@@ -15,7 +15,7 @@ from .executor import RunnerRuntime, execute
 from .events import status_event
 from .phone_render import render_response_text
 from .runtime_config import redact_secret
-from .providers import normalize_provider_name
+from .providers import DEFAULT_PROVIDER_NAME, configured_provider_names_from_env, is_supported_provider, normalize_provider_name
 from .security import NonceStore, verify_header_preamble, verify_headers
 from .storage import atomic_write_json
 
@@ -165,15 +165,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         return redacted
 
     def _configured_provider_names(self) -> list[str] | None:
-        raw = os.environ.get("AI_RUNNER_PROVIDERS")
-        if raw is None:
-            return None
-        providers: list[str] = []
-        for item in raw.split(","):
-            provider = normalize_provider_name(item)
-            if provider:
-                providers.append(provider)
-        return providers
+        return configured_provider_names_from_env()
 
     def _mattermost_task_provider(self, item: dict) -> str | None:
         configured = self._configured_provider_names()
@@ -187,7 +179,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 provider = normalize_provider_name(str(data.get("provider") or ""))
-                if provider in {"claude-code", "vscode", "codex"} and (configured is None or provider in configured):
+                if is_supported_provider(provider) and (configured is None or provider in configured):
                     return str(provider)
             except json.JSONDecodeError:
                 pass
@@ -195,7 +187,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if len(configured) == 1:
                 return configured[0]
             return None
-        return "claude-code"
+        return DEFAULT_PROVIDER_NAME
 
     def _run_mattermost_task_background(self, parsed: dict, item: dict) -> None:
         request_id = item.get("request_id") or str(uuid.uuid4())
