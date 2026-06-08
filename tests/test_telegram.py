@@ -4,6 +4,7 @@ import json
 import tempfile
 import time
 import unittest
+from http.client import RemoteDisconnected
 from pathlib import Path
 from unittest.mock import patch
 
@@ -556,6 +557,34 @@ class TelegramBotTests(unittest.TestCase):
 
             selected = json.loads((Path(tmp) / "state" / "provider-selection.json").read_text(encoding="utf-8"))
             self.assertEqual(selected["provider"], "codex")
+
+    def test_poll_forever_keeps_running_after_remote_disconnect(self) -> None:
+        class DisconnectingPollClient(FakeTelegramClient):
+            def __init__(self, config: TelegramConfig) -> None:
+                super().__init__(config)
+                self.poll_calls = 0
+
+            def get_updates(self, offset: int | None, timeout_seconds: int) -> list[dict[str, object]]:
+                self.poll_calls += 1
+                if self.poll_calls == 1:
+                    raise RemoteDisconnected("Remote end closed connection without response")
+                raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"})
+            client = DisconnectingPollClient(config)
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            state = Path(tmp) / "state"
+            bot = TelegramBot(config, client, runtime, state)
+
+            with patch("ai_remote_runner.telegram.time.sleep", return_value=None):
+                with self.assertRaises(KeyboardInterrupt):
+                    bot.poll_forever()
+
+            self.assertEqual(client.poll_calls, 2)
+            failure_log = state / "telegram-poll-failures.jsonl"
+            self.assertTrue(failure_log.exists())
+            self.assertIn("RemoteDisconnected", failure_log.read_text(encoding="utf-8"))
 
     def test_codex_realtime_events_are_visible_in_status_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

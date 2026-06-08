@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error, request
@@ -204,6 +205,23 @@ class TelegramBot:
         self.bot_username = ""
         self.bot_user_id = ""
         self.state.mkdir(parents=True, exist_ok=True)
+
+    def record_transport_failure(self, kind: str, exc: BaseException) -> None:
+        self.state.mkdir(parents=True, exist_ok=True)
+        with (self.state / "telegram-poll-failures.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "time": int(time.time()),
+                        "kind": kind,
+                        "error_type": exc.__class__.__name__,
+                        "error": str(exc)[:500],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
 
     def load_offset(self) -> int | None:
         if not self.offset_path.exists():
@@ -930,7 +948,8 @@ class TelegramBot:
                     self.handle_update(update)
                     offset = max(offset or 0, update_id + 1)
                     self.save_offset(offset)
-            except (error.URLError, TimeoutError, RuntimeError):
+            except (error.URLError, TimeoutError, RuntimeError, HTTPException, OSError, json.JSONDecodeError) as exc:
+                self.record_transport_failure("getUpdates", exc)
                 time.sleep(5)
 
 

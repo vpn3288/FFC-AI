@@ -27,7 +27,18 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 帮助",
         "/ai 帮助"
     ),
-    # 已废弃别名：命令、索引（请使用"帮助"）
+    ("索引",): CommandSpec(
+        "command_index",
+        "显示中文命令索引。",
+        "/ai 索引",
+        "/ai 索引"
+    ),
+    ("命令",): CommandSpec(
+        "command_index",
+        "显示中文命令索引。",
+        "/ai 命令",
+        "/ai 命令"
+    ),
     ("确认",): CommandSpec(
         "confirm",
         "确认待执行的高风险操作。",
@@ -46,6 +57,18 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 执行 <命令>",
         "/ai 执行 ls -la"
     ),
+    ("shell",): CommandSpec(
+        "local.exec",
+        "在当前工作区执行本机shell命令。",
+        "/ai shell <命令>",
+        "/ai shell pwd"
+    ),
+    ("命令", "执行"): CommandSpec(
+        "local.exec",
+        "在当前工作区执行本机shell命令。",
+        "/ai 命令 执行 <命令>",
+        "/ai 命令 执行 pwd"
+    ),
     ("脚本", "运行"): CommandSpec(
         "local.exec",
         "运行脚本或命令。",
@@ -58,17 +81,35 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 诊断",
         "/ai 诊断"
     ),
+    ("codex", "doctor"): CommandSpec(
+        "codex.doctor",
+        "运行本机codex doctor诊断。",
+        "/ai codex doctor",
+        "/ai codex doctor"
+    ),
     ("压缩",): CommandSpec(
         "compact_context",
         "压缩当前上下文，必要时创建摘要并开启新会话。",
         "/ai 压缩",
         "/ai 压缩"
     ),
+    ("整理上下文",): CommandSpec(
+        "compact_context",
+        "压缩当前上下文，必要时创建摘要并开启新会话。",
+        "/ai 整理上下文",
+        "/ai 整理上下文"
+    ),
     ("新对话",): CommandSpec(
         "new_conversation",
         "创建新的提供商会话。",
         "/ai 新对话",
         "/ai 新对话"
+    ),
+    ("new",): CommandSpec(
+        "new_conversation",
+        "创建新的提供商会话。",
+        "/ai new",
+        "/ai new"
     ),
     ("对话",): CommandSpec(
         "conversation_status",
@@ -82,11 +123,23 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 继续",
         "/ai 继续"
     ),
+    ("continue",): CommandSpec(
+        "continue_conversation",
+        "继续当前会话或使用摘要模拟继续。",
+        "/ai continue",
+        "/ai continue"
+    ),
     ("每次新对话",): CommandSpec(
         "set_policy_new_each_request",
         "将策略改为每次请求创建新会话。",
         "/ai 每次新对话",
         "/ai 每次新对话"
+    ),
+    ("mode", "new_each"): CommandSpec(
+        "set_policy_new_each_request",
+        "将策略改为每次请求创建新会话。",
+        "/ai mode new_each",
+        "/ai mode new_each"
     ),
     ("持续对话",): CommandSpec(
         "set_policy_continue",
@@ -94,11 +147,23 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 持续对话",
         "/ai 持续对话"
     ),
+    ("mode", "continue"): CommandSpec(
+        "set_policy_continue",
+        "将策略改为持续复用当前会话。",
+        "/ai mode continue",
+        "/ai mode continue"
+    ),
     ("上下文",): CommandSpec(
         "context_status",
         "显示上下文用量、阈值和压缩状态。",
         "/ai 上下文",
         "/ai 上下文"
+    ),
+    ("context",): CommandSpec(
+        "context_status",
+        "显示上下文用量、阈值和压缩状态。",
+        "/ai context",
+        "/ai context"
     ),
     ("自动压缩", "开启"): CommandSpec(
         "set_auto_compact_enabled",
@@ -130,13 +195,30 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 终端模式 开启",
         "/ai 终端模式 开启"
     ),
+    ("shell模式", "开启"): CommandSpec(
+        "set_permission_shell",
+        "允许shell命令工具。",
+        "/ai shell模式 开启",
+        "/ai shell模式 开启"
+    ),
     ("完全访问", "开启"): CommandSpec(
         "set_permission_full",
         "允许Claude Code、VSCode或Codex使用完整工具权限、shell和文件访问。",
         "/ai 完全访问 开启",
         "/ai 完全访问 开启"
     ),
-    # 已废弃别名：最高权限、root权限（请使用"完全访问"）
+    ("最高权限", "开启"): CommandSpec(
+        "set_permission_full",
+        "允许Claude Code、VSCode或Codex使用完整工具权限、shell和文件访问。",
+        "/ai 最高权限 开启",
+        "/ai 最高权限 开启"
+    ),
+    ("root权限", "开启"): CommandSpec(
+        "set_permission_full",
+        "允许Claude Code、VSCode或Codex使用完整工具权限、shell和文件访问。",
+        "/ai root权限 开启",
+        "/ai root权限 开启"
+    ),
     ("预算",): CommandSpec(
         "budget_status",
         "显示每日、每月和当前运行预算状态。",
@@ -185,17 +267,53 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 开源模型 设置 <工具名> <模型名>",
         "/ai 开源模型 设置 codex gpt-5.5"
     ),
+    ("GPT模型", "设置"): CommandSpec(
+        "model.select_gpt",
+        "切换GPT/开源模型。",
+        "/ai GPT模型 设置 <工具名> <模型名>",
+        "/ai GPT模型 设置 codex gpt-5.5"
+    ),
+    ("切换", "GPT", "模型"): CommandSpec(
+        "model.select_gpt",
+        "切换GPT/开源模型。",
+        "/ai 切换 GPT 模型 <工具名> <模型名>",
+        "/ai 切换 GPT 模型 codex gpt"
+    ),
     ("闭源模型", "设置"): CommandSpec(
         "model.select_claude",
         "切换Claude/闭源模型。",
         "/ai 闭源模型 设置 <工具名> <模型名>",
         "/ai 闭源模型 设置 claude-code claude-opus-4-8"
     ),
+    ("Claude模型", "设置"): CommandSpec(
+        "model.select_claude",
+        "切换Claude/闭源模型。",
+        "/ai Claude模型 设置 <工具名> <模型名>",
+        "/ai Claude模型 设置 claude-code claude-opus-4-8"
+    ),
+    ("切换", "Claude", "模型"): CommandSpec(
+        "model.select_claude",
+        "切换Claude/闭源模型。",
+        "/ai 切换 Claude 模型 <工具名> <模型名>",
+        "/ai 切换 Claude 模型 vscode claude"
+    ),
+    ("切换Claude模型",): CommandSpec(
+        "model.select_claude",
+        "切换Claude/闭源模型。",
+        "/ai 切换Claude模型 <工具名> <模型名>",
+        "/ai 切换Claude模型 vscode claude"
+    ),
     ("模型", "设置"): CommandSpec(
         "model.select",
         "兼容旧命令；推荐改用 /ai 开源模型 设置 或 /ai 闭源模型 设置。",
         "/ai 模型 设置 <工具名> <模型名>",
         "/ai 模型 设置 vscode gpt-4o"
+    ),
+    ("模型", "使用"): CommandSpec(
+        "model.select",
+        "兼容旧命令；推荐改用 /ai 开源模型 设置 或 /ai 闭源模型 设置。",
+        "/ai 模型 使用 <工具名> <模型名>",
+        "/ai 模型 使用 vscode gpt-4o"
     ),
     ("密钥", "设置"): CommandSpec(
         "provider_config.set_api_key",
@@ -240,6 +358,13 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 全局 设置 请使用简洁的代码风格",
         True
     ),
+    ("全局", "替换"): CommandSpec(
+        "global_instructions.set",
+        "替换global.md，需确认。",
+        "/ai 全局 替换 <文本>",
+        "/ai 全局 替换 请使用简洁的代码风格",
+        True
+    ),
     ("全局", "追加"): CommandSpec(
         "global_instructions.append",
         "追加global.md并创建快照。",
@@ -270,6 +395,13 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "替换project.md，需确认。",
         "/ai 项目 设置 <文本>",
         "/ai 项目 设置 本项目使用Python 3.10+",
+        True
+    ),
+    ("项目", "替换"): CommandSpec(
+        "project_instructions.set",
+        "替换project.md，需确认。",
+        "/ai 项目 替换 <文本>",
+        "/ai 项目 替换 本项目使用Python 3.10+",
         True
     ),
     ("项目", "追加"): CommandSpec(

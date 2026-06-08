@@ -853,15 +853,25 @@ def _run_codex_command(
     seen_events: set[str] = set()
 
     def read_stdout() -> None:
-        assert process.stdout is not None
-        for line in process.stdout:
-            stdout_lines.append(line)
-            _emit_codex_jsonl_events(line, run_id, emit, seen_events)
+        stream = process.stdout
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                stdout_lines.append(line)
+                _emit_codex_jsonl_events(line, run_id, emit, seen_events)
+        except (ValueError, OSError):
+            return
 
     def read_stderr() -> None:
-        assert process.stderr is not None
-        for line in process.stderr:
-            stderr_lines.append(line)
+        stream = process.stderr
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                stderr_lines.append(line)
+        except (ValueError, OSError):
+            return
 
     stdout_thread = threading.Thread(target=read_stdout, name=f"codex-stdout-{run_id}", daemon=True)
     stderr_thread = threading.Thread(target=read_stderr, name=f"codex-stderr-{run_id}", daemon=True)
@@ -871,11 +881,11 @@ def _run_codex_command(
         try:
             process.stdin.write(prompt)
             process.stdin.close()
-        except BrokenPipeError:
+        except (BrokenPipeError, ValueError, OSError):
             pass
         process.wait(timeout=timeout_seconds)
-        stdout_thread.join(timeout=5)
-        stderr_thread.join(timeout=5)
+        stdout_thread.join(timeout=30)
+        stderr_thread.join(timeout=30)
         return subprocess.CompletedProcess(command, int(process.returncode or 0), "".join(stdout_lines), "".join(stderr_lines))
     except subprocess.TimeoutExpired:
         process.kill()
@@ -1085,6 +1095,13 @@ def _codex_effective_prompt(prompt: str, instruction_prompt: str = "") -> str:
     return f"{instruction_prompt}\n\n# User Task\n{prompt}" if instruction_prompt else prompt
 
 
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_prompt: str = "") -> list[str]:
     if not _codex_exec_help_has("--json"):
         raise RuntimeError("codex_json_unavailable")
@@ -1101,7 +1118,7 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
         "--",
         "-",
     ]
-    if _codex_exec_help_has("--ephemeral"):
+    if _env_truthy("CODEX_EXEC_EPHEMERAL") and _codex_exec_help_has("--ephemeral"):
         command.insert(command.index("--cd"), "--ephemeral")
     if _codex_exec_help_has("--color"):
         command[command.index("--cd") : command.index("--cd")] = ["--color", "never"]

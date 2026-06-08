@@ -31,6 +31,8 @@ MATTERMOST_COMMANDS=(
   "/ai 编辑模式 开启"
   "/ai 终端模式 开启"
   "/ai 完全访问 开启"
+  "/ai 最高权限 开启"
+  "/ai root权限 开启"
   "/ai 全局 查看"
   "/ai 项目 查看"
   "/ai 凭据 列表"

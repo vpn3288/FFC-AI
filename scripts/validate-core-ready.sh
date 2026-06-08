@@ -175,6 +175,7 @@ run_provider_smoke_step() {
     --prompt-file "$prompt_file" \
     --reserved-usd "$AI_VALIDATE_PROVIDER_RESERVED_USD" \
     --timeout-seconds "$AI_VALIDATE_PROVIDER_TIMEOUT_SECONDS" >/dev/null || {
+    printf '[validate-core-ready] %s full-access smoke step failed: %s\n' "$provider" "$label" >&2
     printf '[validate-core-ready] %s 完全访问smoke测试步骤失败: %s\n' "$provider" "$label" >&2
     printf '[validate-core-ready] 诊断检查清单:\n' >&2
     case "$provider" in

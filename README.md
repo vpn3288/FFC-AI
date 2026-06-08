@@ -127,6 +127,8 @@ AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 
 ## 🎯 不同AI工具选择
 
+推荐一台机器只装一种主 AI 工具：`all`、`full`、`core` 这类混装入口已默认拒绝，避免多个 AI 抢同一台机器的资源和配置。
+
 ### Codex（推荐新手）
 ```bash
 AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh

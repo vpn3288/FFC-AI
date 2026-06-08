@@ -62,8 +62,28 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("--add-dir", command)
         self.assertEqual(command[command.index("--add-dir") + 1], "/")
         self.assertNotIn("--sandbox", command)
+        self.assertNotIn("--ephemeral", command)
         self.assertNotIn("--ask-for-approval", command)
         self.assertNotIn("--ignore-user-config", command)
+
+    def test_codex_command_can_opt_into_ephemeral_exec(self) -> None:
+        def supported(_: list[str], *needles: str) -> bool:
+            flags = {
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--output-last-message",
+                "--ephemeral",
+                "--cd",
+                "--json",
+            }
+            return all(needle in flags for needle in needles)
+
+        with (
+            patch.dict("os.environ", {"CODEX_EXEC_EPHEMERAL": "1"}, clear=False),
+            patch("ai_remote_runner.providers._help_has", side_effect=supported),
+        ):
+            command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
+        self.assertIn("--ephemeral", command)
+        self.assertLess(command.index("--ephemeral"), command.index("--cd"))
 
     def test_codex_command_includes_instruction_prompt(self) -> None:
         with patch("ai_remote_runner.providers._help_has", return_value=True):
