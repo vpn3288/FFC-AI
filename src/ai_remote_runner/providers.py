@@ -714,9 +714,60 @@ def _codex_tool_name(item: dict[str, Any]) -> str:
     return _first_item_text(item, ("name", "tool", "tool_name", "function", "server_name"))
 
 
+CODEX_SUBAGENT_ITEM_TYPES = {
+    "subagent",
+    "sub_agent",
+    "child_agent",
+    "agent_task",
+    "delegated_task",
+    "delegate",
+    "review_agent",
+    "reviewer_agent",
+}
+
+
+def _codex_subagent_status_events_enabled() -> bool:
+    raw = os.environ.get("CODEX_SUBAGENT_STATUS_EVENTS", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled", "关闭", "关"}
+
+
+def _codex_subagent_name_from_command(command: str) -> str:
+    lowered = command.lower()
+    if "run-independent-review.sh" in lowered or "independent-review" in lowered:
+        return "独立审查者AI"
+    if re.search(r"(^|[/\s])codex(\.exe|\.cmd)?\s+exec\b", lowered):
+        return "Codex 子 agent"
+    if re.search(r"(^|[/\s])claude(\.exe|\.cmd)?(\s|$)", lowered):
+        return "Claude Code 子 agent"
+    return ""
+
+
+def _codex_subagent_label(item: dict[str, Any], event_type: str = "") -> str:
+    if not _codex_subagent_status_events_enabled():
+        return ""
+    item_type = str(item.get("type") or "").lower()
+    command = _codex_command_text(item)
+    agent_name = _first_item_text(
+        item,
+        ("agent", "agent_name", "subagent", "sub_agent", "role", "title", "label", "name"),
+    )
+    detected_name = agent_name if item_type in CODEX_SUBAGENT_ITEM_TYPES else _codex_subagent_name_from_command(command)
+    if not detected_name:
+        return ""
+    detail = _preview_text(command or _codex_tool_name(item), 160)
+    prefix = "子 agent 已完成" if event_type == "item.completed" else "子 agent 正在运行"
+    message = f"{prefix}：{_preview_text(detected_name, 80)}"
+    if detail:
+        message = f"{message}；{detail}"
+    return message
+
+
 def _codex_item_label(item: dict[str, Any], event_type: str = "") -> str:
     item_type = str(item.get("type") or "item")
     item_type_normalized = item_type.lower()
+    subagent_label = _codex_subagent_label(item, event_type)
+    if subagent_label:
+        return subagent_label
     if item_type_normalized in {"command_execution", "exec", "exec_command", "shell_command", "local_shell_call", "terminal_command"}:
         command_text = _preview_text(_codex_command_text(item), 180)
         if event_type == "item.completed":
@@ -753,6 +804,10 @@ def _codex_item_label(item: dict[str, Any], event_type: str = "") -> str:
 
 def _codex_event_phase(item: dict[str, Any], event_type: str = "") -> str:
     item_type = str(item.get("type") or "").lower()
+    if _codex_subagent_status_events_enabled() and (
+        item_type in CODEX_SUBAGENT_ITEM_TYPES or _codex_subagent_name_from_command(_codex_command_text(item))
+    ):
+        return "subagent"
     if item_type in {"command_execution", "exec", "exec_command", "shell_command", "local_shell_call", "terminal_command"}:
         return "running_command"
     if item_type in {"file_change", "file_edit", "file_write", "patch", "apply_patch"}:

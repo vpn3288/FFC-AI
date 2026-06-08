@@ -599,6 +599,7 @@ class TelegramBotTests(unittest.TestCase):
             def invoke(*args, **kwargs):
                 kwargs["emit"]({"run_id": "run", "provider": "codex", "phase": "running_command", "public_message_zh": "运行命令：bash -lc ls"})
                 kwargs["emit"]({"run_id": "run", "provider": "codex", "phase": "writing_files", "public_message_zh": "正在修改文件：src/app.py"})
+                kwargs["emit"]({"run_id": "run", "provider": "codex", "phase": "subagent", "public_message_zh": "子 agent 正在运行：独立审查者AI"})
                 return fake
 
             with (
@@ -613,6 +614,8 @@ class TelegramBotTests(unittest.TestCase):
             self.assertIn("bash -lc ls", visible_text)
             self.assertIn("codex 正在修改文件", visible_text)
             self.assertIn("src/app.py", visible_text)
+            self.assertIn("codex 子 agent 状态", visible_text)
+            self.assertIn("独立审查者AI", visible_text)
 
 
 if __name__ == "__main__":

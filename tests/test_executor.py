@@ -29,6 +29,7 @@ class ExecutorTests(unittest.TestCase):
             "CODEX_BASE_URL",
             "CODEX_MODEL",
             "CODEX_HOME",
+            "CODEX_SUBAGENT_STATUS_EVENTS",
             "AI_CODEX_HOME",
             "AI_TOOL_HOME",
             "ANTHROPIC_AUTH_TOKEN",
@@ -360,6 +361,27 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(response["error"]["code"], "ai_provider_not_configured")
             events_path = runtime.state / "events.jsonl"
             self.assertFalse(events_path.exists(), events_path.read_text(encoding="utf-8") if events_path.exists() else "")
+
+    def test_codex_subagent_status_commands_update_runtime_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+
+            disabled = execute(parse_command("/ai 子agent状态 关闭"), {"request_id": "subagent-off", "raw_text": "/ai 子agent状态 关闭"}, runtime)
+            shown_disabled = execute(parse_command("/ai 子agent状态"), {"request_id": "subagent-show-off", "raw_text": "/ai 子agent状态"}, runtime)
+            self.assertEqual(disabled["status"], "accepted")
+            self.assertFalse(disabled["data"]["enabled"])
+            self.assertEqual(shown_disabled["data"]["status_zh"], "关闭")
+            self.assertEqual(os.environ["CODEX_SUBAGENT_STATUS_EVENTS"], "0")
+            self.assertIn("CODEX_SUBAGENT_STATUS_EVENTS=0", (runtime.state / "config.env").read_text(encoding="utf-8"))
+
+            enabled = execute(parse_command("/ai 子agent 开启"), {"request_id": "subagent-on", "raw_text": "/ai 子agent 开启"}, runtime)
+            shown_enabled = execute(parse_command("/ai 子 agent 状态"), {"request_id": "subagent-show-on", "raw_text": "/ai 子 agent 状态"}, runtime)
+
+            self.assertEqual(os.environ["CODEX_SUBAGENT_STATUS_EVENTS"], "1")
+            self.assertTrue(enabled["data"]["enabled"])
+            self.assertEqual(shown_enabled["data"]["status_zh"], "开启")
+            config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("CODEX_SUBAGENT_STATUS_EVENTS=1", config_env)
 
     def test_model_and_provider_config_commands_update_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

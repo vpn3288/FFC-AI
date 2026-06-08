@@ -221,6 +221,33 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(events[0]["phase"], "queued")
         self.assertIn("thread-1", str(events[0]["public_message_zh"]))
 
+    def test_codex_jsonl_events_show_subagent_activity(self) -> None:
+        events: list[dict[str, object]] = []
+        output = "\n".join(
+            [
+                '{"type":"item.started","item":{"id":"review","type":"command_execution","command":"bash scripts/run-independent-review.sh","status":"in_progress"}}',
+                '{"type":"item.started","item":{"id":"child","type":"subagent","name":"reviewer-1","status":"in_progress"}}',
+            ]
+        )
+
+        _emit_codex_jsonl_events(output, "run-1", events.append)
+
+        self.assertEqual([event["phase"] for event in events], ["subagent", "subagent"])
+        messages = "\n".join(str(event.get("public_message_zh") or "") for event in events)
+        self.assertIn("独立审查者AI", messages)
+        self.assertIn("reviewer-1", messages)
+
+    def test_codex_jsonl_subagent_activity_can_be_disabled(self) -> None:
+        events: list[dict[str, object]] = []
+        output = '{"type":"item.started","item":{"id":"review","type":"command_execution","command":"bash scripts/run-independent-review.sh","status":"in_progress"}}'
+
+        with patch.dict("os.environ", {"CODEX_SUBAGENT_STATUS_EVENTS": "0"}, clear=False):
+            _emit_codex_jsonl_events(output, "run-1", events.append)
+
+        self.assertEqual(events[0]["phase"], "running_command")
+        self.assertIn("运行命令", str(events[0].get("public_message_zh") or ""))
+        self.assertNotIn("子 agent", str(events[0].get("public_message_zh") or ""))
+
     def test_invoke_codex_returns_stderr_when_last_message_missing(self) -> None:
         import subprocess
         import tempfile

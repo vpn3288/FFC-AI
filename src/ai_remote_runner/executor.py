@@ -33,10 +33,12 @@ from .runtime_config import (
     apply_claude_api_retries,
     apply_claude_max_turns,
     apply_claude_model,
+    apply_codex_subagent_status_events,
     apply_gpt_model,
     apply_model,
     apply_task_budget,
     config_summary,
+    load_config_env,
     list_supported_models,
     model_id_from_args,
     normalize_target,
@@ -158,6 +160,15 @@ def _default_provider(rt: RunnerRuntime) -> str | None:
         if not configured:
             return None
     return selected or DEFAULT_PROVIDER_NAME
+
+
+def _codex_subagent_status_events_enabled(rt: RunnerRuntime) -> bool:
+    raw = os.environ.get("CODEX_SUBAGENT_STATUS_EVENTS")
+    if raw is None:
+        raw = load_config_env(rt.state).get("CODEX_SUBAGENT_STATUS_EVENTS")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", "disabled", "关闭", "关"}
 
 
 def _provider_from_args(args: list[str]) -> str | None:
@@ -436,6 +447,7 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "default_workspace": _selected_workspace(runtime) or "default",
         "recent_runs": _recent_run_events(runtime),
         "telegram_tasks": _telegram_tasks(runtime),
+        "codex_subagent_status_events_enabled": _codex_subagent_status_events_enabled(runtime),
         "state_root": str(runtime.state),
         "workspace_root": str(runtime.workspaces),
     }
@@ -745,6 +757,24 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if not valid_targets:
             return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         return _ok(request_id, run_id, "配置已读取", {"targets": [config_summary(target) for target in valid_targets]})
+    if action == "codex.subagent_status.show":
+        enabled = _codex_subagent_status_events_enabled(rt)
+        return _ok(
+            request_id,
+            run_id,
+            "Codex 子 agent 状态开关已读取",
+            {
+                "target": "codex",
+                "enabled": enabled,
+                "config_key": "CODEX_SUBAGENT_STATUS_EVENTS",
+                "status_zh": "开启" if enabled else "关闭",
+            },
+        )
+    if action in {"codex.subagent_status.enable", "codex.subagent_status.disable"}:
+        enabled = action.endswith(".enable")
+        data = apply_codex_subagent_status_events(rt.state, enabled)
+        message = "Codex 子 agent 状态展示已开启" if enabled else "Codex 子 agent 状态展示已关闭"
+        return _ok(request_id, run_id, message, data)
     if action == "budget.set_task_reserved":
         if not args:
             return _error(request_id, "missing_budget", "usage: /ai 预算 设置 <usd>")

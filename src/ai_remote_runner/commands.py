@@ -87,6 +87,96 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai codex doctor",
         "/ai codex doctor"
     ),
+    ("子agent状态",): CommandSpec(
+        "codex.subagent_status.show",
+        "查看Codex JSONL子agent状态展示开关。",
+        "/ai 子agent状态",
+        "/ai 子agent状态"
+    ),
+    ("子agent状态", "开启"): CommandSpec(
+        "codex.subagent_status.enable",
+        "开启Codex JSONL子agent/审查者AI状态展示。",
+        "/ai 子agent状态 开启",
+        "/ai 子agent状态 开启"
+    ),
+    ("子agent状态", "关闭"): CommandSpec(
+        "codex.subagent_status.disable",
+        "关闭Codex JSONL子agent/审查者AI状态高亮展示。",
+        "/ai 子agent状态 关闭",
+        "/ai 子agent状态 关闭"
+    ),
+    ("子agent",): CommandSpec(
+        "codex.subagent_status.show",
+        "查看Codex JSONL子agent状态展示开关。",
+        "/ai 子agent",
+        "/ai 子agent"
+    ),
+    ("子agent", "开启"): CommandSpec(
+        "codex.subagent_status.enable",
+        "开启Codex JSONL子agent/审查者AI状态展示。",
+        "/ai 子agent 开启",
+        "/ai 子agent 开启"
+    ),
+    ("子agent", "关闭"): CommandSpec(
+        "codex.subagent_status.disable",
+        "关闭Codex JSONL子agent/审查者AI状态高亮展示。",
+        "/ai 子agent 关闭",
+        "/ai 子agent 关闭"
+    ),
+    ("子", "agent", "状态"): CommandSpec(
+        "codex.subagent_status.show",
+        "查看Codex JSONL子agent状态展示开关。",
+        "/ai 子 agent 状态",
+        "/ai 子 agent 状态"
+    ),
+    ("子", "agent", "状态", "开启"): CommandSpec(
+        "codex.subagent_status.enable",
+        "开启Codex JSONL子agent/审查者AI状态展示。",
+        "/ai 子 agent 状态 开启",
+        "/ai 子 agent 状态 开启"
+    ),
+    ("子", "agent", "状态", "关闭"): CommandSpec(
+        "codex.subagent_status.disable",
+        "关闭Codex JSONL子agent/审查者AI状态高亮展示。",
+        "/ai 子 agent 状态 关闭",
+        "/ai 子 agent 状态 关闭"
+    ),
+    ("jsonl",): CommandSpec(
+        "codex.subagent_status.show",
+        "查看Codex JSONL子agent状态展示开关。",
+        "/ai jsonl",
+        "/ai jsonl"
+    ),
+    ("jsonl", "开启"): CommandSpec(
+        "codex.subagent_status.enable",
+        "开启Codex JSONL子agent/审查者AI状态展示。",
+        "/ai jsonl 开启",
+        "/ai jsonl 开启"
+    ),
+    ("jsonl", "关闭"): CommandSpec(
+        "codex.subagent_status.disable",
+        "关闭Codex JSONL子agent/审查者AI状态高亮展示。",
+        "/ai jsonl 关闭",
+        "/ai jsonl 关闭"
+    ),
+    ("JSONL",): CommandSpec(
+        "codex.subagent_status.show",
+        "查看Codex JSONL子agent状态展示开关。",
+        "/ai JSONL",
+        "/ai JSONL"
+    ),
+    ("JSONL", "开启"): CommandSpec(
+        "codex.subagent_status.enable",
+        "开启Codex JSONL子agent/审查者AI状态展示。",
+        "/ai JSONL 开启",
+        "/ai JSONL 开启"
+    ),
+    ("JSONL", "关闭"): CommandSpec(
+        "codex.subagent_status.disable",
+        "关闭Codex JSONL子agent/审查者AI状态高亮展示。",
+        "/ai JSONL 关闭",
+        "/ai JSONL 关闭"
+    ),
     ("压缩",): CommandSpec(
         "compact_context",
         "压缩当前上下文，必要时创建摘要并开启新会话。",

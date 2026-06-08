@@ -51,6 +51,12 @@ class CommandTests(unittest.TestCase):
             "/ai 命令 执行 pwd": "local.exec",
             "/ai 脚本 运行 scripts/smoke-test.sh": "local.exec",
             "/ai codex doctor": "codex.doctor",
+            "/ai 子agent状态": "codex.subagent_status.show",
+            "/ai 子agent状态 开启": "codex.subagent_status.enable",
+            "/ai 子agent 关闭": "codex.subagent_status.disable",
+            "/ai 子 agent 状态 开启": "codex.subagent_status.enable",
+            "/ai jsonl 关闭": "codex.subagent_status.disable",
+            "/ai JSONL 开启": "codex.subagent_status.enable",
         }
         for raw, action in cases.items():
             with self.subTest(raw=raw):

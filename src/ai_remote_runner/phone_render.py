@@ -78,6 +78,8 @@ def render_event_text(event: dict[str, Any]) -> str | None:
         return f"{provider} 正在运行命令：{message or 'shell 命令执行中。'}"
     if phase == "writing_files":
         return f"{provider} 正在修改文件：{message or '文件写入中。'}"
+    if phase == "subagent":
+        return f"{provider} 子 agent 状态：{message or '子 agent 正在运行。'}"
     if phase == "running":
         return f"{provider} 仍在运行：{message or '模型思考、工具执行、联网等待或生成中；不是卡死。'}"
     if phase == "warning":

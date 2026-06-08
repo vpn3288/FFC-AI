@@ -79,6 +79,7 @@ sudo bash scripts/pair-telegram.sh --telegram-id 你的数字ID
 /ai 状态          # 查看系统状态
 /ai 帮助          # 查看所有命令
 /ai 功能          # 查看功能列表
+/ai 子agent状态   # 查看Codex子agent状态显示开关
 ```
 
 ---
@@ -259,6 +260,16 @@ AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 ```
 /ai 模型 列表 codex
 /ai 开源模型 设置 codex gpt-4o-mini
+```
+
+### Codex子agent实时状态
+Codex运行时会把JSONL事件流转换成Telegram里的实时状态。默认会高亮显示审查者AI、子agent、命令执行、文件修改等状态。
+
+```
+/ai 子agent状态          # 查看当前是否开启
+/ai 子agent状态 开启     # 显示Codex子agent/审查者AI状态
+/ai 子agent状态 关闭     # 不再单独高亮子agent，仍保留普通运行状态
+/ai jsonl 关闭           # 同上，英文缩写别名
 ```
 
 ---

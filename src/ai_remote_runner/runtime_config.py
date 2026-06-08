@@ -116,6 +116,7 @@ def apply_config_env(state: Path, updates: dict[str, str]) -> dict[str, str]:
         "VSCODE_CLAUDE_API_RETRY_ATTEMPTS",
         "VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS",
         "CODEX_MODEL",
+        "CODEX_SUBAGENT_STATUS_EVENTS",
         "AI_TASK_RESERVED_USD",
         "TELEGRAM_RESERVED_USD",
         "TELEGRAM_GROUP_MODE",
@@ -413,6 +414,17 @@ def apply_claude_api_retries(state: Path, attempts: int | str, target: str = "cl
     key = _claude_control_key(target, "API_RETRY_ATTEMPTS")
     apply_config_env(state, {key: value})
     return {"target": target, "config_key": key, "claude_api_retry_attempts": parsed}
+
+
+def apply_codex_subagent_status_events(state: Path, enabled: bool) -> dict[str, Any]:
+    value = "1" if enabled else "0"
+    apply_config_env(state, {"CODEX_SUBAGENT_STATUS_EVENTS": value})
+    return {
+        "target": "codex",
+        "enabled": enabled,
+        "config_key": "CODEX_SUBAGENT_STATUS_EVENTS",
+        "state_config_file": str(state / "config.env"),
+    }
 
 
 def _toml_string_value(text: str, key: str) -> str:
