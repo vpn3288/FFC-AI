@@ -101,6 +101,26 @@ python3 -m venv '$SMOKE_TMP/$provider-venv'
 EOF
   chmod +x "$SMOKE_TMP/$provider-file-tmp.sh" "$SMOKE_TMP/$provider-net.sh" "$SMOKE_TMP/$provider-venv.sh"
 done
+
+# 验证第三方API配置
+if [[ ",$AI_RUNNER_PROVIDERS," == *",claude-code,"* ]] || [[ ",$AI_RUNNER_PROVIDERS," == *",vscode,"* ]]; then
+  if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+    printf '[validate-core-ready] 验证 ANTHROPIC_BASE_URL 配置: %s\n' "$ANTHROPIC_BASE_URL"
+  fi
+  if [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    printf '[validate-core-ready] 警告: ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY 未配置；如不使用官方API则provider可能失败\n' >&2
+  fi
+fi
+
+if [[ ",$AI_RUNNER_PROVIDERS," == *",codex,"* ]]; then
+  if [ -n "${CODEX_BASE_URL:-}" ]; then
+    printf '[validate-core-ready] 验证 CODEX_BASE_URL 配置: %s\n' "$CODEX_BASE_URL"
+  fi
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    printf '[validate-core-ready] 警告: OPENAI_API_KEY 未配置；如Codex不使用auth.json则可能失败\n' >&2
+  fi
+fi
+
 cat > "$CLAUDE_FILE_PROMPT" <<EOF
 请使用 Bash 工具执行这一条命令，必须真的执行，不要只解释：
 bash $SMOKE_TMP/claude-file-tmp.sh
@@ -132,19 +152,19 @@ bash $SMOKE_TMP/vscode-venv.sh
 成功后只回复：$SMOKE_TOKEN VENV_INSTALL_OK
 EOF
 cat > "$CODEX_FILE_PROMPT" <<EOF
-Use the shell to run this exact command. Do not merely explain it:
+请使用shell工具执行这一条命令，必须真的执行，不要只解释：
 bash $SMOKE_TMP/codex-file-tmp.sh
-After success, reply only: $SMOKE_TOKEN FILE_TMP_OK
+成功后只回复：$SMOKE_TOKEN FILE_TMP_OK
 EOF
 cat > "$CODEX_NET_PROMPT" <<EOF
-Use the shell to run this exact command. Do not merely explain it:
+请使用shell工具执行这一条命令，必须真的执行，不要只解释：
 bash $SMOKE_TMP/codex-net.sh
-After success, reply only: $SMOKE_TOKEN NETWORK_OK
+成功后只回复：$SMOKE_TOKEN NETWORK_OK
 EOF
 cat > "$CODEX_VENV_PROMPT" <<EOF
-Use the shell to run this exact command. Do not merely explain it:
+请使用shell工具执行这一条命令，必须真的执行，不要只解释：
 bash $SMOKE_TMP/codex-venv.sh
-After success, reply only: $SMOKE_TOKEN VENV_INSTALL_OK
+成功后只回复：$SMOKE_TOKEN VENV_INSTALL_OK
 EOF
 
 run_provider_smoke_step() {
@@ -155,7 +175,25 @@ run_provider_smoke_step() {
     --prompt-file "$prompt_file" \
     --reserved-usd "$AI_VALIDATE_PROVIDER_RESERVED_USD" \
     --timeout-seconds "$AI_VALIDATE_PROVIDER_TIMEOUT_SECONDS" >/dev/null || {
-    printf '[validate-core-ready] %s full-access smoke step failed: %s\n' "$provider" "$label" >&2
+    printf '[validate-core-ready] %s 完全访问smoke测试步骤失败: %s\n' "$provider" "$label" >&2
+    printf '[validate-core-ready] 诊断检查清单:\n' >&2
+    case "$provider" in
+      claude-code)
+        printf '  1. 检查 %s 中的 ANTHROPIC_BASE_URL\n' "$STATE_ROOT/config.env" >&2
+        printf '  2. 验证 ANTHROPIC_AUTH_TOKEN 已设置\n' >&2
+        printf '  3. 检查 ~/.claude/settings.json\n' >&2
+        ;;
+      vscode)
+        printf '  1. 检查 %s 中的 ANTHROPIC_BASE_URL\n' "$STATE_ROOT/config.env" >&2
+        printf '  2. 验证 ANTHROPIC_AUTH_TOKEN 已设置\n' >&2
+        printf '  3. 检查 VSCode Claude扩展配置\n' >&2
+        ;;
+      codex)
+        printf '  1. 检查 %s 中的 CODEX_BASE_URL\n' "$STATE_ROOT/config.env" >&2
+        printf '  2. 验证 OPENAI_API_KEY 已设置\n' >&2
+        printf '  3. 检查 ~/.codex/config.toml 和 auth.json\n' >&2
+        ;;
+    esac
     exit 1
   }
 }

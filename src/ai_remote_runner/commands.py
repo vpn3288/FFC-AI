@@ -8,133 +8,391 @@ from typing import Any
 class CommandSpec:
     canonical_action: str
     description_zh: str
+    template_zh: str = ""
+    example_zh: str = ""
     requires_confirmation: bool = False
     native: str = "runner"
 
 
 COMMANDS: dict[tuple[str, ...], CommandSpec] = {
-    ("状态",): CommandSpec("status", "显示当前运行、上下文、预算、工作区和提供商状态。"),
-    ("status",): CommandSpec("status", "显示当前运行、上下文、预算、工作区和提供商状态。"),
-    ("帮助",): CommandSpec("command_index", "显示中文命令索引。"),
-    ("确认",): CommandSpec("confirm", "确认待执行的高风险操作。"),
-    ("命令",): CommandSpec("command_index", "显示中文命令索引。"),
-    ("索引",): CommandSpec("command_index", "显示中文命令索引。"),
-    ("功能",): CommandSpec("feature_index", "显示提供商、工具、扩展和能力状态。"),
-    ("features",): CommandSpec("feature_index", "显示提供商、工具、扩展和能力状态。"),
-    ("shell",): CommandSpec("local.exec", "在当前工作区执行本机 shell 命令，例如 /ai shell pwd。"),
-    ("执行",): CommandSpec("local.exec", "在当前工作区执行本机 shell 命令，例如 /ai 执行 bash scripts/smoke-test.sh。"),
-    ("命令", "执行"): CommandSpec("local.exec", "在当前工作区执行本机 shell 命令。"),
-    ("脚本", "运行"): CommandSpec("local.exec", "运行脚本或命令，例如 /ai 脚本 运行 scripts/smoke-test.sh。"),
-    ("script", "run"): CommandSpec("local.exec", "运行脚本或命令。"),
-    ("codex", "doctor"): CommandSpec("codex.doctor", "运行本机 codex doctor 诊断。"),
-    ("codex", "诊断"): CommandSpec("codex.doctor", "运行本机 codex doctor 诊断。"),
-    ("压缩",): CommandSpec("compact_context", "压缩当前上下文，必要时创建摘要并开启新会话。"),
-    ("compact",): CommandSpec("compact_context", "压缩当前上下文，必要时创建摘要并开启新会话。"),
-    ("整理上下文",): CommandSpec("compact_context", "压缩当前上下文，必要时创建摘要并开启新会话。"),
-    ("新对话",): CommandSpec("new_conversation", "创建新的提供商会话。"),
-    ("new",): CommandSpec("new_conversation", "创建新的提供商会话。"),
-    ("对话",): CommandSpec("conversation_status", "显示并启用长期持续对话模式。"),
-    ("长期对话",): CommandSpec("conversation_status", "显示并启用长期持续对话模式。"),
-    ("继续",): CommandSpec("continue_conversation", "继续当前会话或使用摘要模拟继续。"),
-    ("continue",): CommandSpec("continue_conversation", "继续当前会话或使用摘要模拟继续。"),
-    ("每次新对话",): CommandSpec("set_policy_new_each_request", "将策略改为每次请求创建新会话。"),
-    ("持续对话",): CommandSpec("set_policy_continue", "将策略改为持续复用当前会话。"),
-    ("mode", "new_each"): CommandSpec("set_policy_new_each_request", "将策略改为每次请求创建新会话。"),
-    ("mode", "continue"): CommandSpec("set_policy_continue", "将策略改为持续复用当前会话。"),
-    ("上下文",): CommandSpec("context_status", "显示上下文用量、阈值和压缩状态。"),
-    ("context",): CommandSpec("context_status", "显示上下文用量、阈值和压缩状态。"),
-    ("自动压缩", "开启"): CommandSpec("set_auto_compact_enabled", "达到上下文预警阈值时自动压缩。"),
-    ("自动压缩", "关闭"): CommandSpec("set_auto_compact_disabled", "关闭达到上下文预警阈值时的自动压缩。"),
-    ("聊天模式", "开启"): CommandSpec("set_permission_chat", "仅允许对话，不允许文件编辑或 shell。"),
-    ("编辑模式", "开启"): CommandSpec("set_permission_edit", "允许文件编辑工具。"),
-    ("shell模式", "开启"): CommandSpec("set_permission_shell", "允许 shell 命令工具。"),
-    ("完全访问", "开启"): CommandSpec("set_permission_full", "允许 Claude Code、VSCode 或 Codex 使用完整工具权限、shell 和文件访问。"),
-    ("最高权限", "开启"): CommandSpec("set_permission_full", "允许 Claude Code、VSCode 或 Codex 使用完整工具权限、shell 和文件访问。"),
-    ("root权限", "开启"): CommandSpec("set_permission_full", "允许 Claude Code、VSCode 或 Codex 使用完整工具权限、shell 和文件访问。"),
-    ("预算",): CommandSpec("budget_status", "显示每日、每月和当前运行预算状态。"),
-    ("预算", "设置"): CommandSpec("budget.set_task_reserved", "设置 Telegram/AI 单次任务预留预算；0/无限 表示不传原生预算上限。"),
-    ("预算", "单次"): CommandSpec("budget.set_task_reserved", "设置 Telegram/AI 单次任务预留预算；0/无限 表示不传原生预算上限。"),
-    ("budget", "set"): CommandSpec("budget.set_task_reserved", "设置 Telegram/AI 单次任务预留预算；支持 unlimited/无限。"),
-    ("轮数", "设置"): CommandSpec("claude.max_turns.set", "设置 Claude 后端最大工具轮数；可加 claude-code/vscode，0/无限 表示不传原生 --max-turns。"),
-    ("最大轮数", "设置"): CommandSpec("claude.max_turns.set", "设置 Claude 后端最大工具轮数；可加 claude-code/vscode，0/无限 表示不传原生 --max-turns。"),
-    ("turns", "set"): CommandSpec("claude.max_turns.set", "设置 Claude 后端最大工具轮数；可加 claude-code/vscode，支持 unlimited/无限。"),
-    ("max-turns", "set"): CommandSpec("claude.max_turns.set", "设置 Claude 后端最大工具轮数；可加 claude-code/vscode，支持 unlimited/无限。"),
-    ("重试", "设置"): CommandSpec("claude.retry.set", "设置 Claude 后端网关/API 临时错误自动重试次数；可加 claude-code/vscode，范围 0-5。"),
-    ("retry", "set"): CommandSpec("claude.retry.set", "设置 Claude 后端网关/API 临时错误自动重试次数；可加 claude-code/vscode。"),
-    ("api-retry", "set"): CommandSpec("claude.retry.set", "设置 Claude 后端网关/API 临时错误自动重试次数；可加 claude-code/vscode。"),
-    ("模型",): CommandSpec("model.list", "查询当前 API key 可用模型；接口不可用时显示本地 fallback 列表。"),
-    ("模型", "列表"): CommandSpec("model.list", "查询当前 API key 可用模型；可加 claude-code/codex/vscode。"),
-    ("模型", "查看"): CommandSpec("model.list", "查询当前 API key 可用模型；可加 claude-code/codex/vscode。"),
-    ("models",): CommandSpec("model.list", "查询当前 API key 可用模型。"),
-    ("model", "list"): CommandSpec("model.list", "查询当前 API key 可用模型。"),
-    ("GPT模型", "使用"): CommandSpec("model.select_gpt", "切换 GPT 模型，例如 /ai GPT模型 设置 codex gpt-5.5。"),
-    ("GPT模型", "设置"): CommandSpec("model.select_gpt", "切换 GPT 模型，例如 /ai GPT模型 设置 vscode gpt-5.5。"),
-    ("gpt模型", "使用"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("gpt模型", "设置"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("GPT", "模型", "使用"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("GPT", "模型", "设置"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("gpt", "模型", "使用"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("gpt", "模型", "设置"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("gpt", "model", "set"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("gpt-model", "set"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("切换GPT模型",): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("切换", "GPT", "模型"): CommandSpec("model.select_gpt", "切换 GPT 模型。"),
-    ("Claude模型", "使用"): CommandSpec("model.select_claude", "切换 Claude 模型，例如 /ai Claude模型 设置 claude-code claude-opus-4-8。"),
-    ("Claude模型", "设置"): CommandSpec("model.select_claude", "切换 Claude 模型，例如 /ai Claude模型 设置 vscode claude-opus-4-8。"),
-    ("claude模型", "使用"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("claude模型", "设置"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("Claude", "模型", "使用"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("Claude", "模型", "设置"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("claude", "模型", "使用"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("claude", "模型", "设置"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("claude", "model", "set"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("claude-model", "set"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("切换Claude模型",): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("切换", "Claude", "模型"): CommandSpec("model.select_claude", "切换 Claude 模型。"),
-    ("模型", "使用"): CommandSpec("model.select", "兼容旧命令；推荐改用 /ai GPT模型 设置 ... 或 /ai Claude模型 设置 ...。"),
-    ("模型", "设置"): CommandSpec("model.select", "兼容旧命令；推荐改用 /ai GPT模型 设置 ... 或 /ai Claude模型 设置 ...。"),
-    ("model", "set"): CommandSpec("model.select", "兼容旧模型切换命令。"),
-    ("model", "use"): CommandSpec("model.select", "兼容旧模型切换命令。"),
-    ("密钥", "设置"): CommandSpec("provider_config.set_api_key", "更新 API key，例如 /ai 密钥 设置 codex sk-...。"),
-    ("apikey", "设置"): CommandSpec("provider_config.set_api_key", "更新 API key。"),
-    ("api_key", "set"): CommandSpec("provider_config.set_api_key", "更新 API key。"),
-    ("api-key", "set"): CommandSpec("provider_config.set_api_key", "更新 API key。"),
-    ("代理", "设置"): CommandSpec("provider_config.set_base_url", "更新第三方代理地址，例如 /ai 代理 设置 claude-code https://...。"),
-    ("第三方代理", "设置"): CommandSpec("provider_config.set_base_url", "更新第三方代理地址。"),
-    ("base_url", "set"): CommandSpec("provider_config.set_base_url", "更新第三方代理地址。"),
-    ("base-url", "set"): CommandSpec("provider_config.set_base_url", "更新第三方代理地址。"),
-    ("配置", "查看"): CommandSpec("provider_config.show", "查看当前模型、代理地址和 API key 是否已配置。"),
-    ("config", "show"): CommandSpec("provider_config.show", "查看当前模型、代理地址和 API key 是否已配置。"),
-    ("停止",): CommandSpec("cancel", "记录取消标记；当前版本不会强制终止已启动的 provider。"),
-    ("取消",): CommandSpec("cancel", "记录取消标记；当前版本不会强制终止已启动的 provider。"),
-    ("全局", "查看"): CommandSpec("global_instructions.show", "显示 global.md 哈希和预览。"),
-    ("全局", "设置"): CommandSpec("global_instructions.set", "替换 global.md，需确认。", True),
-    ("全局", "追加"): CommandSpec("global_instructions.append", "追加 global.md 并创建快照。"),
-    ("全局", "替换"): CommandSpec("global_instructions.set", "替换 global.md，需确认。", True),
-    ("全局", "回滚"): CommandSpec("global_instructions.rollback", "回滚 global.md 到快照，需确认。", True),
-    ("全局", "应用"): CommandSpec("global_instructions.apply", "将 global.md 应用到选定提供商。"),
-    ("项目", "查看"): CommandSpec("project_instructions.show", "显示当前工作区 project.md 哈希和预览。"),
-    ("项目", "设置"): CommandSpec("project_instructions.set", "替换 project.md，需确认。", True),
-    ("项目", "追加"): CommandSpec("project_instructions.append", "追加 project.md 并创建快照。"),
-    ("项目", "替换"): CommandSpec("project_instructions.set", "替换 project.md，需确认。", True),
-    ("项目", "回滚"): CommandSpec("project_instructions.rollback", "回滚 project.md 到快照，需确认。", True),
-    ("项目", "应用"): CommandSpec("project_instructions.apply", "将 project.md 应用到选定提供商。"),
-    ("凭据", "添加"): CommandSpec("credential.add", "创建凭据句柄，密文不得进入聊天记录。", True),
-    ("凭据", "列表"): CommandSpec("credential.list", "列出凭据句柄和非秘密元数据。"),
-    ("凭据", "测试"): CommandSpec("credential.test", "使用句柄运行授权测试，需确认。", True),
-    ("凭据", "删除"): CommandSpec("credential.delete", "删除凭据句柄，需确认。", True),
-    ("凭据", "授权"): CommandSpec("credential.grant", "为凭据句柄授权 agent/action，需确认。", True),
-    ("工作区", "列表"): CommandSpec("workspace.list", "列出可用工作区。"),
-    ("工作区", "使用"): CommandSpec("workspace.select", "选择工作区。"),
-    ("工作区", "创建"): CommandSpec("workspace.create", "创建工作区，需确认。", True),
-    ("提供商", "列表"): CommandSpec("provider.list", "列出 Claude Code、Codex 和其他适配器状态。"),
-    ("提供商", "使用"): CommandSpec("provider.select", "切换默认提供商。"),
-    ("扩展", "列表"): CommandSpec("extension.list", "列出可选技能和扩展。"),
-    ("工具", "列表"): CommandSpec("tool.list", "列出可选 CLI 工具。"),
-    ("mcp", "列表"): CommandSpec("mcp.list", "列出 MCP 扩展。"),
-    ("说明", "生成"): CommandSpec("description.generate", "生成中文说明元数据，不修改工具代码。"),
-    ("说明",): CommandSpec("description.list", "显示命令和功能说明元数据。"),
-    ("说明", "编辑"): CommandSpec("description.edit", "记录中文说明元数据编辑请求，需确认。", True),
+    ("状态",): CommandSpec(
+        "status",
+        "显示当前运行、上下文、预算、工作区和提供商状态。",
+        "/ai 状态",
+        "/ai 状态"
+    ),
+    ("帮助",): CommandSpec(
+        "command_index",
+        "显示中文命令索引。",
+        "/ai 帮助",
+        "/ai 帮助"
+    ),
+    # 已废弃别名：命令、索引（请使用"帮助"）
+    ("确认",): CommandSpec(
+        "confirm",
+        "确认待执行的高风险操作。",
+        "/ai 确认 <令牌>",
+        "/ai 确认 abc123def456"
+    ),
+    ("功能",): CommandSpec(
+        "feature_index",
+        "显示提供商、工具、扩展和能力状态。",
+        "/ai 功能",
+        "/ai 功能"
+    ),
+    ("执行",): CommandSpec(
+        "local.exec",
+        "在当前工作区执行本机shell命令。",
+        "/ai 执行 <命令>",
+        "/ai 执行 ls -la"
+    ),
+    ("脚本", "运行"): CommandSpec(
+        "local.exec",
+        "运行脚本或命令。",
+        "/ai 脚本 运行 <脚本路径>",
+        "/ai 脚本 运行 scripts/smoke-test.sh"
+    ),
+    ("诊断",): CommandSpec(
+        "codex.doctor",
+        "运行本机codex doctor诊断。",
+        "/ai 诊断",
+        "/ai 诊断"
+    ),
+    ("压缩",): CommandSpec(
+        "compact_context",
+        "压缩当前上下文，必要时创建摘要并开启新会话。",
+        "/ai 压缩",
+        "/ai 压缩"
+    ),
+    ("新对话",): CommandSpec(
+        "new_conversation",
+        "创建新的提供商会话。",
+        "/ai 新对话",
+        "/ai 新对话"
+    ),
+    ("对话",): CommandSpec(
+        "conversation_status",
+        "显示并启用长期持续对话模式。",
+        "/ai 对话",
+        "/ai 对话"
+    ),
+    ("继续",): CommandSpec(
+        "continue_conversation",
+        "继续当前会话或使用摘要模拟继续。",
+        "/ai 继续",
+        "/ai 继续"
+    ),
+    ("每次新对话",): CommandSpec(
+        "set_policy_new_each_request",
+        "将策略改为每次请求创建新会话。",
+        "/ai 每次新对话",
+        "/ai 每次新对话"
+    ),
+    ("持续对话",): CommandSpec(
+        "set_policy_continue",
+        "将策略改为持续复用当前会话。",
+        "/ai 持续对话",
+        "/ai 持续对话"
+    ),
+    ("上下文",): CommandSpec(
+        "context_status",
+        "显示上下文用量、阈值和压缩状态。",
+        "/ai 上下文",
+        "/ai 上下文"
+    ),
+    ("自动压缩", "开启"): CommandSpec(
+        "set_auto_compact_enabled",
+        "达到上下文预警阈值时自动压缩。",
+        "/ai 自动压缩 开启",
+        "/ai 自动压缩 开启"
+    ),
+    ("自动压缩", "关闭"): CommandSpec(
+        "set_auto_compact_disabled",
+        "关闭达到上下文预警阈值时的自动压缩。",
+        "/ai 自动压缩 关闭",
+        "/ai 自动压缩 关闭"
+    ),
+    ("聊天模式", "开启"): CommandSpec(
+        "set_permission_chat",
+        "仅允许对话，不允许文件编辑或shell。",
+        "/ai 聊天模式 开启",
+        "/ai 聊天模式 开启"
+    ),
+    ("编辑模式", "开启"): CommandSpec(
+        "set_permission_edit",
+        "允许文件编辑工具。",
+        "/ai 编辑模式 开启",
+        "/ai 编辑模式 开启"
+    ),
+    ("终端模式", "开启"): CommandSpec(
+        "set_permission_shell",
+        "允许shell命令工具。",
+        "/ai 终端模式 开启",
+        "/ai 终端模式 开启"
+    ),
+    ("完全访问", "开启"): CommandSpec(
+        "set_permission_full",
+        "允许Claude Code、VSCode或Codex使用完整工具权限、shell和文件访问。",
+        "/ai 完全访问 开启",
+        "/ai 完全访问 开启"
+    ),
+    # 已废弃别名：最高权限、root权限（请使用"完全访问"）
+    ("预算",): CommandSpec(
+        "budget_status",
+        "显示每日、每月和当前运行预算状态。",
+        "/ai 预算",
+        "/ai 预算"
+    ),
+    ("预算", "设置"): CommandSpec(
+        "budget.set_task_reserved",
+        "设置单次任务预留预算；0/无限表示不传原生预算上限。",
+        "/ai 预算 设置 <金额或无限>",
+        "/ai 预算 设置 0.5"
+    ),
+    ("预算", "单次"): CommandSpec(
+        "budget.set_task_reserved",
+        "设置单次任务预留预算。",
+        "/ai 预算 单次 <金额或无限>",
+        "/ai 预算 单次 无限"
+    ),
+    ("轮数", "设置"): CommandSpec(
+        "claude.max_turns.set",
+        "设置Claude后端最大工具轮数；可加claude-code/vscode，0/无限表示不传原生--max-turns。",
+        "/ai 轮数 设置 <工具名> <数量或无限>",
+        "/ai 轮数 设置 claude-code 20"
+    ),
+    ("重试", "设置"): CommandSpec(
+        "claude.retry.set",
+        "设置Claude后端网关/API临时错误自动重试次数；可加claude-code/vscode，范围0-5。",
+        "/ai 重试 设置 <工具名> <次数>",
+        "/ai 重试 设置 vscode 3"
+    ),
+    ("模型",): CommandSpec(
+        "model.list",
+        "查询当前API key可用模型；接口不可用时显示本地fallback列表。",
+        "/ai 模型 <工具名>",
+        "/ai 模型 codex"
+    ),
+    ("模型", "列表"): CommandSpec(
+        "model.list",
+        "查询当前API key可用模型；可加claude-code/codex/vscode。",
+        "/ai 模型 列表 <工具名>",
+        "/ai 模型 列表 claude-code"
+    ),
+    ("开源模型", "设置"): CommandSpec(
+        "model.select_gpt",
+        "切换GPT/开源模型。",
+        "/ai 开源模型 设置 <工具名> <模型名>",
+        "/ai 开源模型 设置 codex gpt-5.5"
+    ),
+    ("闭源模型", "设置"): CommandSpec(
+        "model.select_claude",
+        "切换Claude/闭源模型。",
+        "/ai 闭源模型 设置 <工具名> <模型名>",
+        "/ai 闭源模型 设置 claude-code claude-opus-4-8"
+    ),
+    ("模型", "设置"): CommandSpec(
+        "model.select",
+        "兼容旧命令；推荐改用 /ai 开源模型 设置 或 /ai 闭源模型 设置。",
+        "/ai 模型 设置 <工具名> <模型名>",
+        "/ai 模型 设置 vscode gpt-4o"
+    ),
+    ("密钥", "设置"): CommandSpec(
+        "provider_config.set_api_key",
+        "更新API key。",
+        "/ai 密钥 设置 <工具名> <API_KEY>",
+        "/ai 密钥 设置 codex sk-xxxxxxxxxxxxxxxx"
+    ),
+    ("代理", "设置"): CommandSpec(
+        "provider_config.set_base_url",
+        "更新第三方代理地址。",
+        "/ai 代理 设置 <工具名> <API地址>",
+        "/ai 代理 设置 claude-code https://api.example.com"
+    ),
+    ("配置", "查看"): CommandSpec(
+        "provider_config.show",
+        "查看当前模型、代理地址和API key是否已配置。",
+        "/ai 配置 查看 <工具名>",
+        "/ai 配置 查看 vscode"
+    ),
+    ("停止",): CommandSpec(
+        "cancel",
+        "记录取消标记；当前版本不会强制终止已启动的provider。",
+        "/ai 停止",
+        "/ai 停止"
+    ),
+    ("取消",): CommandSpec(
+        "cancel",
+        "记录取消标记。",
+        "/ai 取消",
+        "/ai 取消"
+    ),
+    ("全局", "查看"): CommandSpec(
+        "global_instructions.show",
+        "显示global.md哈希和预览。",
+        "/ai 全局 查看",
+        "/ai 全局 查看"
+    ),
+    ("全局", "设置"): CommandSpec(
+        "global_instructions.set",
+        "替换global.md，需确认。",
+        "/ai 全局 设置 <文本>",
+        "/ai 全局 设置 请使用简洁的代码风格",
+        True
+    ),
+    ("全局", "追加"): CommandSpec(
+        "global_instructions.append",
+        "追加global.md并创建快照。",
+        "/ai 全局 追加 <文本>",
+        "/ai 全局 追加 优先使用类型提示"
+    ),
+    ("全局", "回滚"): CommandSpec(
+        "global_instructions.rollback",
+        "回滚global.md到快照，需确认。",
+        "/ai 全局 回滚 <快照ID>",
+        "/ai 全局 回滚 snapshot-20260607",
+        True
+    ),
+    ("全局", "应用"): CommandSpec(
+        "global_instructions.apply",
+        "将global.md应用到选定提供商。",
+        "/ai 全局 应用",
+        "/ai 全局 应用"
+    ),
+    ("项目", "查看"): CommandSpec(
+        "project_instructions.show",
+        "显示当前工作区project.md哈希和预览。",
+        "/ai 项目 查看",
+        "/ai 项目 查看"
+    ),
+    ("项目", "设置"): CommandSpec(
+        "project_instructions.set",
+        "替换project.md，需确认。",
+        "/ai 项目 设置 <文本>",
+        "/ai 项目 设置 本项目使用Python 3.10+",
+        True
+    ),
+    ("项目", "追加"): CommandSpec(
+        "project_instructions.append",
+        "追加project.md并创建快照。",
+        "/ai 项目 追加 <文本>",
+        "/ai 项目 追加 使用pytest进行测试"
+    ),
+    ("项目", "回滚"): CommandSpec(
+        "project_instructions.rollback",
+        "回滚project.md到快照，需确认。",
+        "/ai 项目 回滚 <快照ID>",
+        "/ai 项目 回滚 snapshot-20260607",
+        True
+    ),
+    ("项目", "应用"): CommandSpec(
+        "project_instructions.apply",
+        "将project.md应用到选定提供商。",
+        "/ai 项目 应用",
+        "/ai 项目 应用"
+    ),
+    ("凭据", "添加"): CommandSpec(
+        "credential.add",
+        "创建凭据句柄，密文不得进入聊天记录。",
+        "/ai 凭据 添加 <句柄名>",
+        "/ai 凭据 添加 github-token",
+        True
+    ),
+    ("凭据", "列表"): CommandSpec(
+        "credential.list",
+        "列出凭据句柄和非秘密元数据。",
+        "/ai 凭据 列表",
+        "/ai 凭据 列表"
+    ),
+    ("凭据", "测试"): CommandSpec(
+        "credential.test",
+        "使用句柄运行授权测试，需确认。",
+        "/ai 凭据 测试 <句柄名>",
+        "/ai 凭据 测试 github-token",
+        True
+    ),
+    ("凭据", "删除"): CommandSpec(
+        "credential.delete",
+        "删除凭据句柄，需确认。",
+        "/ai 凭据 删除 <句柄名>",
+        "/ai 凭据 删除 old-token",
+        True
+    ),
+    ("凭据", "授权"): CommandSpec(
+        "credential.grant",
+        "为凭据句柄授权agent/action，需确认。",
+        "/ai 凭据 授权 <句柄名> <agent> <action> <duration>",
+        "/ai 凭据 授权 github-token codex push 1h",
+        True
+    ),
+    ("工作区", "列表"): CommandSpec(
+        "workspace.list",
+        "列出可用工作区。",
+        "/ai 工作区 列表",
+        "/ai 工作区 列表"
+    ),
+    ("工作区", "使用"): CommandSpec(
+        "workspace.select",
+        "选择工作区。",
+        "/ai 工作区 使用 <工作区名>",
+        "/ai 工作区 使用 demo"
+    ),
+    ("工作区", "创建"): CommandSpec(
+        "workspace.create",
+        "创建工作区，需确认。",
+        "/ai 工作区 创建 <工作区名>",
+        "/ai 工作区 创建 my-project",
+        True
+    ),
+    ("提供商", "列表"): CommandSpec(
+        "provider.list",
+        "列出Claude Code、Codex和其他适配器状态。",
+        "/ai 提供商 列表",
+        "/ai 提供商 列表"
+    ),
+    ("提供商", "使用"): CommandSpec(
+        "provider.select",
+        "切换默认提供商。",
+        "/ai 提供商 使用 <工具名>",
+        "/ai 提供商 使用 codex"
+    ),
+    ("扩展", "列表"): CommandSpec(
+        "extension.list",
+        "列出可选技能和扩展。",
+        "/ai 扩展 列表",
+        "/ai 扩展 列表"
+    ),
+    ("工具", "列表"): CommandSpec(
+        "tool.list",
+        "列出可选CLI工具。",
+        "/ai 工具 列表",
+        "/ai 工具 列表"
+    ),
+    ("MCP", "列表"): CommandSpec(
+        "mcp.list",
+        "列出MCP扩展。",
+        "/ai MCP 列表",
+        "/ai MCP 列表"
+    ),
+    ("说明", "生成"): CommandSpec(
+        "description.generate",
+        "生成中文说明元数据，不修改工具代码。",
+        "/ai 说明 生成 <ID>",
+        "/ai 说明 生成 cmd-123"
+    ),
+    ("说明",): CommandSpec(
+        "description.list",
+        "显示命令和功能说明元数据。",
+        "/ai 说明",
+        "/ai 说明"
+    ),
+    ("说明", "编辑"): CommandSpec(
+        "description.edit",
+        "记录中文说明元数据编辑请求，需确认。",
+        "/ai 说明 编辑 <ID> <内容>",
+        "/ai 说明 编辑 cmd-123 更新的说明文本",
+        True
+    ),
 }
 
 
@@ -180,6 +438,8 @@ def command_index() -> list[dict[str, Any]]:
             "usage": "/ai " + " ".join(parts),
             "canonical_action": spec.canonical_action,
             "description_zh": spec.description_zh,
+            "template_zh": spec.template_zh,
+            "example_zh": spec.example_zh,
             "requires_confirmation": spec.requires_confirmation,
             "implemented_by": spec.native,
             "enabled": True,

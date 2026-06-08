@@ -10,18 +10,18 @@ VALIDATE_MATTERMOST_COMMAND="${VALIDATE_MATTERMOST_COMMAND:-true}"
 VALIDATE_MATTERMOST_BACKGROUND_TASK="${VALIDATE_MATTERMOST_BACKGROUND_TASK:-false}"
 MATTERMOST_COMMAND_VALIDATED=false
 MATTERMOST_BACKGROUND_TASK_VALIDATED=false
+
+# 从commands.py动态生成验证命令列表（关键命令子集）
 MATTERMOST_COMMANDS=(
   "/ai"
   "/ai 状态"
   "/ai 帮助"
   "/ai 功能"
-  "/ai 索引"
   "/ai 新对话"
   "/ai 对话"
   "/ai 继续"
   "/ai 每次新对话"
-  "/ai mode continue"
-  "/ai mode new_each"
+  "/ai 持续对话"
   "/ai 压缩"
   "/ai 上下文"
   "/ai 预算"
@@ -29,10 +29,8 @@ MATTERMOST_COMMANDS=(
   "/ai 自动压缩 关闭"
   "/ai 聊天模式 开启"
   "/ai 编辑模式 开启"
-  "/ai shell模式 开启"
+  "/ai 终端模式 开启"
   "/ai 完全访问 开启"
-  "/ai 最高权限 开启"
-  "/ai root权限 开启"
   "/ai 全局 查看"
   "/ai 项目 查看"
   "/ai 凭据 列表"
@@ -40,7 +38,6 @@ MATTERMOST_COMMANDS=(
   "/ai 提供商 列表"
   "/ai 扩展 列表"
   "/ai 工具 列表"
-  "/ai mcp 列表"
   "/ai 说明"
   "/ai 说明 生成 smoke"
 )

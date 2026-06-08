@@ -305,7 +305,7 @@ Codex 示例：
 ```text
 /ai 代理 设置 codex https://你的第三方网址/v1
 /ai 密钥 设置 codex 你的APIKEY
-/ai GPT模型 设置 codex 你的模型名
+/ai 开源模型 设置 codex 你的模型名
 /ai 配置 查看 codex
 ```
 
@@ -314,7 +314,7 @@ Claude Code 示例：
 ```text
 /ai 代理 设置 claude-code https://你的第三方网址
 /ai 密钥 设置 claude-code 你的APIKEY
-/ai Claude模型 设置 claude-code 你的模型名
+/ai 闭源模型 设置 claude-code 你的模型名
 /ai 配置 查看 claude-code
 ```
 
@@ -323,15 +323,15 @@ VSCode 示例：
 ```text
 /ai 代理 设置 vscode https://你的第三方网址
 /ai 密钥 设置 vscode 你的APIKEY
-/ai Claude模型 设置 vscode 你的模型名
+/ai 闭源模型 设置 vscode 你的模型名
 /ai 配置 查看 vscode
 ```
 
-如果你的 `claude-code` 或 `vscode` 实际连接的是 GPT 兼容网关，也可以用 GPT 模型命令：
+如果你的 `claude-code` 或 `vscode` 实际连接的是 GPT 兼容网关，也可以用开源模型命令：
 
 ```text
-/ai GPT模型 设置 claude-code gpt-4o
-/ai GPT模型 设置 vscode gpt-4o
+/ai 开源模型 设置 claude-code gpt-4o
+/ai 开源模型 设置 vscode gpt-4o
 ```
 
 配置完成后，在 Telegram 里测试：
@@ -1207,8 +1207,6 @@ Mattermost：
 ```text
 /ai 状态
 /ai 帮助
-/ai 命令
-/ai 索引
 /ai 功能
 /ai 确认 <token>
 ```
@@ -1244,7 +1242,7 @@ Codex 常用：
 ```text
 /ai 代理 设置 codex https://你的第三方网址/v1
 /ai 密钥 设置 codex 你的APIKEY
-/ai GPT模型 设置 codex 你的模型名
+/ai 开源模型 设置 codex 你的模型名
 /ai 配置 查看 codex
 ```
 
@@ -1253,7 +1251,7 @@ Claude Code 常用：
 ```text
 /ai 代理 设置 claude-code https://你的第三方网址
 /ai 密钥 设置 claude-code 你的APIKEY
-/ai Claude模型 设置 claude-code 你的模型名
+/ai 闭源模型 设置 claude-code 你的模型名
 /ai 配置 查看 claude-code
 ```
 
@@ -1262,7 +1260,7 @@ VSCode 常用：
 ```text
 /ai 代理 设置 vscode https://你的第三方网址
 /ai 密钥 设置 vscode 你的APIKEY
-/ai Claude模型 设置 vscode 你的模型名
+/ai 闭源模型 设置 vscode 你的模型名
 /ai 配置 查看 vscode
 ```
 
@@ -1302,10 +1300,8 @@ VSCode 常用：
 ```text
 /ai 聊天模式 开启
 /ai 编辑模式 开启
-/ai shell模式 开启
+/ai 终端模式 开启
 /ai 完全访问 开启
-/ai 最高权限 开启
-/ai root权限 开启
 ```
 
 默认是 full-access 思路。请只在专用 VM 或测试机里运行。
@@ -1345,7 +1341,6 @@ Codex 当前按 full-access 执行。如果你切到非 full 权限又选择 Cod
 /ai 全局 查看
 /ai 全局 设置 <文本>
 /ai 全局 追加 <文本>
-/ai 全局 替换 <文本>
 /ai 全局 回滚 <snapshot>
 /ai 全局 应用
 ```
@@ -1356,12 +1351,11 @@ Codex 当前按 full-access 执行。如果你切到非 full 权限又选择 Cod
 /ai 项目 查看
 /ai 项目 设置 <文本>
 /ai 项目 追加 <文本>
-/ai 项目 替换 <文本>
 /ai 项目 回滚 <snapshot>
 /ai 项目 应用
 ```
 
-`设置`、`替换`、`回滚` 这类高风险操作会要求确认：
+`设置`、`回滚` 这类高风险操作会要求确认：
 
 ```text
 /ai 确认 <token>
