@@ -62,11 +62,11 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("--add-dir", command)
         self.assertEqual(command[command.index("--add-dir") + 1], "/")
         self.assertNotIn("--sandbox", command)
-        self.assertNotIn("--ephemeral", command)
+        self.assertIn("--ephemeral", command)
         self.assertNotIn("--ask-for-approval", command)
         self.assertNotIn("--ignore-user-config", command)
 
-    def test_codex_command_can_opt_into_ephemeral_exec(self) -> None:
+    def test_codex_command_can_disable_ephemeral_exec(self) -> None:
         def supported(_: list[str], *needles: str) -> bool:
             flags = {
                 "--dangerously-bypass-approvals-and-sandbox",
@@ -78,12 +78,11 @@ class ProviderTests(unittest.TestCase):
             return all(needle in flags for needle in needles)
 
         with (
-            patch.dict("os.environ", {"CODEX_EXEC_EPHEMERAL": "1"}, clear=False),
+            patch.dict("os.environ", {"CODEX_EXEC_EPHEMERAL": "0"}, clear=False),
             patch("ai_remote_runner.providers._help_has", side_effect=supported),
         ):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
-        self.assertIn("--ephemeral", command)
-        self.assertLess(command.index("--ephemeral"), command.index("--cd"))
+        self.assertNotIn("--ephemeral", command)
 
     def test_codex_command_includes_instruction_prompt(self) -> None:
         with patch("ai_remote_runner.providers._help_has", return_value=True):
@@ -248,6 +247,20 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("运行命令", str(events[0].get("public_message_zh") or ""))
         self.assertNotIn("子 agent", str(events[0].get("public_message_zh") or ""))
 
+    def test_codex_jsonl_events_warn_near_context_limit(self) -> None:
+        events: list[dict[str, object]] = []
+        output = (
+            '{"type":"event_msg","payload":{"type":"token_count",'
+            '"tokensUsed":177158,"model_context_window":190000}}\n'
+        )
+
+        _emit_codex_jsonl_events(output, "run-1", events.append)
+
+        self.assertEqual(events[0]["phase"], "warning")
+        message = str(events[0].get("public_message_zh") or "")
+        self.assertIn("上下文接近上限", message)
+        self.assertIn("177158/190000", message)
+
     def test_invoke_codex_returns_stderr_when_last_message_missing(self) -> None:
         import subprocess
         import tempfile
@@ -304,6 +317,27 @@ class ProviderTests(unittest.TestCase):
                 result = invoke_codex("noop", Path(tmp), BudgetLedger(Path(tmp) / "ledger.json"), timeout_seconds=1, reserved_usd=0.01)
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.output_text, "jsonl final")
+
+    def test_invoke_codex_treats_pending_tool_call_success_as_interrupted(self) -> None:
+        import subprocess
+        import tempfile
+
+        stdout = (
+            '{"type":"response_item","payload":{"type":"function_call","call_id":"cmd1",'
+            '"name":"shell","arguments":{"command":"git status --short"}}}\n'
+        )
+        completed = subprocess.CompletedProcess(["codex"], 0, stdout=stdout, stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.subprocess.run", return_value=completed),
+            ):
+                result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
+
+            self.assertEqual(result.status, "interrupted")
+            self.assertIn("工具调用没有完成输出", result.output_text)
+            self.assertEqual(ledger.load()["runs"][result.run_id]["status"], "interrupted")
 
     def test_invoke_codex_timeout_releases_run(self) -> None:
         import tempfile

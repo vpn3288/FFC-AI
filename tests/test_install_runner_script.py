@@ -192,6 +192,7 @@ PY
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn("AI_RUNNER_PROVIDERS=codex\n", config)
             self.assertIn("CODEX_MODEL=gpt-5.3-codex\n", config)
+            self.assertIn("CODEX_EXEC_EPHEMERAL=1\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
@@ -340,6 +341,7 @@ PY
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertTrue(manifest["telegram_enabled"])
             self.assertEqual(manifest["permission_scope"], "full")
+            self.assertEqual(manifest["codex_exec_ephemeral_enabled"], "1")
 
     def test_missing_codex_installs_through_sudo_npm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

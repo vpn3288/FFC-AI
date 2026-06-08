@@ -264,6 +264,7 @@ AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 
 ### Codex子agent实时状态
 Codex运行时会把JSONL事件流转换成Telegram里的实时状态。默认会高亮显示审查者AI、子agent、命令执行、文件修改等状态。
+安装脚本默认开启 `CODEX_EXEC_EPHEMERAL=1`，由runner保存长期对话记忆，避免Codex CLI自己把历史工具输出越滚越大。若Codex上下文接近上限，Telegram会显示警告；若Codex退出时仍有工具调用没返回结果，runner会按“中断”处理，不会误报完成。
 
 ```
 /ai 子agent状态          # 查看当前是否开启

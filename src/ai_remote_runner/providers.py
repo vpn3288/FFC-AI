@@ -360,6 +360,14 @@ class ProviderResult:
     returncode: int
 
 
+@dataclass(frozen=True)
+class CodexJsonlRunSummary:
+    pending_tool_call_count: int = 0
+    pending_tool_call_labels: tuple[str, ...] = ()
+    turn_completed: bool = False
+    context_warning: str = ""
+
+
 def _actual_cost_usd(raw: dict[str, Any] | None) -> float | None:
     if not raw:
         return None
@@ -627,6 +635,134 @@ def _codex_jsonl_last_agent_message(output: str) -> str:
     return last_message
 
 
+def _codex_event_item(event: dict[str, Any]) -> dict[str, Any]:
+    for key in ("item", "payload"):
+        value = event.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+CODEX_TOOL_CALL_ITEM_TYPES = {
+    "command_execution",
+    "custom_tool_call",
+    "exec",
+    "exec_command",
+    "function_call",
+    "local_shell_call",
+    "mcp_tool_call",
+    "shell_command",
+    "terminal_command",
+    "tool_call",
+}
+
+CODEX_TOOL_OUTPUT_ITEM_TYPES = {
+    "custom_tool_call_output",
+    "function_call_output",
+    "local_shell_call_output",
+    "mcp_tool_call_output",
+    "tool_call_output",
+}
+
+
+def _codex_call_id(item: dict[str, Any]) -> str:
+    for key in ("call_id", "id", "tool_call_id"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _number_candidates(value: Any, wanted_keys: set[str]) -> list[float]:
+    found: list[float] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in wanted_keys and isinstance(nested, (int, float)):
+                found.append(float(nested))
+            found.extend(_number_candidates(nested, wanted_keys))
+    elif isinstance(value, list):
+        for nested in value:
+            found.extend(_number_candidates(nested, wanted_keys))
+    return found
+
+
+def _codex_context_warning(event: dict[str, Any], threshold: float = 0.8) -> str:
+    event_type = str(event.get("type") or "")
+    item = _codex_event_item(event)
+    item_type = str(item.get("type") or "")
+    if event_type not in {"event_msg", "thread_goal_updated", "token_count"} and item_type != "token_count":
+        return ""
+    window_candidates = _number_candidates(event, {"model_context_window", "context_window", "contextWindow"})
+    if not window_candidates:
+        return ""
+    window = max(window_candidates)
+    if window <= 0:
+        return ""
+    used_candidates = _number_candidates(
+        event,
+        {
+            "tokensUsed",
+            "tokens_used",
+            "active_tokens",
+            "activeTokens",
+            "last_token_usage",
+            "input_tokens",
+            "inputTokens",
+        },
+    )
+    bounded = [value for value in used_candidates if 0 <= value <= window * 1.2]
+    if not bounded:
+        return ""
+    used = max(bounded)
+    ratio = used / window
+    if ratio < threshold:
+        return ""
+    return f"Codex 上下文接近上限：约 {int(used)}/{int(window)} tokens（{ratio:.0%}）。本轮可能提前结束；建议任务拆小，或用 /ai 新对话 后继续。"
+
+
+def _codex_jsonl_run_summary(output: str) -> CodexJsonlRunSummary:
+    pending: dict[str, str] = {}
+    turn_completed = False
+    context_warning = ""
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "turn.completed":
+            turn_completed = True
+        warning = _codex_context_warning(event)
+        if warning:
+            context_warning = warning
+        item = _codex_event_item(event)
+        item_type = str(item.get("type") or "").lower()
+        call_id = _codex_call_id(item)
+        if not call_id:
+            continue
+        label = _preview_text(_codex_command_text(item) or _codex_tool_name(item) or item_type or call_id, 120)
+        if event_type == "item.started" and item_type in CODEX_TOOL_CALL_ITEM_TYPES:
+            pending[call_id] = label
+            continue
+        if event_type == "item.completed" and call_id in pending:
+            pending.pop(call_id, None)
+            continue
+        if event_type == "response_item" and item_type in CODEX_TOOL_CALL_ITEM_TYPES:
+            pending[call_id] = label
+            continue
+        if event_type == "response_item" and item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES:
+            pending.pop(call_id, None)
+            continue
+    return CodexJsonlRunSummary(
+        pending_tool_call_count=len(pending),
+        pending_tool_call_labels=tuple(pending.values()),
+        turn_completed=turn_completed,
+        context_warning=context_warning,
+    )
+
+
 STATUS_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b"),
@@ -821,6 +957,12 @@ def _codex_event_phase(item: dict[str, Any], event_type: str = "") -> str:
 
 def _emit_codex_jsonl_event(event: dict[str, Any], run_id: str, emit: Callable[[dict[str, Any]], None], seen: set[str]) -> None:
     event_type = str(event.get("type") or "")
+    context_warning = _codex_context_warning(event)
+    if context_warning:
+        fingerprint = f"context-warning:{context_warning}"
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            emit({"run_id": run_id, "provider": "codex", "phase": "warning", "public_message_zh": context_warning})
     if event_type == "thread.started":
         thread_id = event.get("thread_id")
         message = "Codex 会话已创建。"
@@ -849,17 +991,21 @@ def _emit_codex_jsonl_event(event: dict[str, Any], run_id: str, emit: Callable[[
     if event_type == "error":
         emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("message") or event.get("error") or "codex_error")})
         return
-    item = event.get("item")
-    if not isinstance(item, dict):
+    item = _codex_event_item(event)
+    if not item:
         return
-    if event_type not in {"item.started", "item.completed", "item.updated"}:
+    label_event_type = event_type
+    if event_type == "response_item":
+        item_type = str(item.get("type") or "").lower()
+        label_event_type = "item.completed" if item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES else "item.started"
+    if event_type not in {"item.started", "item.completed", "item.updated", "response_item"}:
         return
-    fingerprint = f"{event_type}:{item.get('id')}:{item.get('status')}:{item.get('type')}:{item.get('exit_code')}:{item.get('text')}"
+    fingerprint = f"{event_type}:{_codex_call_id(item)}:{item.get('status')}:{item.get('type')}:{item.get('exit_code')}:{item.get('text')}"
     if fingerprint in seen:
         return
     seen.add(fingerprint)
-    label = _codex_item_label(item, event_type)
-    emit({"run_id": run_id, "provider": "codex", "phase": _codex_event_phase(item, event_type), "public_message_zh": label})
+    label = _codex_item_label(item, label_event_type)
+    emit({"run_id": run_id, "provider": "codex", "phase": _codex_event_phase(item, label_event_type), "public_message_zh": label})
 
 
 def _emit_codex_jsonl_events(
@@ -1173,7 +1319,7 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
         "--",
         "-",
     ]
-    if _env_truthy("CODEX_EXEC_EPHEMERAL") and _codex_exec_help_has("--ephemeral"):
+    if _env_truthy("CODEX_EXEC_EPHEMERAL", default=True) and _codex_exec_help_has("--ephemeral"):
         command.insert(command.index("--cd"), "--ephemeral")
     if _codex_exec_help_has("--color"):
         command[command.index("--cd") : command.index("--cd")] = ["--color", "never"]
@@ -1237,11 +1383,25 @@ def invoke_codex(
         output_text = output_file.read_text(encoding="utf-8")
     else:
         output_text = _codex_jsonl_last_agent_message(result.stdout) or result.stderr or result.stdout
+    jsonl_summary = _codex_jsonl_run_summary(result.stdout)
     if result.stdout.strip():
-        raw = {"stdout_jsonl": result.stdout}
+        raw = {
+            "stdout_jsonl": result.stdout,
+            "jsonl_summary": {
+                "pending_tool_call_count": jsonl_summary.pending_tool_call_count,
+                "pending_tool_call_labels": list(jsonl_summary.pending_tool_call_labels),
+                "turn_completed": jsonl_summary.turn_completed,
+                "context_warning": jsonl_summary.context_warning,
+            },
+        }
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
-    if result.returncode == 0 and not output_text.strip():
+    if result.returncode == 0 and jsonl_summary.pending_tool_call_count:
+        details = ", ".join(label for label in jsonl_summary.pending_tool_call_labels[:3] if label)
+        suffix = f" 未完成项：{details}" if details else ""
+        output_text = f"Codex 进程提前结束：仍有 {jsonl_summary.pending_tool_call_count} 个工具调用没有完成输出。runner 已按中断处理，请继续或重试。{suffix}"
+        status = "interrupted"
+    elif result.returncode == 0 and not output_text.strip():
         output_text = "Codex 返回了空内容；runner 已按失败处理。请重试，或把问题描述得更具体。"
         status = "empty_output"
     else:
