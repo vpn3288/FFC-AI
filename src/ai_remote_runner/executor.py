@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -462,6 +463,67 @@ def _parse_interval_seconds(raw: str) -> int:
     return seconds
 
 
+def _cc_switch_home() -> Path:
+    configured = os.environ.get("CC_SWITCH_HOME")
+    if configured:
+        return Path(configured)
+    return Path(os.environ.get("HOME") or "/root") / ".cc-switch"
+
+
+def _cc_switch_sync_path(rt: RunnerRuntime) -> Path:
+    return rt.state / "cc-switch-sync.json"
+
+
+def _load_cc_switch_sync(rt: RunnerRuntime) -> dict[str, Any]:
+    path = _cc_switch_sync_path(rt)
+    if not path.exists():
+        return {"providers": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"providers": {}}
+    if not isinstance(data, dict):
+        return {"providers": {}}
+    if not isinstance(data.get("providers"), dict):
+        data["providers"] = {}
+    return data
+
+
+def _record_cc_switch_sync(rt: RunnerRuntime, target: str, action: str, result: dict[str, Any]) -> dict[str, Any]:
+    data = _load_cc_switch_sync(rt)
+    providers = data.setdefault("providers", {})
+    providers[target] = {
+        "target": target,
+        "last_action": action,
+        "last_sync_at": int(time.time()),
+        "live_config_written": True,
+        "cc_switch_db_written": False,
+        "result": result,
+        "note_zh": "已写入Claude/Codex/runner实际读取的live配置；不会直接修改CC Switch SQLite数据库，打开CC Switch编辑当前provider时可按其backfill机制同步。",
+    }
+    atomic_write_json(_cc_switch_sync_path(rt), data)
+    return providers[target]
+
+
+def _cc_switch_status(rt: RunnerRuntime) -> dict[str, Any]:
+    home = _cc_switch_home()
+    db_path = home / "cc-switch.db"
+    settings_path = home / "settings.json"
+    binary = shutil.which("cc-switch") or shutil.which("ccswitch") or shutil.which("CC-Switch")
+    return {
+        "installed": bool(binary or db_path.exists()),
+        "binary": binary or "",
+        "cc_switch_home": str(home),
+        "database": str(db_path),
+        "database_exists": db_path.exists(),
+        "settings": str(settings_path),
+        "settings_exists": settings_path.exists(),
+        "db_write_supported": False,
+        "db_write_note_zh": "CC Switch文档说明cc-switch.db是SQLite单一事实源，不推荐手动编辑；本runner只写CLI live配置并记录同步状态。",
+        "sync": _load_cc_switch_sync(rt),
+    }
+
+
 def _command_index_with_availability(items: list[dict[str, Any]], providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     any_provider_available = any(item.get("available") for item in providers)
     codex_available = any(item.get("provider") == "codex" and item.get("available") for item in providers)
@@ -499,6 +561,7 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "telegram_tasks": _telegram_tasks(runtime),
         "active_processes": active_processes(runtime.state),
         "telegram_auto_continue": _load_auto_continue(runtime),
+        "cc_switch": _cc_switch_status(runtime),
         "codex_subagent_status_events_enabled": _codex_subagent_status_events_enabled(runtime),
         "state_root": str(runtime.state),
         "workspace_root": str(runtime.workspaces),
@@ -836,6 +899,56 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if not valid_targets:
             return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         return _ok(request_id, run_id, "配置已读取", {"targets": [config_summary(target) for target in valid_targets]})
+    if action == "cc_switch.status":
+        return _ok(request_id, run_id, "CC Switch 状态已读取", _cc_switch_status(rt))
+    if action == "cc_switch.set_api_key":
+        target, rest = _config_target_from_args(rt, args)
+        if target is None:
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
+        if not rest:
+            return _error(request_id, "missing_api_key", "usage: /ai CC Switch 密钥 设置 [claude-code|codex|vscode] <api_key>")
+        try:
+            result = apply_api_key(rt.state, target, "".join(rest).strip())
+        except ValueError as exc:
+            code = str(exc)
+            if code == "wrong_api_key_family":
+                return _error(request_id, code, "Codex/OpenAI provider cannot use an Anthropic sk-ant-* key; use /ai CC Switch 密钥 设置 claude-code ... for Claude.")
+            return _error(request_id, "invalid_api_key", "API key cannot be empty or contain whitespace.")
+        result = result | {"cc_switch_sync": _record_cc_switch_sync(rt, target, action, result)}
+        return _ok(request_id, run_id, "CC Switch兼容 API key 已更新", result)
+    if action == "cc_switch.set_base_url":
+        target, rest = _config_target_from_args(rt, args)
+        if target is None:
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
+        if not rest:
+            return _error(request_id, "missing_base_url", "usage: /ai CC Switch 代理 设置 [claude-code|codex|vscode] <base_url>")
+        try:
+            result = apply_base_url(rt.state, target, " ".join(rest).strip())
+        except ValueError:
+            return _error(request_id, "invalid_base_url", "base_url must be an http(s) URL without whitespace, for example https://api.example.com/v1")
+        result = result | {"cc_switch_sync": _record_cc_switch_sync(rt, target, action, result)}
+        return _ok(request_id, run_id, "CC Switch兼容 API地址已更新", result)
+    if action in {"cc_switch.set_model", "cc_switch.set_gpt_model", "cc_switch.set_claude_model"}:
+        target, rest = _config_target_from_args(rt, args)
+        if target is None:
+            return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
+        try:
+            model = model_id_from_args(rest)
+            if action == "cc_switch.set_gpt_model":
+                result = apply_gpt_model(rt.state, target, model)
+            elif action == "cc_switch.set_claude_model":
+                result = apply_claude_model(rt.state, target, model)
+            else:
+                result = apply_model(rt.state, target, model)
+        except ValueError as exc:
+            code = str(exc)
+            if code == "missing_model":
+                return _error(request_id, "missing_model", "usage: /ai CC Switch 模型 设置 [claude-code|codex|vscode] <model>")
+            if code in {"gpt_model_required", "claude_model_required"}:
+                return _error(request_id, "wrong_model_family", "model family does not match the CC Switch model command")
+            return _error(request_id, "invalid_model", "model must be one model id without spaces")
+        result = result | {"cc_switch_sync": _record_cc_switch_sync(rt, target, action, result)}
+        return _ok(request_id, run_id, "CC Switch兼容 模型已更新", result)
     if action == "codex.subagent_status.show":
         enabled = _codex_subagent_status_events_enabled(rt)
         return _ok(
@@ -1034,7 +1147,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         rt.save_policy(data)
         return _ok(request_id, run_id, "执行权限模式已更新", data)
     if action == "cancel":
-        data = request_stop(rt.state, force=False) | {"detail": "取消标记已记录；如需终止本runner启动的活动进程，请发送 /ai 强行停止。"}
+        data = request_stop(rt.state, force=False) | {"detail": "取消标记已记录，不会强制终止正在运行的进程；如需终止本runner启动的活动进程，请发送 /ai 强行停止。"}
         _write_json_state(rt.state / "cancel-request.json", data | {"run_id": run_id})
         return _ok(request_id, run_id, data["detail"], data)
     if action == "task.force_stop":

@@ -27,9 +27,9 @@ FFC-AI must let a beginner install Claude Code, Codex, VSCode, the remote runner
 - Default provider order for multi-provider installs is `codex`, then `claude-code`, then `vscode`, unless `AI_DEFAULT_PROVIDER` is supplied.
 - The installer must preserve existing Telegram/Mattermost pairing values and previous secrets unless the user explicitly replaces them.
 - Dependencies should prefer stable/LTS upstreams:
-  - Debian 12 apt packages for Python, git, curl, certificates, gpg, systemd.
+  - Debian 12 apt packages for Python, git, curl, certificates, gpg, systemd, and bubblewrap.
   - Existing Node.js must be an even-major stable/LTS release at least 22; fresh Debian 12 installs should use Node.js 24.x LTS from NodeSource.
-  - official Claude Code apt/native source pinned by `versions.lock`.
+  - official Claude Code npm package/version pinned by `versions.lock`, using the npm `stable` dist-tag unless the lock is intentionally updated.
   - Codex package/version from `versions.lock`.
   - VSCode stable apt repository from Microsoft.
 
@@ -55,6 +55,29 @@ Validation rules:
 - Reject obvious key-family mixups when detection is reliable.
 - Never echo full secrets in Telegram, status files, logs, or tests.
 - `/ai 配置 查看 <provider>` may show whether a key is configured and the redacted shape, never the full key.
+
+## Optional CC Switch Integration
+
+CC Switch may be supported as an optional profile manager for users who also want a desktop/config-switching UI. It must not become a required dependency for PVE/VPS/headless Telegram operation.
+
+- For users with third-party Claude-compatible and OpenAI-compatible proxy endpoints, CC Switch is a recommended optional profile layer because it can keep multiple base URL/API key/model profiles understandable to humans.
+- Telegram `/ai` commands remain the primary remote control path and must work without CC Switch installed.
+- The bootstrap installer must guide beginners through whether to install CC Switch. Default to skip on noninteractive/headless installs unless `AI_INSTALL_CC_SWITCH=true` or `AI_RUNNER_COMPONENTS=cc-switch` is supplied.
+- `scripts/install-runner.sh` may install CC Switch from the official GitHub Releases Linux `.deb` on Debian/Ubuntu x86_64 or arm64.
+- If CC Switch is installed, FFC-AI may import/export the active CC Switch profile only through documented local config files or an official CLI if available.
+- For Claude Code, CC Switch-compatible changes must map to `~/.claude/settings.json` env values such as `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL`.
+- For Codex, CC Switch-compatible changes must map to `$CODEX_HOME/auth.json` and `$CODEX_HOME/config.toml`, plus runner `config.env`.
+- For VSCode in this project, CC Switch may manage the shared Claude/Anthropic API key and base URL, but the runner must keep `VSCODE_CLAUDE_MODEL` separate from `CLAUDE_MODEL` so VSCode backend model changes do not accidentally change Claude Code.
+- `/ai 密钥 设置`, `/ai 代理 设置`, and model commands must validate provider family before writing, even when a future CC Switch bridge is enabled.
+- Do not invoke GUI-only CC Switch flows from systemd services or Telegram commands.
+- Telegram must expose CC Switch-compatible commands for status, API key, base URL, and model changes. These commands must reuse the same provider-family validation as the normal `/ai 密钥 设置`, `/ai 代理 设置`, and model commands.
+
+Recommended remote workflow:
+
+- Use CC Switch locally or through any documented CLI to choose human-friendly profiles for third-party gateways.
+- Use `/ai 配置 查看 <provider>` from Telegram to verify what the headless runner will actually use.
+- Use `/ai 密钥 设置`, `/ai 代理 设置`, `/ai GPT模型 设置`, and `/ai Claude模型 设置` when away from the machine; these commands must update the same effective provider surfaces and never rely on GUI state.
+- Use `/ai CC Switch 状态`, `/ai CC Switch 密钥 设置 <provider> <key>`, `/ai CC Switch 代理 设置 <provider> <url>`, and `/ai CC Switch GPT模型/Claude模型 设置 <provider> <model>` when the user wants the action recorded as CC Switch-compatible.
 
 ## Telegram Commands
 
@@ -98,4 +121,6 @@ Force-stop must only target the runner's active process registry. It must not sc
 - `/ai 定时继续 设置 300` persists a chat-scoped schedule.
 - The Telegram scheduler sends `继续` only when no task in that chat is currently running.
 - `/ai 强行停止` terminates only registered active processes and reports what was stopped.
+- `AI_INSTALL_CC_SWITCH=true AI_RUNNER_COMPONENTS=codex,telegram scripts/install-runner.sh --dry-run` shows the CC Switch install stage.
+- `/ai CC Switch 密钥 设置 codex ...` writes Codex live config, rejects Anthropic key-family mistakes, and records `cc-switch-sync.json`.
 - Tests cover commands, executor behavior, Telegram scheduler behavior, installer multi-provider behavior, and config validation.

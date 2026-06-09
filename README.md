@@ -1,107 +1,230 @@
-# FFC-AI - 用手机控制你的AI助手 📱
+# FFC-AI - 用 Telegram 控制服务器上的 AI 助手
 
-**5分钟快速开始** | 用Telegram给你的服务器上的Claude/GPT下命令，让AI帮你写代码、改配置、跑脚本。
+FFC-AI 可以把 Claude Code、Codex、VSCode 和 Telegram 连接起来。装好以后，你在手机 Telegram 里发消息，家里 PVE 虚拟机或 VPS 上的 AI 就能帮你写代码、改文件、运行命令、继续长任务。
+
+这份 README 按新手流程写：先准备东西，再复制命令安装，最后用 Telegram 测试。
 
 ---
 
-## 🚀 最快开始（推荐新手）
+## 先看这一段
 
-**只需要3步：**
+如果你不懂这些词，照着下面理解就够了：
 
-### 第1步：获取Telegram Bot Token（1分钟）
+- `服务器`：你的 Debian 12 VPS，或者家里 PVE 里的 Debian 12 虚拟机。
+- `root`：服务器最高权限账号。这个项目就是给专用 AI 服务器用的。
+- `API key`：AI 服务商给你的密钥，像密码一样保管，不能发到公开群。
+- `API 地址/base URL`：第三方代理给你的接口地址。OpenAI 兼容接口通常以 `/v1` 结尾。
+- `Telegram bot token`：BotFather 给你的机器人 token，用来让服务器收发 Telegram 消息。
+- `CC Switch`：可选的本地图形配置管理器，适合有桌面/远程桌面的机器管理多套 key 和代理。纯 VPS 可以跳过。
 
-1. 在Telegram搜索 `@BotFather`
-2. 发送 `/newbot` 创建机器人
-3. 复制BotFather给你的token（类似：`1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`）
-4. 给你的新bot发一条消息（例如 `/start`）
+新手推荐：先用默认全量安装 `all,telegram`，安装成功后再慢慢调整。
 
-### 第2步：在Debian 12服务器上安装（2分钟）
+---
 
-复制这一行到 root 或有 sudo 权限的服务器终端，直接运行。脚本会默认安装 Claude Code、Codex、VSCode、runner 和 Telegram，并引导你选择组件、输入 API 配置和 Telegram token。
+## 安装前准备
+
+你需要准备 4 样东西：
+
+1. 一台干净的 `Debian 12` 服务器。
+2. 能登录服务器终端，并且能执行 `sudo` 或直接使用 `root`。
+3. 一个 Telegram bot token。
+4. 至少一组可用的 AI API 配置。
+
+API 配置按工具分两类，不要混用：
+
+| 你要用的工具 | 应该填什么 key | API 地址怎么填 |
+| --- | --- | --- |
+| `codex` | OpenAI 或 OpenAI 兼容 key | 通常类似 `https://api.example.com/v1` |
+| `claude-code` | Anthropic/Claude 或 Claude 兼容 key | 按代理说明填写，通常不强制 `/v1` |
+| `vscode` | 这里作为 Claude 后端使用，填 Claude 兼容 key | 同 Claude 代理地址 |
+
+如果你只有第三方 OpenAI 代理，先选 `codex,telegram` 最简单。
+如果你只有第三方 Claude 代理，先选 `claude-code,telegram`。
+
+---
+
+## 第 1 步：创建 Telegram Bot
+
+1. 打开 Telegram，搜索 `@BotFather`。
+2. 给 BotFather 发送 `/newbot`。
+3. 按提示给 bot 起名字。
+4. 复制 BotFather 返回的 token，格式大概是：
+
+```text
+1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+```
+
+5. 打开你刚创建的 bot，先发一条 `/start`。这一步能让配对更顺利。
+
+---
+
+## 第 2 步：一键安装
+
+在 Debian 12 服务器终端复制下面整行命令运行。不要拆开，不要漏引号。
 
 ```bash
 sudo bash -c 'set -e; apt-get update; apt-get install -y curl ca-certificates; f=$(mktemp); curl -fsSL https://raw.githubusercontent.com/vpn3288/FFC-AI/main/scripts/bootstrap-debian12.sh -o "$f"; bash "$f"'
 ```
 
-安装过程会自动：
-- 安装 Debian 12 依赖、Node.js 24.x LTS（已有 Node 22/24 等合格偶数稳定版会直接复用）、Claude Code、Codex CLI、VSCode
-- 配置 root/full-access 运行环境和 systemd 服务
-- 写入不同 provider 对应的 API key、base URL、模型配置
-- 配对 Telegram（如果安装时输入了 bot token）
+脚本会自动做这些事：
 
-### 第3步：在Telegram测试
+- 安装系统依赖、Node.js LTS、Claude Code、Codex CLI、VSCode。
+- 创建 `/opt/ai-remote-runner`、`/var/lib/ai-remote-runner`、`/srv/ai-workspaces`。
+- 用 systemd 启动 runner 和 Telegram bot。
+- 引导你输入 API key、API 地址、模型名、Telegram token。
+- 可选安装 CC Switch。
 
-在Telegram给bot发：
+安装过程中常见问题这样选：
 
-```
+| 脚本问题 | 新手怎么选 |
+| --- | --- |
+| `请选择安装模式` | 不懂就直接回车，默认全量安装。想轻量就填 `codex,telegram` |
+| `是否安装 CC Switch` | 有桌面/远程桌面就填 `yes`，纯 VPS 就直接回车跳过 |
+| `Codex/OpenAI API base URL` | 官方 OpenAI 可留空；第三方代理填它给你的 `/v1` 地址 |
+| `OpenAI/Codex API key` | 填 OpenAI 或 OpenAI 兼容 key |
+| `Anthropic API base URL` | 官方 Claude 可留空；第三方 Claude 代理按说明填 |
+| `Anthropic API key/token` | 填 Claude/Anthropic 兼容 key |
+| `Telegram Bot Token` | 粘贴 BotFather 给你的 token |
+
+安装完成后，如果脚本提示保存成功，就进入下一步。
+
+---
+
+## 第 3 步：Telegram 测试
+
+打开你的 Telegram bot，发送：
+
+```text
 /ai 状态
 ```
 
-如果安装时跳过了 Telegram token，再手动配对：
+能看到状态回复，就说明 Telegram 已经接通。
+
+再试一条普通任务：
+
+```text
+你好，介绍一下自己
+```
+
+如果安装时跳过了 Telegram token，之后可以手动配对：
 
 ```bash
 cd /root/FFC-AI
 sudo bash scripts/pair-telegram.sh --discover-chat-id
 ```
 
-**完成！** 之后就可以直接在Telegram里给服务器上的AI下任务。
+---
+
+## 日常怎么用
+
+直接发普通消息就是让 AI 做任务：
+
+```text
+请查看当前工作区有哪些文件
+帮我写一个 Python 脚本，列出当前目录的所有 .py 文件
+检查这个项目有没有明显的安装问题
+```
+
+常用命令：
+
+```text
+/ai 状态          查看系统状态
+/ai 帮助          查看所有命令
+/ai 功能          查看已安装能力
+/ai 配置 查看      查看当前 key/代理/模型是否配置
+/ai 提供商 列表    查看 codex、claude-code、vscode 状态
+/ai 提供商 使用 codex
+/ai 继续          让当前任务继续
+/ai 定时继续      查看自动继续设置
+/ai 强行停止      停止 runner 已登记启动的任务
+```
+
+`/ai 强行停止` 只停止 runner 自己启动并登记的进程，不会按名字乱杀系统里的其它 `codex`、`claude`、`node` 或 `python`。
 
 ---
 
-## 💬 基本使用
+## 第三方 API 怎么填
 
-安装好后，在Telegram直接跟AI对话：
+很多人用的是第三方代理，不是官方 OpenAI/Anthropic。记住一条：`codex` 走 OpenAI 兼容配置，`claude-code` 和 `vscode` 走 Claude/Anthropic 兼容配置。
 
-```
-你好，介绍一下自己
+安装后也可以在 Telegram 里改，不用重新安装。
 
-请查看/root目录下有什么文件
+Codex/OpenAI 兼容配置：
 
-帮我写一个Python脚本，列出当前目录的所有.py文件
-```
-
-或使用命令：
-
-```
-/ai 状态          # 查看系统状态
-/ai 帮助          # 查看所有命令
-/ai 功能          # 查看功能列表
-/ai 子agent状态   # 查看Codex子agent状态显示开关
-/ai 定时继续      # 查看当前聊天的自动继续设置
-/ai 强行停止      # 终止runner已登记的活动任务
-```
-
----
-
-## 🔧 使用第三方API（可选）
-
-如果你用的是第三方OpenAI兼容API或Anthropic兼容API，推荐直接用上面的 bootstrap 安装；它会分别询问 Codex/OpenAI 和 Claude/Anthropic 的配置，不会把两种 key 混用。
-
-### 安装后修改API配置
-
-也可以在Telegram里动态修改：
-
-```
-/ai 代理 设置 codex https://你的API地址/v1
-/ai 密钥 设置 codex sk-你的密钥
-/ai 开源模型 设置 codex gpt-4o
+```text
+/ai 代理 设置 codex https://你的OpenAI兼容地址/v1
+/ai 密钥 设置 codex sk-你的OpenAI兼容key
+/ai GPT模型 设置 codex gpt-5.5
 /ai 配置 查看 codex
 ```
 
-Claude Code 和 VSCode 使用 Anthropic/Claude 配置面：
+Claude Code 配置：
 
-```
-/ai 代理 设置 claude-code https://你的Claude代理地址
-/ai 密钥 设置 claude-code sk-ant-你的密钥
+```text
+/ai 代理 设置 claude-code https://你的Claude兼容地址
+/ai 密钥 设置 claude-code sk-ant-你的Claude兼容key
 /ai Claude模型 设置 claude-code claude-opus-4-8
-/ai 代理 设置 vscode https://你的Claude代理地址
-/ai 密钥 设置 vscode sk-ant-你的密钥
-/ai GPT模型 设置 vscode gpt-5.5
+/ai 配置 查看 claude-code
 ```
+
+VSCode 后端配置：
+
+```text
+/ai 代理 设置 vscode https://你的Claude兼容地址
+/ai 密钥 设置 vscode sk-ant-你的Claude兼容key
+/ai Claude模型 设置 vscode claude-opus-4-8
+/ai 配置 查看 vscode
+```
+
+如果你把 `sk-ant-` 这种 Claude key 填给 `codex`，runner 会拒绝，防止配错。
+
+---
+
+## CC Switch 怎么用
+
+CC Switch 是可选功能，不是必须安装。
+
+适合安装 CC Switch 的情况：
+
+- 你的 Debian 12 有桌面环境或远程桌面。
+- 你有多套 Claude/OpenAI 第三方代理。
+- 你想用图形界面管理不同 API key、API 地址和模型档案。
+
+可以跳过 CC Switch 的情况：
+
+- 你是纯 VPS/headless 服务器。
+- 你只想用 Telegram 远程控制。
+- 你只有一套 API key。
+
+手动启用 CC Switch 安装：
+
+```bash
+AI_INSTALL_CC_SWITCH=true AI_RUNNER_COMPONENTS=all,telegram sudo -E bash scripts/install-runner.sh
+```
+
+Telegram 也支持 CC Switch 兼容命令：
+
+```text
+/ai CC Switch 状态
+/ai CC Switch 密钥 设置 codex sk-你的OpenAI兼容key
+/ai CC Switch 代理 设置 codex https://你的OpenAI兼容地址/v1
+/ai CC Switch GPT模型 设置 codex gpt-5.5
+/ai CC Switch 密钥 设置 claude-code sk-ant-你的Claude兼容key
+/ai CC Switch 代理 设置 claude-code https://你的Claude兼容地址
+/ai CC Switch Claude模型 设置 claude-code claude-opus-4-8
+```
+
+这些命令不会直接修改 CC Switch 的 SQLite 数据库。它们会写入 Claude Code、Codex、runner 实际读取的 live 配置，并记录同步状态。这样更安全，也不会破坏 AI 软件本身的配置逻辑。
 
 ---
 
 ## 🎯 不同AI工具选择
+
+下面这些命令适合已经安装过、或者已经在服务器上有 `/root/FFC-AI` 项目目录时使用。先进入项目目录：
+
+```bash
+cd /root/FFC-AI
+```
 
 需要一台 Debian 12 VM/VPS 同时准备三套工具时，可以直接全量安装：
 
@@ -123,25 +246,25 @@ AI_RUNNER_COMPONENTS=all,telegram sudo -E bash scripts/install-runner.sh
 ```bash
 AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 ```
-- ✅ 安装最简单
-- ✅ 支持OpenAI和兼容API
-- ✅ 稳定可靠
+- 安装最简单。
+- 支持 OpenAI 官方 API，也支持第三方 OpenAI 兼容代理。
+- 如果只想先跑通 Telegram 远程 AI，优先选这个。
 
 ### Claude Code（适合Claude用户）
 ```bash
 AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 ```
-- 需要Claude Code CLI
-- 需要提前配置ANTHROPIC_API_KEY
-- 支持Claude模型
+- 脚本会安装 Claude Code CLI。
+- 安装时会引导你填写 Claude/Anthropic API key。
+- 适合主要使用 Claude 模型的人。
 
 ### VSCode（高级用户）
 ```bash
 AI_RUNNER_COMPONENTS=vscode,telegram sudo -E bash scripts/install-runner.sh
 ```
-- 自动安装VSCode
-- 支持Claude后端
-- 适合需要VSCode集成的场景
+- 脚本会安装 VSCode/root wrapper。
+- 这里默认把 VSCode 当作 Claude 后端使用。
+- 适合已经知道自己为什么需要 VSCode 集成的用户。
 
 ---
 
@@ -182,12 +305,28 @@ sudo grep TELEGRAM_ALLOWED_CHAT_IDS /var/lib/ai-remote-runner/config.env
 sudo systemctl restart ai-telegram-bot
 ```
 
+### ❓ 安装时 API key 填错了怎么办
+
+不用重装。直接在 Telegram 里改：
+
+```text
+/ai 密钥 设置 codex sk-新的OpenAI兼容key
+/ai 代理 设置 codex https://新的OpenAI兼容地址/v1
+/ai 密钥 设置 claude-code sk-ant-新的Claude兼容key
+/ai 代理 设置 claude-code https://新的Claude兼容地址
+/ai 配置 查看
+```
+
+改完后可以发 `/ai 状态` 或 `/ai 配置 查看` 确认。
+
 ### ❓ 如何重新配对
 
 ```bash
 cd /root/FFC-AI
-sudo bash scripts/pair-telegram.sh --telegram-id 你的ID
+sudo bash scripts/pair-telegram.sh --discover-chat-id
 ```
+
+运行后按提示给 bot 发消息，脚本会自动发现你的 chat ID。
 
 ### ❓ 网络连不上Telegram API
 
@@ -326,7 +465,8 @@ sudo grep MATTERMOST_ADMIN /opt/ffc-ai-mattermost/.env
 
 ## 🆘 获取帮助
 
-- 查看详细文档：`cat README.md`（项目原版README）
+- 查看当前说明：`cat README.md`
+- 查看安装设计要求：`cat outputs/DEBIAN12_FULL_ACCESS_TELEGRAM_OPTIMIZATION_GUIDE.md`
 - 问题反馈：https://github.com/vpn3288/FFC-AI/issues
 - 查看所有脚本：`ls scripts/`
 

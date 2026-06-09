@@ -201,6 +201,7 @@ class TelegramBot:
         self.confirmations_path = state / "telegram-confirmations.json"
         self.tasks_path = state / "telegram-tasks.json"
         self._tasks: dict[str, TelegramTask] = {}
+        self._task_threads: dict[str, threading.Thread] = {}
         self._tasks_lock = threading.Lock()
         self.bot_username = ""
         self.bot_user_id = ""
@@ -937,29 +938,48 @@ class TelegramBot:
 
         def run() -> None:
             try:
-                response = self.execute_text(chat_id, message, text, task)
-            except Exception as exc:  # pragma: no cover - daemon safety net.
-                response = {
-                    "request_id": f"telegram:{chat_id}:{message.get('message_id') or task.task_id}",
-                    "status": "error",
-                    "run_id": task.task_id,
-                    "message_zh": "执行失败",
-                    "data": {},
-                    "error": {"code": "telegram_background_task_failed", "detail": str(exc)},
-                }
-            task.response = response
-            task.done = True
-            final_status = "已完成，正在发送最终回复。" if response.get("status") in {"accepted", "completed", "needs_confirmation"} else "执行失败，正在发送错误信息。"
-            self.update_status_message(task, final_status, force=True)
-            self.save_task_status(task)
-            self.safe_send_message_draft(chat_id, task.draft_id, "")
-            self.safe_send_response(chat_id, response)
+                try:
+                    response = self.execute_text(chat_id, message, text, task)
+                except Exception as exc:  # pragma: no cover - daemon safety net.
+                    response = {
+                        "request_id": f"telegram:{chat_id}:{message.get('message_id') or task.task_id}",
+                        "status": "error",
+                        "run_id": task.task_id,
+                        "message_zh": "执行失败",
+                        "data": {},
+                        "error": {"code": "telegram_background_task_failed", "detail": str(exc)},
+                    }
+                task.response = response
+                task.done = True
+                final_status = "已完成，正在发送最终回复。" if response.get("status") in {"accepted", "completed", "needs_confirmation"} else "执行失败，正在发送错误信息。"
+                self.update_status_message(task, final_status, force=True)
+                self.save_task_status(task)
+                self.safe_send_message_draft(chat_id, task.draft_id, "")
+                self.safe_send_response(chat_id, response)
+            finally:
+                with self._tasks_lock:
+                    self._task_threads.pop(task.task_id, None)
 
+        thread = threading.Thread(target=run, name=f"telegram-task-{task.task_id}", daemon=True)
         with self._tasks_lock:
             self._tasks[task.task_id] = task
-        thread = threading.Thread(target=run, name=f"telegram-task-{task.task_id}", daemon=True)
+            self._task_threads[task.task_id] = thread
         thread.start()
         return task
+
+    def drain_background_tasks(self, timeout_seconds: float = 5.0) -> bool:
+        deadline = time.time() + max(0.0, timeout_seconds)
+        current = threading.current_thread()
+        while True:
+            with self._tasks_lock:
+                threads = [thread for thread in self._task_threads.values() if thread is not current and thread.is_alive()]
+            if not threads:
+                return True
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return False
+            for thread in threads:
+                thread.join(min(0.05, max(0.0, remaining)))
 
     def handle_callback_query(self, callback_query: dict[str, Any]) -> bool:
         callback_query_id = str(callback_query.get("id") or "")

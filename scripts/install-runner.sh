@@ -39,8 +39,9 @@ AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
 AI_PERMISSION_SCOPE="${AI_PERMISSION_SCOPE:-full}"
 AI_REQUIRE_SHELL_CONFIRMATION="${AI_REQUIRE_SHELL_CONFIRMATION:-0}"
 AI_PROCESS_CONTROL_ENABLED="${AI_PROCESS_CONTROL_ENABLED:-1}"
+AI_INSTALL_CC_SWITCH="${AI_INSTALL_CC_SWITCH:-auto}"
 AI_PRIMARY_PROVIDERS_CSV="claude-code,vscode,codex"
-AI_PRIMARY_PROVIDER_USAGE="all,telegram | codex,telegram | claude-code,telegram | vscode,telegram | vscode"
+AI_PRIMARY_PROVIDER_USAGE="all,telegram | codex,telegram | claude-code,telegram | vscode,telegram | vscode | cc-switch"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
@@ -53,6 +54,7 @@ usage() {
   printf 'usage: %s [--dry-run] [--enable-telegram]\n' "$0"
   printf '       AI_RUNNER_COMPONENTS is required: %s\n' "$AI_PRIMARY_PROVIDER_USAGE"
   printf '       all/full/core install Claude Code, Codex, VSCode, and the runner on one VM.\n'
+  printf '       Set AI_INSTALL_CC_SWITCH=true or add cc-switch to install the optional Debian CC Switch desktop app.\n'
 }
 
 log() {
@@ -188,7 +190,9 @@ root_env_run() {
   if [ "${REQUEST_CODEX:-false}" = true ]; then
     env_args+=(
       OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+      CODEX_API_KEY="${CODEX_API_KEY:-}"
       CODEX_BASE_URL="${CODEX_BASE_URL:-}"
+      CODEX_OPENAI_BASE_URL="${CODEX_OPENAI_BASE_URL:-}"
     )
   fi
   if [ "$DRY_RUN" = true ]; then
@@ -215,11 +219,75 @@ root_has_command() {
   fi
 }
 
+is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON|y|Y) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 apt_install() {
   if [ "$DRY_RUN" = true ]; then
     run sudo apt-get install -y "$@"
   else
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+  fi
+}
+
+cc_switch_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'x86_64' ;;
+    aarch64|arm64) printf 'arm64' ;;
+    *) return 1 ;;
+  esac
+}
+
+install_cc_switch() {
+  log 'stage 02c: install optional CC Switch desktop profile manager'
+  if [ "$DRY_RUN" = true ]; then
+    log 'would download latest CC Switch Linux .deb from GitHub Releases and install it with apt'
+    return 0
+  fi
+  command -v apt-get >/dev/null 2>&1 || { log 'apt-get is required to install CC Switch .deb on Debian/Ubuntu'; exit 1; }
+  command -v python3 >/dev/null 2>&1 || { log 'python3 is required to resolve the latest CC Switch release'; exit 1; }
+  command -v curl >/dev/null 2>&1 || { log 'curl is required to download CC Switch'; exit 1; }
+  local arch release_info tag url deb_path
+  arch="$(cc_switch_arch)" || { log 'CC Switch Linux release supports x86_64 and arm64 only'; exit 1; }
+  release_info="$(python3 - "$arch" <<'PY'
+import json
+import sys
+import urllib.request
+
+arch = sys.argv[1]
+req = urllib.request.Request(
+    "https://api.github.com/repos/farion1231/cc-switch/releases/latest",
+    headers={"User-Agent": "FFC-AI-installer"},
+)
+with urllib.request.urlopen(req, timeout=30) as response:
+    data = json.load(response)
+suffix = f"Linux-{arch}.deb"
+for asset in data.get("assets", []):
+    name = str(asset.get("name") or "")
+    if name.endswith(suffix):
+        print(data.get("tag_name", ""))
+        print(asset["browser_download_url"])
+        raise SystemExit(0)
+raise SystemExit(f"no CC Switch .deb asset found for {arch}")
+PY
+)"
+  tag="$(printf '%s\n' "$release_info" | sed -n '1p')"
+  url="$(printf '%s\n' "$release_info" | sed -n '2p')"
+  [ -n "$url" ] || { log 'failed to resolve CC Switch .deb download URL'; exit 1; }
+  deb_path="/tmp/cc-switch-${tag:-latest}-${arch}.deb"
+  log "downloading CC Switch ${tag:-latest} for Linux ${arch}"
+  curl -fsSL "$url" -o "$deb_path"
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb_path"
+  if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W -f='${Version}' cc-switch >/dev/null 2>&1; then
+    log "CC Switch package installed: $(dpkg-query -W -f='${Version}' cc-switch)"
+  elif root_has_command cc-switch; then
+    log 'CC Switch binary is installed; skipping --version because it starts the GUI on headless/root servers'
+  else
+    log 'CC Switch package installed; no cc-switch CLI binary was found. Launch it from the desktop/app menu when using a GUI session.'
   fi
 }
 
@@ -376,11 +444,25 @@ cleanup_unrequested_provider_configs() {
   fi
 }
 
+vscode_root_safe_version() {
+  if [ "$DRY_RUN" = true ]; then
+    log 'would verify code --version with root-safe --no-sandbox and dedicated user-data/extensions directories'
+    return 0
+  fi
+  sudo mkdir -p "$VSCODE_ROOT_DIR/extensions"
+  root_env_run code \
+    --no-sandbox \
+    --user-data-dir="$VSCODE_ROOT_DIR" \
+    --extensions-dir="$VSCODE_ROOT_DIR/extensions" \
+    --disable-workspace-trust \
+    --version | head -n 1 || true
+}
+
 install_vscode() {
   log 'stage 05: install or verify VSCode for root/full-access operation'
   VSCODE_READY=false
   if root_has_command code; then
-    root_env_run code --version | head -n 1 || true
+    vscode_root_safe_version
   elif command -v apt-get >/dev/null 2>&1; then
     log 'code missing; installing latest Visual Studio Code from Microsoft apt repository'
     run sudo install -d -m 0755 /etc/apt/keyrings
@@ -399,9 +481,9 @@ install_vscode() {
     apt_install code
     if [ "$DRY_RUN" = false ]; then
       root_has_command code || { log 'VSCode install failed; code command is required in the root service PATH'; exit 1; }
-      root_env_run code --version | head -n 1 || true
+      vscode_root_safe_version
     else
-      log 'would verify code --version after package install'
+      vscode_root_safe_version
     fi
   else
     log 'code missing and native package installer unavailable; VSCode is required for full-access workstation setup'
@@ -433,7 +515,8 @@ node_major() {
 }
 
 ensure_codex_node() {
-  local major min_major install_major setup_script
+  local major min_major install_major setup_script tool_label
+  tool_label="${1:-Codex CLI}"
   min_major="${CODEX_NODE_MIN_MAJOR:-$(read_lock codex_node_min_major || true)}"
   install_major="${CODEX_NODE_INSTALL_MAJOR:-$(read_lock codex_node_install_major || true)}"
   min_major="${min_major:-22}"
@@ -452,10 +535,10 @@ ensure_codex_node() {
     return 0
   fi
   if ! command -v apt-get >/dev/null 2>&1; then
-    log "Node.js ${min_major}+ even-major stable/LTS is required for Codex CLI; install Node.js ${install_major}.x LTS and npm before rerunning"
+    log "Node.js ${min_major}+ even-major stable/LTS is required for ${tool_label}; install Node.js ${install_major}.x LTS and npm before rerunning"
     return 1
   fi
-  log "Node.js ${min_major}+ even-major stable/LTS is required for Codex CLI; installing Node.js ${install_major}.x LTS from NodeSource"
+  log "Node.js ${min_major}+ even-major stable/LTS is required for ${tool_label}; installing Node.js ${install_major}.x LTS from NodeSource"
   setup_script="/tmp/nodesource_setup_${install_major}.x.sh"
   if [ "$DRY_RUN" = false ]; then
     curl -fsSL "https://deb.nodesource.com/setup_${install_major}.x" -o "$setup_script"
@@ -469,7 +552,7 @@ ensure_codex_node() {
     ''|*[!0-9]*) major=0 ;;
   esac
   if [ "$DRY_RUN" = false ] && { [ "$major" -lt "$min_major" ] || [ $((major % 2)) -ne 0 ]; }; then
-    log "Node.js ${min_major}+ even-major stable/LTS install failed; Codex CLI cannot be installed safely"
+    log "Node.js ${min_major}+ even-major stable/LTS install failed; ${tool_label} cannot be installed safely"
     exit 1
   fi
 }
@@ -495,6 +578,7 @@ REQUEST_CLAUDE=false
 REQUEST_CODEX=false
 REQUEST_VSCODE=false
 REQUEST_VSCODE_CLAUDE_BACKEND=false
+REQUEST_CC_SWITCH=false
 REQUEST_RUNNER=false
 REQUEST_TELEGRAM=false
 if [ -z "$AI_RUNNER_COMPONENTS" ]; then
@@ -525,6 +609,9 @@ for raw_component in "${REQUESTED_COMPONENTS_ARRAY[@]}"; do
       REQUEST_TELEGRAM=true
       REQUEST_RUNNER=true
       ;;
+    cc-switch|ccswitch)
+      REQUEST_CC_SWITCH=true
+      ;;
     all|full|core)
       REQUEST_CLAUDE=true
       REQUEST_CODEX=true
@@ -537,6 +624,9 @@ for raw_component in "${REQUESTED_COMPONENTS_ARRAY[@]}"; do
       ;;
   esac
 done
+if is_truthy "$AI_INSTALL_CC_SWITCH"; then
+  REQUEST_CC_SWITCH=true
+fi
 if [ "$REQUEST_RUNNER" = true ] && [ "$REQUEST_CLAUDE" != true ] && [ "$REQUEST_CODEX" != true ] && [ "$REQUEST_VSCODE" != true ]; then
   log 'runner/telegram selected without an AI provider; installing management-only runner commands without Claude Code, Codex, or VSCode backend'
 fi
@@ -658,9 +748,14 @@ cleanup_unrequested_provider_configs
 log 'stage 02: install system packages required by runner'
 if command -v apt-get >/dev/null 2>&1; then
   run sudo apt-get update
-  apt_install python3 python3-pip python3-venv ca-certificates curl git openssl gpg
+  apt_install python3 python3-pip python3-venv ca-certificates curl git openssl gpg bubblewrap
 else
   log 'apt-get unavailable; package installation skipped and must be handled externally'
+fi
+if [ "$REQUEST_CC_SWITCH" = true ]; then
+  install_cc_switch
+else
+  log 'stage 02c: skip CC Switch because it is optional and not requested'
 fi
 if should_write_claude_settings; then
   write_claude_settings
@@ -671,34 +766,27 @@ elif [ -n "${ANTHROPIC_BASE_URL:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] || [
 fi
 
 log 'stage 03: install or verify requested Claude Code provider/backend'
+CLAUDE_NPM_PACKAGE="$(read_lock claude_code_npm_package || true)"
+CLAUDE_NPM_VERSION="$(read_lock claude_code_npm_version || true)"
+CLAUDE_NPM_PACKAGE="${CLAUDE_NPM_PACKAGE:-@anthropic-ai/claude-code}"
+CLAUDE_NPM_VERSION="${CLAUDE_NPM_VERSION:-2.1.153}"
 CLAUDE_READY=false
 if [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
   if root_has_command claude; then
     root_env_run claude --version
     CLAUDE_READY=true
   elif command -v apt-get >/dev/null 2>&1; then
-    # Source: official Claude Code installation docs, https://code.claude.com/docs/en/installation
-    run sudo install -d -m 0755 /etc/apt/keyrings
-    run sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc
+    log "claude missing; installing $CLAUDE_NPM_PACKAGE@$CLAUDE_NPM_VERSION through npm"
+    ensure_codex_node "Claude Code"
     if [ "$DRY_RUN" = false ]; then
-      command -v gpg >/dev/null 2>&1 || { log 'gpg required for Claude Code apt key verification'; exit 1; }
-      ACTUAL_FINGERPRINT="$(gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc | awk -F: '/^fpr:/ {print $10; exit}')"
-      EXPECTED_FINGERPRINT="$(read_lock claude_code_apt_key_fingerprint)"
-      [ -n "$EXPECTED_FINGERPRINT" ] || { log 'versions.lock must pin claude_code_apt_key_fingerprint'; exit 1; }
-      [ "$ACTUAL_FINGERPRINT" = "$EXPECTED_FINGERPRINT" ] || {
-        log 'Claude Code apt signing key fingerprint mismatch'
-        exit 1
-      }
-      echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
-        | sudo tee /etc/apt/sources.list.d/claude-code.list >/dev/null
+      command -v npm >/dev/null 2>&1 || { log 'npm missing after Node.js install; Claude Code cannot be installed'; exit 1; }
+      sudo npm install -g "$CLAUDE_NPM_PACKAGE@$CLAUDE_NPM_VERSION"
+      root_has_command claude || { log 'claude npm install did not place claude on the root service PATH'; exit 1; }
+      root_env_run claude --version
+      CLAUDE_READY=true
     else
-      log 'would verify Claude Code apt key fingerprint and write /etc/apt/sources.list.d/claude-code.list'
+      log "would run sudo npm install -g $CLAUDE_NPM_PACKAGE@$CLAUDE_NPM_VERSION"
     fi
-    run sudo apt-get update
-    apt_install claude-code
-    root_has_command claude || { log 'claude install failed or is not available in the root service PATH'; exit 1; }
-    root_env_run claude --version
-    CLAUDE_READY=true
   else
     log 'claude missing and native installer unavailable; install from official Claude Code docs before core_ready'
     exit 1
@@ -966,15 +1054,15 @@ EOF
       printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     fi
   fi
-  if [ "$REQUEST_CODEX" = true ] && [ -n "${OPENAI_API_KEY:-}" ]; then
-    printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; }; then
+    printf 'OPENAI_API_KEY=%s\n' "${CODEX_API_KEY:-$OPENAI_API_KEY}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
   if [ "$REQUEST_CODEX" = true ]; then
     printf 'CODEX_MODEL=%s\n' "${CODEX_MODEL:-gpt-5.5}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     printf 'CODEX_EXEC_EPHEMERAL=%s\n' "$EFFECTIVE_CODEX_EXEC_EPHEMERAL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
-  if [ "$REQUEST_CODEX" = true ] && [ -n "${CODEX_BASE_URL:-}" ]; then
-    printf 'CODEX_BASE_URL=%s\n' "$CODEX_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+  if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_OPENAI_BASE_URL:-}" ] || [ -n "${CODEX_BASE_URL:-}" ]; }; then
+    printf 'CODEX_BASE_URL=%s\n' "${CODEX_OPENAI_BASE_URL:-$CODEX_BASE_URL}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
   for key in MATTERMOST_PLATFORM_URL MATTERMOST_WEBHOOK_URL MATTERMOST_BOT_TOKEN MATTERMOST_SLASH_TOKEN AI_BRIDGE_SECRET_TRANSFER_METHOD TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_CHAT_IDS TELEGRAM_API_BASE TELEGRAM_RESERVED_USD TELEGRAM_STATUS_INTERVAL_SECONDS TELEGRAM_STATUS_MIN_UPDATE_SECONDS TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP TELEGRAM_SYNC_COMMANDS_ON_STARTUP TELEGRAM_ALLOWED_UPDATES TELEGRAM_NATIVE_DRAFT_PROGRESS TELEGRAM_NATIVE_DRAFT_ALLOW_CHAT_IDS TELEGRAM_GROUP_MODE AI_LOCAL_EXEC_TIMEOUT_SECONDS AI_LOCAL_EXEC_MAX_OUTPUT_BYTES; do
     value="$(printenv "$key" || true)"
@@ -1066,7 +1154,7 @@ User=root
 EnvironmentFile=$STATE_ROOT/config.env
 WorkingDirectory=$INSTALL_ROOT
 ExecStart=$RUNNER_PYTHON -m ai_remote_runner.cli bridge --host 127.0.0.1 --port 8765
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]
@@ -1088,7 +1176,7 @@ User=root
 EnvironmentFile=$STATE_ROOT/config.env
 WorkingDirectory=$INSTALL_ROOT
 ExecStart=$RUNNER_PYTHON -m ai_remote_runner.cli telegram
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]

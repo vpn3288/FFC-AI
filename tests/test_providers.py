@@ -18,7 +18,16 @@ from ai_remote_runner.providers import (
 )
 from ai_remote_runner.providers import _emit_codex_jsonl_events
 from ai_remote_runner.providers import discover_codex
+from ai_remote_runner.providers import discover_vscode
 from ai_remote_runner.budget import BudgetLedger
+
+
+def _registered_command(call: object) -> list[str]:
+    return call.args[3]
+
+
+def _registered_input(call: object) -> str:
+    return call.kwargs["input"]
 
 
 class ProviderTests(unittest.TestCase):
@@ -103,6 +112,32 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("full_access_flags", capabilities)
         self.assertIn("telegram_live_status_available", capabilities)
         self.assertIn("output_last_message_available", capabilities)
+
+    def test_vscode_discovery_prefers_root_wrapper(self) -> None:
+        def version(command: str) -> dict:
+            if command == "/tmp/code-root":
+                return {"available": True, "path": "/tmp/code-root", "version": "1.123.0"}
+            if command == "code":
+                return {"available": False, "path": "/usr/bin/code", "version": "root warning"}
+            return {"available": False, "path": None, "version": None}
+
+        backend = {
+            "available": True,
+            "capabilities": {
+                "full_access_available": True,
+                "root_safe_full_access_available": True,
+            },
+        }
+        with (
+            patch.dict("os.environ", {"AI_VSCODE_ROOT_WRAPPER": "/tmp/code-root"}, clear=False),
+            patch("ai_remote_runner.providers._version", side_effect=version),
+            patch("ai_remote_runner.providers.discover_claude", return_value=backend),
+        ):
+            status = discover_vscode()
+        self.assertTrue(status["available"])
+        self.assertEqual(status["path"], "/tmp/code-root")
+        self.assertEqual(status["probe_command"], "/tmp/code-root")
+        self.assertTrue(status["capabilities"]["vscode_command_available"])
 
     def test_provider_status_marks_unconfigured_provider_unavailable(self) -> None:
         with (
@@ -270,7 +305,7 @@ class ProviderTests(unittest.TestCase):
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
             with (
                 patch("ai_remote_runner.providers._help_has", return_value=True),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed),
+                patch("ai_remote_runner.providers.run_registered", return_value=completed),
             ):
                 result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
         self.assertEqual(result.status, "failed")
@@ -282,7 +317,9 @@ class ProviderTests(unittest.TestCase):
 
         completed = subprocess.CompletedProcess(["codex"], 0, stdout="", stderr="")
         with tempfile.TemporaryDirectory() as tmp:
-            def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+                command = args[3]
+                assert isinstance(command, list)
                 Path(command[command.index("--output-last-message") + 1]).write_text("ok", encoding="utf-8")
                 self.assertEqual(command[-1], "-")
                 self.assertNotIn("do work", command)
@@ -291,7 +328,7 @@ class ProviderTests(unittest.TestCase):
 
             with (
                 patch("ai_remote_runner.providers._help_has", return_value=True),
-                patch("ai_remote_runner.providers.subprocess.run", side_effect=run),
+                patch("ai_remote_runner.providers.run_registered", side_effect=run),
             ):
                 result = invoke_codex(
                     "do work",
@@ -312,7 +349,7 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch("ai_remote_runner.providers._help_has", return_value=True),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed),
+                patch("ai_remote_runner.providers.run_registered", return_value=completed),
             ):
                 result = invoke_codex("noop", Path(tmp), BudgetLedger(Path(tmp) / "ledger.json"), timeout_seconds=1, reserved_usd=0.01)
         self.assertEqual(result.status, "completed")
@@ -331,7 +368,7 @@ class ProviderTests(unittest.TestCase):
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
             with (
                 patch("ai_remote_runner.providers._help_has", return_value=True),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed),
+                patch("ai_remote_runner.providers.run_registered", return_value=completed),
             ):
                 result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
 
@@ -346,7 +383,7 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch("ai_remote_runner.providers._help_has", return_value=True),
-                patch("ai_remote_runner.providers.subprocess.run", side_effect=subprocess.TimeoutExpired(["codex"], 1)),
+                patch("ai_remote_runner.providers.run_registered", side_effect=subprocess.TimeoutExpired(["codex"], 1)),
             ):
                 result = invoke_codex("noop", Path(tmp), BudgetLedger(Path(tmp) / "ledger.json"), timeout_seconds=1, reserved_usd=0.01)
             self.assertIn(result.status, {"completed", "failed", "timeout"})
@@ -361,15 +398,16 @@ class ProviderTests(unittest.TestCase):
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
             with (
                 patch.dict("os.environ", {"CLAUDE_MODEL": ""}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=completed) as run,
             ):
                 result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.1, permission_scope="edit")
             self.assertEqual(result.status, "completed")
-            self.assertIn("Read,Grep,Glob,Edit,Write", run.call_args.args[0])
-            self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--permission-mode") + 1], "bypassPermissions")
-            self.assertNotIn("--model", run.call_args.args[0])
-            self.assertEqual(run.call_args.kwargs["input"], "prompt")
-            self.assertNotIn("prompt", run.call_args.args[0])
+            command = _registered_command(run.call_args)
+            self.assertIn("Read,Grep,Glob,Edit,Write", command)
+            self.assertEqual(command[command.index("--permission-mode") + 1], "bypassPermissions")
+            self.assertNotIn("--model", command)
+            self.assertEqual(_registered_input(run.call_args), "prompt")
+            self.assertNotIn("prompt", command)
             self.assertAlmostEqual(ledger.load()["daily_used_usd_estimate"], 0.02)
 
     def test_vscode_adapter_uses_vscode_claude_controls_and_identity(self) -> None:
@@ -391,10 +429,10 @@ class ProviderTests(unittest.TestCase):
                     },
                     clear=False,
                 ),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=completed) as run,
             ):
                 result = invoke_vscode("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.0, permission_scope="full")
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertEqual(result.provider, "vscode")
             self.assertEqual(ledger.load()["runs"][result.run_id]["provider"], "vscode")
             self.assertEqual(command[command.index("--model") + 1], "vscode-model")
@@ -409,9 +447,9 @@ class ProviderTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok", "total_cost_usd": 0.02}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+            with patch("ai_remote_runner.providers.run_registered", return_value=completed) as run:
                 result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.1, permission_scope="full")
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertEqual(result.status, "completed")
             self.assertIn("--permission-mode", command)
             self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
@@ -430,9 +468,9 @@ class ProviderTests(unittest.TestCase):
 
         completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+            with patch("ai_remote_runner.providers.run_registered", return_value=completed) as run:
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1, permission_scope="full")
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertIn("acceptEdits", command)
             self.assertNotIn("bypassPermissions", command)
             self.assertIn("--add-dir", command)
@@ -450,10 +488,10 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict("os.environ", {"CLAUDE_MODEL": "sonnet"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=completed) as run,
             ):
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertIn("--model", command)
             self.assertEqual(command[command.index("--model") + 1], "sonnet")
 
@@ -466,10 +504,10 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict("os.environ", {"CLAUDE_MODEL": "claude"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=completed) as run,
             ):
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertIn("--model", command)
             self.assertEqual(command[command.index("--model") + 1], "opus")
 
@@ -482,10 +520,10 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict("os.environ", {"CLAUDE_MODEL": "code claude-opus-4-8"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=completed) as run,
             ):
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertIn("--model", command)
             self.assertEqual(command[command.index("--model") + 1], "claude-opus-4-8")
             self.assertNotIn("code claude-opus-4-8", command)
@@ -499,10 +537,10 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict("os.environ", {"CLAUDE_MODEL": "bad model"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=completed) as run,
             ):
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
-            self.assertNotIn("--model", run.call_args.args[0])
+            self.assertNotIn("--model", _registered_command(run.call_args))
 
     def test_invoke_claude_omits_max_turns_by_default(self) -> None:
         import tempfile
@@ -511,9 +549,9 @@ class ProviderTests(unittest.TestCase):
 
         completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+            with patch("ai_remote_runner.providers.run_registered", return_value=completed) as run:
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.0)
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertNotIn("--max-turns", command)
 
     def test_invoke_claude_uses_explicit_positive_max_turns(self) -> None:
@@ -525,10 +563,10 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict("os.environ", {"CLAUDE_MAX_TURNS": "40"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=completed) as run,
             ):
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.0)
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertIn("--max-turns", command)
             self.assertEqual(command[command.index("--max-turns") + 1], "40")
 
@@ -539,9 +577,9 @@ class ProviderTests(unittest.TestCase):
 
         completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok"}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed) as run:
+            with patch("ai_remote_runner.providers.run_registered", return_value=completed) as run:
                 invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1, permission_scope="chat")
-            command = run.call_args.args[0]
+            command = _registered_command(run.call_args)
             self.assertIn("--tools", command)
             self.assertEqual(command[command.index("--tools") + 1], "")
             self.assertNotIn("--disallowedTools", command)
@@ -554,7 +592,7 @@ class ProviderTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": ""}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=completed):
+            with patch("ai_remote_runner.providers.run_registered", return_value=completed):
                 result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.1)
             self.assertEqual(result.status, "empty_output")
             self.assertIn("空内容", result.output_text)
@@ -570,14 +608,14 @@ class ProviderTests(unittest.TestCase):
         events: list[dict] = []
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, ok]) as run:
+            with patch("ai_remote_runner.providers.run_registered", side_effect=[empty, ok]) as run:
                 result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1, emit=events.append)
             self.assertEqual(result.status, "completed")
             self.assertEqual(result.output_text, "你好，我在。")
             self.assertEqual(run.call_count, 2)
-            self.assertIn("上一轮 Claude Code 返回了空字符串", run.call_args.kwargs["input"])
-            self.assertIn("收到，我在。", run.call_args.kwargs["input"])
-            retry_command = run.call_args.args[0]
+            self.assertIn("上一轮 Claude Code 返回了空字符串", _registered_input(run.call_args))
+            self.assertIn("收到，我在。", _registered_input(run.call_args))
+            retry_command = _registered_command(run.call_args)
             self.assertEqual(retry_command[retry_command.index("--max-budget-usd") + 1], "0.09")
             self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.03)
             self.assertTrue(any(event.get("phase") == "warning" and "重试" in event.get("public_message_zh", "") for event in events))
@@ -599,7 +637,7 @@ class ProviderTests(unittest.TestCase):
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
             with (
                 patch.dict("os.environ", {"CLAUDE_API_RETRY_ATTEMPTS": "2", "CLAUDE_API_RETRY_SLEEP_SECONDS": "0"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", side_effect=[malformed, ok]) as run,
+                patch("ai_remote_runner.providers.run_registered", side_effect=[malformed, ok]) as run,
             ):
                 result = invoke_claude("请继续处理任务", Path(tmp), "instructions", ledger, reserved_usd=0.0, emit=events.append)
             self.assertEqual(result.status, "completed")
@@ -623,7 +661,7 @@ class ProviderTests(unittest.TestCase):
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
             with (
                 patch.dict("os.environ", {"CLAUDE_API_RETRY_ATTEMPTS": "2", "CLAUDE_API_RETRY_SLEEP_SECONDS": "0"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=max_turns) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=max_turns) as run,
             ):
                 result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.0)
             self.assertEqual(result.status, "failed")
@@ -645,7 +683,7 @@ class ProviderTests(unittest.TestCase):
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
             with (
                 patch.dict("os.environ", {"CLAUDE_API_RETRY_ATTEMPTS": "2", "CLAUDE_API_RETRY_SLEEP_SECONDS": "0"}, clear=False),
-                patch("ai_remote_runner.providers.subprocess.run", return_value=invalid_model) as run,
+                patch("ai_remote_runner.providers.run_registered", return_value=invalid_model) as run,
             ):
                 result = invoke_claude("prompt", Path(tmp), "instructions", ledger, reserved_usd=0.0)
             self.assertEqual(result.status, "failed")
@@ -660,12 +698,12 @@ class ProviderTests(unittest.TestCase):
         ok = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "ok", "total_cost_usd": 0.03}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, ok]) as run:
+            with patch("ai_remote_runner.providers.run_registered", side_effect=[empty, ok]) as run:
                 result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.0)
             self.assertEqual(result.status, "completed")
             self.assertEqual(run.call_count, 2)
-            self.assertNotIn("--max-budget-usd", run.call_args_list[0].args[0])
-            self.assertNotIn("--max-budget-usd", run.call_args_list[1].args[0])
+            self.assertNotIn("--max-budget-usd", _registered_command(run.call_args_list[0]))
+            self.assertNotIn("--max-budget-usd", _registered_command(run.call_args_list[1]))
             self.assertEqual(ledger.load()["runs"][result.run_id]["reserved_usd"], 0.0)
             self.assertAlmostEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.03)
 
@@ -678,7 +716,7 @@ class ProviderTests(unittest.TestCase):
         events: list[dict] = []
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=empty) as run:
+            with patch("ai_remote_runner.providers.run_registered", return_value=empty) as run:
                 result = invoke_claude("你好", Path(tmp), "instructions", ledger, reserved_usd=0.1, emit=events.append)
             self.assertEqual(result.status, "completed")
             self.assertEqual(result.output_text, "收到，我在。")
@@ -694,7 +732,7 @@ class ProviderTests(unittest.TestCase):
         empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": ""}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", return_value=empty) as run:
+            with patch("ai_remote_runner.providers.run_registered", return_value=empty) as run:
                 result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1)
             self.assertEqual(result.status, "empty_output")
             self.assertEqual(run.call_count, 1)
@@ -708,7 +746,7 @@ class ProviderTests(unittest.TestCase):
         ok_without_cost = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "收到，我在。"}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, ok_without_cost]):
+            with patch("ai_remote_runner.providers.run_registered", side_effect=[empty, ok_without_cost]):
                 result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1)
             self.assertEqual(result.status, "completed")
             self.assertEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.1)
@@ -721,7 +759,7 @@ class ProviderTests(unittest.TestCase):
         empty = subprocess.CompletedProcess(["claude"], 0, stdout=json.dumps({"result": "", "total_cost_usd": 0.01}), stderr="")
         with tempfile.TemporaryDirectory() as tmp:
             ledger = BudgetLedger(Path(tmp) / "ledger.json")
-            with patch("ai_remote_runner.providers.subprocess.run", side_effect=[empty, subprocess.TimeoutExpired(["claude"], 1)]):
+            with patch("ai_remote_runner.providers.run_registered", side_effect=[empty, subprocess.TimeoutExpired(["claude"], 1)]):
                 result = invoke_claude("请介绍一下你自己", Path(tmp), "instructions", ledger, reserved_usd=0.1)
             self.assertEqual(result.status, "timeout")
             self.assertEqual(ledger.load()["runs"][result.run_id]["actual_usd"], 0.1)

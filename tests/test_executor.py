@@ -811,6 +811,41 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(bad_url["status"], "error")
             self.assertEqual(bad_url["error"]["code"], "invalid_base_url")
 
+    def test_cc_switch_commands_update_live_configs_and_record_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            env = {
+                "AI_TOOL_HOME": str(root / "root-home"),
+                "CODEX_HOME": str(root / "root-home" / ".codex"),
+                "CC_SWITCH_HOME": str(root / ".cc-switch"),
+            }
+            fake_key = "sk-" + "c" * 24
+            with patch.dict("os.environ", env, clear=False):
+                status = execute(parse_command("/ai CC Switch 状态"), {"request_id": "ccs-status", "raw_text": "/ai CC Switch 状态"}, runtime)
+                key = execute(parse_command(f"/ai CC Switch 密钥 设置 codex {fake_key}"), {"request_id": "ccs-key", "raw_text": "/ai CC Switch 密钥 设置 codex <redacted>"}, runtime)
+                proxy = execute(parse_command("/ai CC Switch 代理 设置 codex https://proxy.example/v1"), {"request_id": "ccs-url", "raw_text": "/ai CC Switch 代理 设置 codex https://proxy.example/v1"}, runtime)
+                model = execute(parse_command("/ai CC Switch GPT模型 设置 vscode gpt"), {"request_id": "ccs-model", "raw_text": "/ai CC Switch GPT模型 设置 vscode gpt"}, runtime)
+                bad = execute(parse_command("/ai CC Switch 密钥 设置 codex sk-ant-" + "x" * 24), {"request_id": "ccs-bad", "raw_text": "/ai CC Switch 密钥 设置 codex sk-ant-redacted"}, runtime)
+
+            self.assertEqual(status["status"], "accepted")
+            self.assertFalse(status["data"]["db_write_supported"])
+            self.assertEqual(key["status"], "accepted")
+            self.assertNotIn(fake_key, json.dumps(key, ensure_ascii=False))
+            self.assertEqual(proxy["data"]["base_url"], "https://proxy.example/v1")
+            self.assertEqual(model["data"]["model"], "gpt-5.5")
+            self.assertEqual(model["data"]["config_key"], "VSCODE_CLAUDE_MODEL")
+            self.assertEqual(bad["status"], "error")
+            self.assertEqual(bad["error"]["code"], "wrong_api_key_family")
+            auth = json.loads((root / "root-home" / ".codex" / "auth.json").read_text(encoding="utf-8"))
+            self.assertEqual(auth["OPENAI_API_KEY"], fake_key)
+            config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
+            self.assertIn("CODEX_BASE_URL=https://proxy.example/v1", config_env)
+            self.assertIn("VSCODE_CLAUDE_MODEL=gpt-5.5", config_env)
+            sync = json.loads((runtime.state / "cc-switch-sync.json").read_text(encoding="utf-8"))
+            self.assertTrue(sync["providers"]["codex"]["live_config_written"])
+            self.assertFalse(sync["providers"]["codex"]["cc_switch_db_written"])
+
     def test_auto_continue_command_persists_chat_scoped_schedule(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")

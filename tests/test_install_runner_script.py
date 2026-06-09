@@ -25,6 +25,7 @@ def clean_env() -> dict[str, str]:
             env.pop(key, None)
     env.pop("OPENAI_API_KEY", None)
     env.pop("AI_BRIDGE_SHARED_SECRET", None)
+    env.pop("AI_INSTALL_CC_SWITCH", None)
     return env
 
 
@@ -169,9 +170,9 @@ PY
                     "AI_VSCODE_ROOT_WRAPPER": str(vscode_wrapper),
                     "AI_VSCODE_ROOT_DIR": str(vscode_root),
                     "AI_DEFAULT_PROVIDER": "codex",
-                    "OPENAI_API_KEY": "test-openai-key",
+                    "CODEX_API_KEY": "test-openai-key",
                     "CODEX_MODEL": "codex",
-                    "CODEX_BASE_URL": "https://example.invalid/v1",
+                    "CODEX_OPENAI_BASE_URL": "https://example.invalid/v1",
                     "FAKE_SYSTEMD_DIR": str(root),
                     "SYSTEMCTL_CALLS": str(systemctl_calls),
                     "RUNNER_PYTHON_CALLS": str(runner_python_calls),
@@ -191,7 +192,9 @@ PY
             self.assertIn("stage 05: skip VSCode because AI_RUNNER_COMPONENTS does not request it", result.stdout)
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn("AI_RUNNER_PROVIDERS=codex\n", config)
+            self.assertIn("OPENAI_API_KEY=test-openai-key\n", config)
             self.assertIn("CODEX_MODEL=gpt-5.3-codex\n", config)
+            self.assertIn("CODEX_BASE_URL=https://example.invalid/v1\n", config)
             self.assertIn("CODEX_EXEC_EPHEMERAL=1\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
@@ -211,6 +214,7 @@ PY
             runner_unit = (root / "ai-remote-runner.service").read_text(encoding="utf-8")
             self.assertEqual(runner_unit.count("ExecStart="), 1)
             self.assertIn("User=root", runner_unit)
+            self.assertIn("Restart=always", runner_unit)
             self.assertIn(str(install / ".venv" / "bin" / "python"), runner_unit)
             self.assertIn("restart ai-remote-runner.service", systemctl_calls.read_text(encoding="utf-8"))
             runner_calls = runner_python_calls.read_text(encoding="utf-8")
@@ -339,6 +343,7 @@ PY
             self.assertIn("ai_remote_runner.cli telegram", telegram_unit.read_text(encoding="utf-8"))
             self.assertIn(str(install / ".venv" / "bin" / "python"), telegram_unit.read_text(encoding="utf-8"))
             self.assertIn("User=root", telegram_unit.read_text(encoding="utf-8"))
+            self.assertIn("Restart=always", telegram_unit.read_text(encoding="utf-8"))
             self.assertIn("Telegram service installed but not started", result.stdout)
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertTrue(manifest["telegram_enabled"])
@@ -441,6 +446,95 @@ PY
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("npm install -g", npm_calls.read_text(encoding="utf-8"))
+
+    def test_missing_claude_installs_stable_npm_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            state = root / "state"
+            workspaces = root / "workspaces"
+            install = root / "install"
+            root_home = root / "root-home"
+            npm_calls = root / "npm-calls.txt"
+            state.mkdir()
+            (state / "config.env").write_text("AI_BRIDGE_SHARED_SECRET=" + "A" * 43 + "\n", encoding="utf-8")
+
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  exec env "$@"
+                fi
+                if [ "${1:-}" = "npm" ] && [ "${2:-}" = "install" ] && [ "${3:-}" = "-g" ]; then
+                  printf '%s\n' "$*" >> "${NPM_CALLS:?}"
+                  cat > "$(dirname "$0")/claude" <<'CLAUDE'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then printf 'claude-code 2.1.153\n'; exit 0; fi
+if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then printf '{"loggedIn":true}\n'; exit 0; fi
+exit 0
+CLAUDE
+                  chmod +x "$(dirname "$0")/claude"
+                  exit 0
+                fi
+                if [ "${1:-}" = "python3" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "venv" ]; then
+                  mkdir -p "$4/bin"
+                  cat > "$4/bin/python" <<'PY'
+#!/usr/bin/env bash
+exit 0
+PY
+                  chmod +x "$4/bin/python"
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pip" ]; then
+                  exit 0
+                fi
+                if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
+                  exit 0
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "bash", "#!/bin/sh\nexec /bin/bash \"$@\"\n")
+            write_executable(fakebin / "sh", "#!/bin/sh\nexec /bin/sh \"$@\"\n")
+            write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+            write_executable(fakebin / "node", "#!/usr/bin/env bash\nprintf 'v24.2.0\\n'\n")
+            write_executable(fakebin / "npm", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+
+            env = clean_env()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REMOTE_STATE": str(state),
+                    "AI_WORKSPACE_ROOT": str(workspaces),
+                    "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_COMPONENTS": "claude-code",
+                    "AI_SERVICE_PATH": str(fakebin),
+                    "AI_TOOL_HOME": str(root_home),
+                    "AI_DEFAULT_PROVIDER": "claude-code",
+                    "FAKE_SYSTEMD_DIR": str(root),
+                    "NPM_CALLS": str(npm_calls),
+                    "ANTHROPIC_AUTH_TOKEN": "fixture-token",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-runner.sh")],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = npm_calls.read_text(encoding="utf-8")
+            self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.153", calls)
+            self.assertIn("claude missing; installing @anthropic-ai/claude-code@2.1.153 through npm", result.stdout)
 
     def test_old_node_uses_nodesource_before_codex_install(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -646,6 +740,35 @@ SETUP
         self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
         self.assertIn("AI_RUNNER_PROVIDERS=codex,claude-code,vscode", result.stdout)
         self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
+
+    def test_cc_switch_optional_install_can_be_requested_without_runner(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "cc-switch"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stage 02c: install optional CC Switch desktop profile manager", result.stdout)
+        self.assertIn("would download latest CC Switch Linux .deb", result.stdout)
+        self.assertIn("runner bridge/provider service install skipped", result.stdout)
+
+    def test_cc_switch_optional_install_can_be_enabled_by_env(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "codex,telegram", "AI_INSTALL_CC_SWITCH": "true"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stage 02c: install optional CC Switch desktop profile manager", result.stdout)
+        self.assertIn("stage 04: install or verify requested Codex CLI provider", result.stdout)
 
     def test_mixed_primary_tools_are_allowed_as_multi_provider_runner(self) -> None:
         env = clean_env()

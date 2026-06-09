@@ -510,6 +510,7 @@ class TelegramBotTests(unittest.TestCase):
 
             bot.handle_update({"message": {"chat": {"id": 123}, "text": "/shell printf shell-ok", "message_id": 33}})
             self.assertTrue(wait_for_text(client, "shell-ok"))
+            self.assertTrue(bot.drain_background_tasks(timeout_seconds=1.0))
 
             visible_text = "\n".join([text for _, text in client.sent] + [text for _, _, text in client.edits])
             self.assertIn("provider: runner", visible_text)

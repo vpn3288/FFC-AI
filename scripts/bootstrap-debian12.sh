@@ -7,11 +7,13 @@ DEFAULT_COMPONENTS="${AI_RUNNER_COMPONENTS:-all,telegram}"
 NONINTERACTIVE="${FFC_AI_NONINTERACTIVE:-false}"
 SKIP_TELEGRAM_PAIR="${FFC_AI_SKIP_TELEGRAM_PAIR:-false}"
 ALLOW_MISSING_API_KEYS="${FFC_AI_ALLOW_MISSING_API_KEYS:-false}"
+AI_INSTALL_CC_SWITCH="${AI_INSTALL_CC_SWITCH:-}"
 DRY_RUN=false
 
 usage() {
   printf 'usage: %s [--dry-run] [--repo-url URL] [--repo-dir PATH]\n' "$0"
   printf '       Default installs all primary tools plus Telegram: AI_RUNNER_COMPONENTS=all,telegram\n'
+  printf '       Optional: AI_INSTALL_CC_SWITCH=true installs the Debian CC Switch desktop package.\n'
   printf '       Set FFC_AI_ALLOW_MISSING_API_KEYS=true only for already-authenticated advanced installs.\n'
 }
 
@@ -107,6 +109,7 @@ normalize_components_choice() {
     3|claude|claude-code|claude-code,telegram) printf 'claude-code,telegram' ;;
     4|vscode|code|vscode,telegram|code,telegram) printf 'vscode,telegram' ;;
     5|vscode-only|code-only) printf 'vscode' ;;
+    6|cc-switch|ccswitch) printf 'cc-switch' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -118,7 +121,7 @@ validate_components() {
   for component in "${parts[@]}"; do
     component="$(printf '%s' "$component" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
     case "$component" in
-      all|full|core|codex|claude|claude-code|vscode|code|runner|telegram) ;;
+      all|full|core|codex|claude|claude-code|vscode|code|runner|telegram|cc-switch|ccswitch) ;;
       *) log "unsupported AI_RUNNER_COMPONENTS entry: $component"; exit 2 ;;
     esac
   done
@@ -164,6 +167,7 @@ choose_components() {
     printf '  3) claude-code,telegram 只安装 Claude Code + Telegram\n'
     printf '  4) vscode,telegram   安装 VSCode/root wrapper + Telegram\n'
     printf '  5) vscode            只安装 VSCode/root wrapper\n'
+    printf '  6) cc-switch         只安装 CC Switch 图形配置管理器\n'
     prompt_default AI_RUNNER_COMPONENTS '输入序号或组件名' "$DEFAULT_COMPONENTS"
     AI_RUNNER_COMPONENTS="$(normalize_components_choice "$AI_RUNNER_COMPONENTS")"
   else
@@ -172,6 +176,40 @@ choose_components() {
   validate_components "$AI_RUNNER_COMPONENTS"
   export AI_RUNNER_COMPONENTS
   log "selected AI_RUNNER_COMPONENTS=$AI_RUNNER_COMPONENTS"
+}
+
+choose_cc_switch() {
+  if components_include cc-switch || [[ ",$AI_RUNNER_COMPONENTS," == *",ccswitch,"* ]]; then
+    AI_INSTALL_CC_SWITCH=true
+    export AI_INSTALL_CC_SWITCH
+    return 0
+  fi
+  if [ -n "${AI_INSTALL_CC_SWITCH:-}" ]; then
+    export AI_INSTALL_CC_SWITCH
+    return 0
+  fi
+  if is_interactive; then
+    local answer=""
+    printf '\n'
+    printf 'CC Switch 是可选图形配置管理器，适合管理第三方 Claude/OpenAI 代理和多套 key。\n'
+    printf '纯 VPS/headless 机器可以跳过；Telegram /ai 命令仍可远程修改配置。\n'
+    read -r -p '是否安装 CC Switch? [no]: ' answer || answer=""
+    case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+      y|yes|1|true|on|是|安装) AI_INSTALL_CC_SWITCH=true ;;
+      *) AI_INSTALL_CC_SWITCH=false ;;
+    esac
+  else
+    AI_INSTALL_CC_SWITCH=false
+  fi
+  export AI_INSTALL_CC_SWITCH
+}
+
+explain_cc_switch_api_flow() {
+  if is_truthy "${AI_INSTALL_CC_SWITCH:-false}"; then
+    printf '\n'
+    printf 'CC Switch 已选择安装。下面仍会继续引导输入 Codex/OpenAI 与 Claude/Anthropic 的 API 地址和 key。\n'
+    printf '脚本会按工具各自规则写入实际运行配置；CC Switch 用来管理多套档案，Telegram /ai 命令仍可远程更换 key、代理和模型。\n'
+  fi
 }
 
 collect_api_config() {
@@ -268,6 +306,8 @@ fi
 install_host_dependencies
 sync_repo
 choose_components
+choose_cc_switch
+explain_cc_switch_api_flow
 collect_api_config
 collect_telegram_config
 run_installer

@@ -89,6 +89,27 @@ def _version(command: str) -> dict[str, Any]:
     return {"available": result.returncode == 0, "path": path, "version": result.stdout.strip() or result.stderr.strip()}
 
 
+def _vscode_version() -> dict[str, Any]:
+    candidates = [
+        os.environ.get("AI_VSCODE_ROOT_WRAPPER", "").strip() or "/usr/local/bin/code-root",
+        "code-root",
+        "code",
+    ]
+    failures: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for command in candidates:
+        if not command or command in seen:
+            continue
+        seen.add(command)
+        result = _version(command)
+        result["probe_command"] = command
+        if result.get("available"):
+            return result
+        failures.append(result)
+    fallback = failures[-1] if failures else {"available": False, "path": None, "version": None}
+    return fallback | {"probe_failures": failures}
+
+
 def _returns_ok(command: list[str]) -> bool:
     if not shutil.which(command[0]):
         return False
@@ -153,7 +174,7 @@ def discover_claude() -> dict[str, Any]:
 
 
 def discover_vscode() -> dict[str, Any]:
-    base = _version("code")
+    base = _vscode_version()
     code_available = bool(base.get("available"))
     backend = discover_claude()
     base["provider"] = "vscode"

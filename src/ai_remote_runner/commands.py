@@ -465,6 +465,72 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 配置 查看 <工具名>",
         "/ai 配置 查看 vscode"
     ),
+    ("CC", "Switch", "状态"): CommandSpec(
+        "cc_switch.status",
+        "查看CC Switch安装和同步状态。",
+        "/ai CC Switch 状态",
+        "/ai CC Switch 状态"
+    ),
+    ("CCSwitch", "状态"): CommandSpec(
+        "cc_switch.status",
+        "查看CC Switch安装和同步状态。",
+        "/ai CCSwitch 状态",
+        "/ai CCSwitch 状态"
+    ),
+    ("ccswitch", "状态"): CommandSpec(
+        "cc_switch.status",
+        "查看CC Switch安装和同步状态。",
+        "/ai ccswitch 状态",
+        "/ai ccswitch 状态"
+    ),
+    ("CC", "Switch", "密钥", "设置"): CommandSpec(
+        "cc_switch.set_api_key",
+        "按CC Switch兼容方式更新指定工具的API key。",
+        "/ai CC Switch 密钥 设置 <工具名> <API_KEY>",
+        "/ai CC Switch 密钥 设置 codex sk-xxxxxxxxxxxxxxxx"
+    ),
+    ("CC", "Switch", "APIKEY", "设置"): CommandSpec(
+        "cc_switch.set_api_key",
+        "按CC Switch兼容方式更新指定工具的API key。",
+        "/ai CC Switch APIKEY 设置 <工具名> <API_KEY>",
+        "/ai CC Switch APIKEY 设置 claude-code sk-ant-xxxxxxxxxxxxxxxx"
+    ),
+    ("CCSwitch", "密钥", "设置"): CommandSpec(
+        "cc_switch.set_api_key",
+        "按CC Switch兼容方式更新指定工具的API key。",
+        "/ai CCSwitch 密钥 设置 <工具名> <API_KEY>",
+        "/ai CCSwitch 密钥 设置 vscode sk-ant-xxxxxxxxxxxxxxxx"
+    ),
+    ("CC", "Switch", "代理", "设置"): CommandSpec(
+        "cc_switch.set_base_url",
+        "按CC Switch兼容方式更新指定工具的API地址。",
+        "/ai CC Switch 代理 设置 <工具名> <API地址>",
+        "/ai CC Switch 代理 设置 codex https://api.example.com/v1"
+    ),
+    ("CCSwitch", "代理", "设置"): CommandSpec(
+        "cc_switch.set_base_url",
+        "按CC Switch兼容方式更新指定工具的API地址。",
+        "/ai CCSwitch 代理 设置 <工具名> <API地址>",
+        "/ai CCSwitch 代理 设置 claude-code https://api.example.com"
+    ),
+    ("CC", "Switch", "模型", "设置"): CommandSpec(
+        "cc_switch.set_model",
+        "按CC Switch兼容方式更新指定工具的大语言模型。",
+        "/ai CC Switch 模型 设置 <工具名> <模型名>",
+        "/ai CC Switch 模型 设置 codex gpt-5.5"
+    ),
+    ("CC", "Switch", "GPT模型", "设置"): CommandSpec(
+        "cc_switch.set_gpt_model",
+        "按CC Switch兼容方式更新GPT/开源模型。",
+        "/ai CC Switch GPT模型 设置 <工具名> <模型名>",
+        "/ai CC Switch GPT模型 设置 vscode gpt-5.5"
+    ),
+    ("CC", "Switch", "Claude模型", "设置"): CommandSpec(
+        "cc_switch.set_claude_model",
+        "按CC Switch兼容方式更新Claude/闭源模型。",
+        "/ai CC Switch Claude模型 设置 <工具名> <模型名>",
+        "/ai CC Switch Claude模型 设置 claude-code claude-opus-4-8"
+    ),
     ("停止",): CommandSpec(
         "cancel",
         "记录取消标记；不会终止无关系统进程。",
@@ -678,6 +744,19 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
 }
 
 
+def _normalize_ascii_alias_token(token: str) -> str:
+    lowered = token.lower()
+    aliases = {
+        "cc": "CC",
+        "switch": "Switch",
+        "ccswitch": "CCSwitch",
+        "apikey": "APIKEY",
+        "gpt模型": "GPT模型",
+        "claude模型": "Claude模型",
+    }
+    return aliases.get(lowered, token)
+
+
 def parse_command(raw_text: str, allow_bare: bool = False) -> dict[str, Any]:
     text = raw_text.strip()
     if text.startswith("/ai"):
@@ -704,6 +783,15 @@ def parse_command(raw_text: str, allow_bare: bool = False) -> dict[str, Any]:
         head = parts[:size]
         if head in COMMANDS:
             spec = COMMANDS[head]
+            return {
+                "status": "accepted",
+                "canonical_action": spec.canonical_action,
+                "args": {"tail": list(parts[size:])},
+                "requires_confirmation": spec.requires_confirmation,
+            }
+        normalized_head = tuple(_normalize_ascii_alias_token(part) for part in head)
+        if normalized_head in COMMANDS:
+            spec = COMMANDS[normalized_head]
             return {
                 "status": "accepted",
                 "canonical_action": spec.canonical_action,

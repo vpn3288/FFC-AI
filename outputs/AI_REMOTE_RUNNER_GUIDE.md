@@ -85,8 +85,8 @@ Claude Code installation requirement:
 - installer MUST verify `claude auth status --json` command exists;
 - installer MUST verify `claude -p --output-format json` works after authentication/API configuration;
 - installer MUST use official Claude Code installation source pinned or referenced in release lock file.
-- Debian/Ubuntu installer MUST prefer official Claude Code signed apt/native installer from Claude Code installation docs.
-- npm fallback MAY be used only when official installer is unavailable.
+- Debian/Ubuntu installer MUST prefer the official `@anthropic-ai/claude-code` npm package and version pinned in `versions.lock`.
+- The pinned Claude package SHOULD track the npm `stable` dist-tag unless the lock file is intentionally updated after validation.
 - Codex CLI MAY be installed globally with `sudo npm install -g` when this is the resolved install source.
 
 Codex installation requirement:
