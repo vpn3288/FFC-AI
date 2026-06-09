@@ -55,15 +55,28 @@ class GuidanceConsistencyTests(unittest.TestCase):
         self.assertIn('sandbox_mode = "danger-full-access"', guide_text)
         self.assertIn("/ai 完全访问 开启", guide_text)
 
-    def test_guides_require_single_tool_runner_installs(self) -> None:
+    def test_guides_allow_full_tool_installs_with_one_active_provider(self) -> None:
         guide_text = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "outputs").glob("*.md"))
         readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("one AI/tool per VM", guide_text)
-        self.assertIn("Mixed primary tool selections", guide_text)
-        self.assertIn("MUST be rejected by default", guide_text)
-        self.assertIn("stage 01b: remove stale provider configs for unrequested AI tools", guide_text)
-        self.assertIn("`all`、`full`、`core` 这类混装入口已默认拒绝", readme_text)
-        self.assertNotIn("AI_RUNNER_COMPONENTS=all sudo", readme_text)
+        script_text = (ROOT / "scripts" / "run-independent-review.sh").read_text(encoding="utf-8")
+        forbidden = [
+            "reject mixed primary tools by default",
+            "one AI/tool per VM",
+            "每个VM/VPS只装一种主AI工具",
+            "每个虚拟机/VPS只装一种主AI工具",
+            "一台机器只装 `codex`",
+            "是否拒绝混合安装",
+            "是否强制单一AI工具策略",
+        ]
+        combined = "\n".join([guide_text, readme_text, script_text])
+        for phrase in forbidden:
+            self.assertNotIn(phrase, combined)
+        self.assertIn("AI_RUNNER_COMPONENTS=all,telegram", guide_text)
+        self.assertIn("Multiple providers may be configured on one machine", guide_text)
+        self.assertIn("runner still chooses one default provider at a time", guide_text)
+        self.assertIn("AI_RUNNER_COMPONENTS=all,telegram", readme_text)
+        self.assertIn("bootstrap-debian12.sh", readme_text)
+        self.assertIn("/ai 提供商 使用 codex", readme_text)
 
 
 if __name__ == "__main__":

@@ -67,10 +67,11 @@ Style: AI可执行规范，面向独立审查流程
 
 ### 3.1 AI工具部署
 
-✓ **每个VM/VPS只装一种主AI工具**：
-- 检查安装脚本是否强制执行此规则
-- 检查是否拒绝混合安装（如 `codex,claude-code`）
-- 检查配置清理逻辑是否正确
+✓ **全量安装和轻量安装都必须正确**：
+- 检查 `all,telegram` 是否会安装 Claude Code、Codex、VSCode、runner 和 Telegram
+- 检查 `codex,telegram`、`claude-code,telegram`、`vscode,telegram` 是否仍可作为轻量安装
+- 检查多 provider 同机时 runner 是否一次只选择一个默认 provider，并可通过 `/ai 提供商 使用 <provider>` 切换
+- 检查配置清理逻辑不会删除已请求 provider 的配置
 
 ✓ **最高权限**：
 - 检查AI工具是否配置为root/full-access
@@ -300,8 +301,8 @@ Style: AI可执行规范，面向独立审查流程
 
 ```text
 □ 是否正确检测OS和环境
-□ 是否强制单一AI工具策略
-□ 是否拒绝混合安装
+□ 是否支持 all/full/core 全量安装
+□ 是否支持多 provider 同机但单 active provider 运行
 □ 是否清理未请求的provider配置
 □ 是否正确安装Node.js（Codex需要）
 □ 是否正确安装Claude Code

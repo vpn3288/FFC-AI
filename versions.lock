@@ -10,4 +10,6 @@ claude_code_default_model=claude-opus-4-6-20260130
 claude_code_model_fallbacks=claude-opus-4-6-thinking,claude-opus-4-6,claude-opus-4-7-thinking,claude-opus-4-7,claude-opus-4-8-thinking,claude-opus-4-8
 codex_install_source=npm
 codex_npm_package=@openai/codex
-codex_npm_version=0.137.0
+codex_npm_version=0.138.0
+codex_node_min_major=22
+codex_node_install_major=24

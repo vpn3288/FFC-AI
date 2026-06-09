@@ -281,6 +281,111 @@ class TelegramBot:
                 # Telegram task is finishing; do not let that crash the background runner.
                 return
 
+    def load_auto_continue(self) -> dict[str, Any]:
+        path = self.state / "telegram-auto-continue.json"
+        if not path.exists():
+            return {"chats": {}}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {"chats": {}}
+        if not isinstance(data, dict):
+            return {"chats": {}}
+        if not isinstance(data.get("chats"), dict):
+            data["chats"] = {}
+        return data
+
+    def save_auto_continue(self, data: dict[str, Any]) -> None:
+        data.setdefault("chats", {})
+        atomic_write_json(self.state / "telegram-auto-continue.json", data)
+
+    def chat_has_running_task(self, chat_id: str) -> bool:
+        now = time.time()
+        with self._tasks_lock:
+            if any(task.chat_id == chat_id and not task.done for task in self._tasks.values()):
+                return True
+        if not self.tasks_path.exists():
+            return False
+        try:
+            data = json.loads(self.tasks_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        for item in data.values():
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("chat_id") or "") != chat_id:
+                continue
+            if item.get("done"):
+                continue
+            try:
+                started_at = float(item.get("started_at") or 0)
+            except (TypeError, ValueError):
+                started_at = 0.0
+            if started_at <= 0 or now - started_at <= self.config.task_ttl_seconds:
+                return True
+        return False
+
+    def run_due_auto_continue(self, now: float | None = None) -> list[TelegramTask]:
+        current_time = int(now if now is not None else time.time())
+        data = self.load_auto_continue()
+        chats = data.setdefault("chats", {})
+        started: list[TelegramTask] = []
+        changed = False
+        for chat_id, raw_schedule in list(chats.items()):
+            if not isinstance(raw_schedule, dict):
+                chats.pop(chat_id, None)
+                changed = True
+                continue
+            schedule = raw_schedule
+            if not schedule.get("enabled"):
+                continue
+            try:
+                interval_seconds = int(schedule.get("interval_seconds") or 0)
+                next_due_at = int(schedule.get("next_due_at") or 0)
+            except (TypeError, ValueError):
+                schedule["enabled"] = False
+                schedule["last_error"] = "invalid_auto_continue_schedule"
+                changed = True
+                continue
+            if interval_seconds <= 0:
+                schedule["enabled"] = False
+                schedule["last_error"] = "invalid_auto_continue_interval"
+                changed = True
+                continue
+            if current_time < next_due_at:
+                continue
+            if not self.chat_allowed(str(chat_id)):
+                schedule["last_skipped_at"] = current_time
+                schedule["last_skip_reason"] = "chat_not_allowed"
+                schedule["next_due_at"] = current_time + interval_seconds
+                changed = True
+                continue
+            if self.chat_has_running_task(str(chat_id)):
+                schedule["last_skipped_at"] = current_time
+                schedule["last_skip_reason"] = "chat_has_running_task"
+                schedule["next_due_at"] = current_time + interval_seconds
+                changed = True
+                continue
+            prompt = str(schedule.get("prompt") or "继续").strip() or "继续"
+            message = {
+                "message_id": f"auto-continue-{current_time}",
+                "chat": {"id": str(chat_id)},
+                "from": {"id": "auto-continue", "username": "auto-continue"},
+                "text": prompt,
+                "auto_continue": True,
+            }
+            task = self.run_task_background(str(chat_id), message, prompt)
+            started.append(task)
+            schedule["last_triggered_at"] = current_time
+            schedule["last_task_id"] = task.task_id
+            schedule["next_due_at"] = current_time + interval_seconds
+            changed = True
+        if changed:
+            self.save_auto_continue(data)
+        return started
+
     def chat_allowed(self, chat_id: str) -> bool:
         return chat_id in self.config.allowed_chat_ids
 
@@ -846,9 +951,9 @@ class TelegramBot:
             task.done = True
             final_status = "已完成，正在发送最终回复。" if response.get("status") in {"accepted", "completed", "needs_confirmation"} else "执行失败，正在发送错误信息。"
             self.update_status_message(task, final_status, force=True)
+            self.save_task_status(task)
             self.safe_send_message_draft(chat_id, task.draft_id, "")
             self.safe_send_response(chat_id, response)
-            self.save_task_status(task)
 
         with self._tasks_lock:
             self._tasks[task.task_id] = task
@@ -948,6 +1053,7 @@ class TelegramBot:
                     self.handle_update(update)
                     offset = max(offset or 0, update_id + 1)
                     self.save_offset(offset)
+                self.run_due_auto_continue()
             except (error.URLError, TimeoutError, RuntimeError, HTTPException, OSError, json.JSONDecodeError) as exc:
                 self.record_transport_failure("getUpdates", exc)
                 time.sleep(5)

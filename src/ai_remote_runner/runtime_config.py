@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 from urllib import error, request
+from urllib.parse import urlparse
 
 from .model_aliases import model_family_from_name, normalize_model_name
 from .storage import atomic_write_text
@@ -77,6 +78,27 @@ def redact_secret(value: str) -> str:
     if len(value) <= 10:
         return "<redacted>"
     return f"{value[:4]}...{value[-4:]}"
+
+
+def _validated_api_key(target: str, api_key: str) -> str:
+    value = api_key.strip()
+    if not value or any(char.isspace() for char in value):
+        raise ValueError("invalid_api_key")
+    if target == "codex" and value.lower().startswith("sk-ant-"):
+        raise ValueError("wrong_api_key_family")
+    return value
+
+
+def _validated_base_url(base_url: str) -> str:
+    value = base_url.strip()
+    if not value or any(char.isspace() for char in value):
+        raise ValueError("invalid_base_url")
+    if any(char in value for char in ('"', "'", "\\", "\n", "\r", "\t")):
+        raise ValueError("invalid_base_url")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("invalid_base_url")
+    return value.rstrip("/")
 
 
 def load_config_env(state: Path) -> dict[str, str]:
@@ -335,6 +357,7 @@ def apply_claude_model(state: Path, target: str, model: str) -> dict[str, Any]:
 
 
 def apply_api_key(state: Path, target: str, api_key: str) -> dict[str, Any]:
+    api_key = _validated_api_key(target, api_key)
     if target == "codex":
         auth = _read_codex_auth()
         auth["OPENAI_API_KEY"] = api_key
@@ -349,6 +372,7 @@ def apply_api_key(state: Path, target: str, api_key: str) -> dict[str, Any]:
 
 
 def apply_base_url(state: Path, target: str, base_url: str) -> dict[str, Any]:
+    base_url = _validated_base_url(base_url)
     if target == "codex":
         _write_codex_config(_replace_or_append_provider_base_url(_read_codex_config(), base_url))
         apply_config_env(state, {"CODEX_BASE_URL": base_url})

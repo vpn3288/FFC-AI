@@ -219,6 +219,48 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai continue",
         "/ai continue"
     ),
+    ("定时继续",): CommandSpec(
+        "auto_continue.status",
+        "查看当前Telegram chat的定时继续设置。",
+        "/ai 定时继续",
+        "/ai 定时继续"
+    ),
+    ("定时继续", "设置"): CommandSpec(
+        "auto_continue.set",
+        "设置定时发送“继续”；只在当前chat没有运行中任务时触发。",
+        "/ai 定时继续 设置 <秒数>",
+        "/ai 定时继续 设置 300"
+    ),
+    ("定时继续", "开启"): CommandSpec(
+        "auto_continue.set",
+        "设置定时发送“继续”；只在当前chat没有运行中任务时触发。",
+        "/ai 定时继续 开启 <秒数>",
+        "/ai 定时继续 开启 300"
+    ),
+    ("定时继续", "关闭"): CommandSpec(
+        "auto_continue.disable",
+        "关闭当前Telegram chat的定时继续。",
+        "/ai 定时继续 关闭",
+        "/ai 定时继续 关闭"
+    ),
+    ("定时", "继续"): CommandSpec(
+        "auto_continue.status",
+        "查看当前Telegram chat的定时继续设置。",
+        "/ai 定时 继续",
+        "/ai 定时 继续"
+    ),
+    ("定时", "继续", "设置"): CommandSpec(
+        "auto_continue.set",
+        "设置定时发送“继续”；只在当前chat没有运行中任务时触发。",
+        "/ai 定时 继续 设置 <秒数>",
+        "/ai 定时 继续 设置 300"
+    ),
+    ("定时", "继续", "关闭"): CommandSpec(
+        "auto_continue.disable",
+        "关闭当前Telegram chat的定时继续。",
+        "/ai 定时 继续 关闭",
+        "/ai 定时 继续 关闭"
+    ),
     ("每次新对话",): CommandSpec(
         "set_policy_new_each_request",
         "将策略改为每次请求创建新会话。",
@@ -425,7 +467,7 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
     ),
     ("停止",): CommandSpec(
         "cancel",
-        "记录取消标记；当前版本不会强制终止已启动的provider。",
+        "记录取消标记；不会终止无关系统进程。",
         "/ai 停止",
         "/ai 停止"
     ),
@@ -434,6 +476,24 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "记录取消标记。",
         "/ai 取消",
         "/ai 取消"
+    ),
+    ("强行停止",): CommandSpec(
+        "task.force_stop",
+        "终止本runner登记的运行中provider/命令进程树。",
+        "/ai 强行停止",
+        "/ai 强行停止"
+    ),
+    ("强制停止",): CommandSpec(
+        "task.force_stop",
+        "终止本runner登记的运行中provider/命令进程树。",
+        "/ai 强制停止",
+        "/ai 强制停止"
+    ),
+    ("全部停止",): CommandSpec(
+        "task.force_stop",
+        "终止本runner登记的运行中provider/命令进程树。",
+        "/ai 全部停止",
+        "/ai 全部停止"
     ),
     ("全局", "查看"): CommandSpec(
         "global_instructions.show",

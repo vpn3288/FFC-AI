@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,6 +101,17 @@ class ExecutorTests(unittest.TestCase):
             events = (runtime.state / "events.jsonl").read_text(encoding="utf-8")
             self.assertIn("running_command", events)
             self.assertIn("done", events)
+
+    def test_local_exec_registers_process_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            completed = subprocess.CompletedProcess("printf registered", 0, "registered", "")
+            with patch("ai_remote_runner.executor.run_registered", return_value=completed) as run:
+                response = execute(parse_command("/ai shell printf registered"), {"request_id": "local-registered"}, runtime)
+
+            self.assertEqual(response["status"], "accepted")
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs["action"], "local.exec")
 
     def test_local_exec_reports_nonzero_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -777,6 +789,70 @@ class ExecutorTests(unittest.TestCase):
             response = execute(parse_command("/ai 完全访问 开启"), {"request_id": "full1", "raw_text": "/ai 完全访问 开启"}, runtime)
             self.assertEqual(response["status"], "accepted")
             self.assertEqual(runtime.load_policy()["permission_scope"], "full")
+
+    def test_provider_config_rejects_wrong_key_family_and_bad_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            with patch.dict("os.environ", {"CODEX_HOME": str(root / "codex-home")}, clear=False):
+                wrong_key = execute(
+                    parse_command("/ai 密钥 设置 codex sk-ant-" + "x" * 24),
+                    {"request_id": "bad-key", "raw_text": "/ai 密钥 设置 codex sk-ant-redacted"},
+                    runtime,
+                )
+                bad_url = execute(
+                    parse_command("/ai 代理 设置 codex ftp://proxy.example/v1"),
+                    {"request_id": "bad-url", "raw_text": "/ai 代理 设置 codex ftp://proxy.example/v1"},
+                    runtime,
+                )
+
+            self.assertEqual(wrong_key["status"], "error")
+            self.assertEqual(wrong_key["error"]["code"], "wrong_api_key_family")
+            self.assertEqual(bad_url["status"], "error")
+            self.assertEqual(bad_url["error"]["code"], "invalid_base_url")
+
+    def test_auto_continue_command_persists_chat_scoped_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            response = execute(
+                parse_command("/ai 定时继续 设置 5m"),
+                {"request_id": "auto-1", "raw_text": "/ai 定时继续 设置 5m", "chat_id": "123"},
+                runtime,
+            )
+            self.assertEqual(response["status"], "accepted")
+            schedule = response["data"]["schedule"]
+            self.assertEqual(schedule["interval_seconds"], 300)
+            self.assertEqual(schedule["prompt"], "继续")
+            saved = json.loads((runtime.state / "telegram-auto-continue.json").read_text(encoding="utf-8"))
+            self.assertTrue(saved["chats"]["123"]["enabled"])
+
+            status = execute(parse_command("/ai 定时继续"), {"request_id": "auto-2", "raw_text": "/ai 定时继续", "chat_id": "123"}, runtime)
+            self.assertEqual(status["data"]["schedule"]["interval_seconds"], 300)
+
+            disabled = execute(parse_command("/ai 定时继续 关闭"), {"request_id": "auto-3", "raw_text": "/ai 定时继续 关闭", "chat_id": "123"}, runtime)
+            self.assertFalse(disabled["data"]["schedule"]["enabled"])
+
+    def test_auto_continue_requires_telegram_chat_and_valid_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            no_chat = execute(parse_command("/ai 定时继续 设置 300"), {"request_id": "auto-no-chat"}, runtime)
+            too_short = execute(
+                parse_command("/ai 定时继续 设置 10"),
+                {"request_id": "auto-short", "raw_text": "/ai 定时继续 设置 10", "chat_id": "123"},
+                runtime,
+            )
+            self.assertEqual(no_chat["error"]["code"], "telegram_chat_required")
+            self.assertEqual(too_short["error"]["code"], "interval_out_of_range")
+
+    def test_force_stop_delegates_to_registered_process_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            fake_result = {"matched": 0, "terminated": 0, "killed_after_grace": 0, "missing": 0, "records": [], "remaining": []}
+            with patch("ai_remote_runner.executor.terminate_active_processes", return_value=fake_result) as terminate:
+                response = execute(parse_command("/ai 强行停止"), {"request_id": "stop-1", "raw_text": "/ai 强行停止"}, runtime)
+            self.assertEqual(response["status"], "accepted")
+            terminate.assert_called_once_with(runtime.state, target_run_id=None, grace_seconds=1.0)
+            self.assertTrue((runtime.state / "stop-request.json").exists())
 
 
 if __name__ == "__main__":

@@ -57,6 +57,12 @@ class CommandTests(unittest.TestCase):
             "/ai 子 agent 状态 开启": "codex.subagent_status.enable",
             "/ai jsonl 关闭": "codex.subagent_status.disable",
             "/ai JSONL 开启": "codex.subagent_status.enable",
+            "/ai 定时继续": "auto_continue.status",
+            "/ai 定时继续 设置 300": "auto_continue.set",
+            "/ai 定时继续 关闭": "auto_continue.disable",
+            "/ai 强行停止": "task.force_stop",
+            "/ai 强制停止": "task.force_stop",
+            "/ai 全部停止": "task.force_stop",
         }
         for raw, action in cases.items():
             with self.subTest(raw=raw):

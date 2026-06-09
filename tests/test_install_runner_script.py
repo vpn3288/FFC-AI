@@ -113,7 +113,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then
-                  printf 'codex-cli 0.137.0\\n'
+                  printf 'codex-cli 0.138.0\\n'
                   exit 0
                 fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
@@ -195,6 +195,7 @@ PY
             self.assertIn("CODEX_EXEC_EPHEMERAL=1\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
+            self.assertIn("AI_PROCESS_CONTROL_ENABLED=1\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
             self.assertIn(f"CODEX_HOME={root_home / '.codex'}\n", config)
             self.assertIn("TERM=xterm-256color\n", config)
@@ -232,6 +233,7 @@ PY
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertFalse(manifest["vscode_ready"])
             self.assertEqual(manifest["configured_providers"], "codex")
+            self.assertEqual(manifest["process_control_enabled"], "1")
             self.assertTrue(manifest["codex_exec_json_available"])
             self.assertTrue(manifest["codex_exec_ephemeral_available"])
             self.assertTrue(manifest["codex_exec_add_dir_available"])
@@ -291,7 +293,7 @@ PY
                 fakebin / "codex",
                 """
                 #!/usr/bin/env bash
-                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\\n'; exit 0; fi
+                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
                 exit 0
                 """,
@@ -368,7 +370,7 @@ PY
                   printf '%s\n' "$*" >> "${NPM_CALLS:?}"
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
-if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\n'; exit 0; fi
+if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
@@ -400,7 +402,7 @@ PY
             write_executable(fakebin / "sh", "#!/bin/sh\nexec /bin/sh \"$@\"\n")
             write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
             write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
-            write_executable(fakebin / "node", "#!/usr/bin/env bash\nprintf 'v20.11.1\\n'\n")
+            write_executable(fakebin / "node", "#!/usr/bin/env bash\nprintf 'v24.2.0\\n'\n")
             write_executable(fakebin / "npm", "#!/usr/bin/env bash\nexit 0\n")
             write_executable(
                 fakebin / "claude",
@@ -466,7 +468,7 @@ PY
                   printf '%s\n' "$*" >> "${NPM_CALLS:?}"
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
-if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.137.0\n'; exit 0; fi
+if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
@@ -498,7 +500,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ -f "${NEW_NODE_MARKER:?}" ]; then
-                  printf 'v20.11.1\n'
+                  printf 'v24.2.0\n'
                 else
                   printf 'v12.22.9\n'
                 fi
@@ -567,7 +569,8 @@ SETUP
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(nodesource_marker.exists())
-            self.assertIn("Node.js 20+ is required", result.stdout)
+            self.assertIn("Node.js 22+ even-major stable/LTS is required", result.stdout)
+            self.assertIn("installing Node.js 24.x LTS from NodeSource", result.stdout)
             self.assertIn("npm install -g", npm_calls.read_text(encoding="utf-8"))
 
     def test_components_are_required_by_default(self) -> None:
@@ -582,6 +585,38 @@ SETUP
         self.assertEqual(result.returncode, 2)
         self.assertIn("AI_RUNNER_COMPONENTS is required", result.stdout + result.stderr)
 
+    def test_installer_static_contract_enables_process_control_by_default(self) -> None:
+        text = (ROOT / "scripts" / "install-runner.sh").read_text(encoding="utf-8")
+        self.assertIn('AI_PROCESS_CONTROL_ENABLED="${AI_PROCESS_CONTROL_ENABLED:-1}"', text)
+        self.assertIn("AI_PROCESS_CONTROL_ENABLED=$EFFECTIVE_AI_PROCESS_CONTROL_ENABLED", text)
+        self.assertIn('"process_control_enabled": "$EFFECTIVE_AI_PROCESS_CONTROL_ENABLED"', text)
+
+    def test_installer_rejects_codex_anthropic_key_family(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "codex,telegram", "OPENAI_API_KEY": "sk-ant-" + "x" * 24})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Codex/OpenAI config cannot use an Anthropic sk-ant-* key", result.stdout + result.stderr)
+
+    def test_installer_rejects_invalid_provider_base_url(self) -> None:
+        env = clean_env()
+        env.update({"AI_RUNNER_COMPONENTS": "codex,telegram", "CODEX_BASE_URL": "ftp://proxy.example/v1"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("CODEX_BASE_URL must be an http(s) URL", result.stdout + result.stderr)
+
     def test_default_provider_must_match_requested_provider(self) -> None:
         env = clean_env()
         env.update({"AI_RUNNER_COMPONENTS": "claude-code", "AI_DEFAULT_PROVIDER": "codex"})
@@ -595,9 +630,9 @@ SETUP
         self.assertEqual(result.returncode, 2)
         self.assertIn("AI_DEFAULT_PROVIDER=codex must be included in AI_RUNNER_PROVIDERS=claude-code", result.stdout + result.stderr)
 
-    def test_all_full_core_aliases_are_rejected(self) -> None:
+    def test_all_full_core_aliases_install_all_primary_tools(self) -> None:
         env = clean_env()
-        env.update({"AI_RUNNER_COMPONENTS": "all", "AI_RUNNER_PROVIDERS": "codex"})
+        env.update({"AI_RUNNER_COMPONENTS": "all,telegram"})
         result = subprocess.run(
             ["bash", str(ROOT / "scripts" / "install-runner.sh"), "--dry-run"],
             text=True,
@@ -605,10 +640,14 @@ SETUP
             env=env,
             check=False,
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("AI_RUNNER_COMPONENTS=all/full/core is disabled", result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stage 03: install or verify requested Claude Code provider/backend", result.stdout)
+        self.assertIn("stage 04: install or verify requested Codex CLI provider", result.stdout)
+        self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
+        self.assertIn("AI_RUNNER_PROVIDERS=codex,claude-code,vscode", result.stdout)
+        self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
 
-    def test_mixed_primary_tools_are_rejected(self) -> None:
+    def test_mixed_primary_tools_are_allowed_as_multi_provider_runner(self) -> None:
         env = clean_env()
         env.update({"AI_RUNNER_COMPONENTS": "codex,vscode,telegram"})
         result = subprocess.run(
@@ -618,8 +657,11 @@ SETUP
             env=env,
             check=False,
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("must select exactly one primary tool per VM", result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stage 03: install or verify requested Claude Code provider/backend", result.stdout)
+        self.assertIn("stage 04: install or verify requested Codex CLI provider", result.stdout)
+        self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
+        self.assertIn("AI_RUNNER_PROVIDERS=codex,vscode", result.stdout)
 
     def test_explicit_codex_telegram_components_skip_claude_and_vscode(self) -> None:
         env = clean_env()
@@ -892,6 +934,38 @@ PY
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("[dry-run] root env", result.stdout)
             self.assertNotIn("should not run", result.stdout + result.stderr)
+
+    def test_bootstrap_debian12_defaults_to_full_install_with_telegram(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+
+            env = clean_env()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env.get('PATH', '')}",
+                    "FFC_AI_REPO_DIR": str(ROOT),
+                    "FFC_AI_NONINTERACTIVE": "true",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "bootstrap-debian12.sh"), "--dry-run"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("selected AI_RUNNER_COMPONENTS=all,telegram", result.stdout)
+            self.assertIn("stage 03: install or verify requested Claude Code provider/backend", result.stdout)
+            self.assertIn("stage 04: install or verify requested Codex CLI provider", result.stdout)
+            self.assertIn("stage 05: install or verify VSCode for root/full-access operation", result.stdout)
+            self.assertIn("would install /etc/systemd/system/ai-telegram-bot.service", result.stdout)
+            self.assertIn("Telegram token was not supplied", result.stdout)
 
 
 if __name__ == "__main__":

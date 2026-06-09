@@ -8,56 +8,43 @@
 
 **只需要3步：**
 
-### 第1步：在服务器上安装（2分钟）
-
-复制整段到服务器终端，直接运行：
-
-```bash
-set -e
-cd /root
-apt-get update && apt-get install -y sudo git curl ca-certificates
-
-# 克隆或更新代码
-if [ -d /root/FFC-AI/.git ]; then
-  cd /root/FFC-AI && git pull --ff-only
-else
-  git clone https://github.com/vpn3288/FFC-AI.git /root/FFC-AI && cd /root/FFC-AI
-fi
-
-# 安装 Codex + Telegram（最简单的组合）
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
-```
-
-安装过程会自动：
-- 安装Node.js 20+
-- 安装Codex CLI
-- 配置systemd服务
-- 准备AI运行环境
-
-### 第2步：获取Telegram Bot Token（1分钟）
+### 第1步：获取Telegram Bot Token（1分钟）
 
 1. 在Telegram搜索 `@BotFather`
 2. 发送 `/newbot` 创建机器人
 3. 复制BotFather给你的token（类似：`1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`）
 4. 给你的新bot发一条消息（例如 `/start`）
 
-### 第3步：配对Telegram（1分钟）
+### 第2步：在Debian 12服务器上安装（2分钟）
+
+复制这一行到 root 或有 sudo 权限的服务器终端，直接运行。脚本会默认安装 Claude Code、Codex、VSCode、runner 和 Telegram，并引导你选择组件、输入 API 配置和 Telegram token。
+
+```bash
+sudo bash -c 'set -e; apt-get update; apt-get install -y curl ca-certificates; f=$(mktemp); curl -fsSL https://raw.githubusercontent.com/vpn3288/FFC-AI/main/scripts/bootstrap-debian12.sh -o "$f"; bash "$f"'
+```
+
+安装过程会自动：
+- 安装 Debian 12 依赖、Node.js 24.x LTS（已有 Node 22/24 等合格偶数稳定版会直接复用）、Claude Code、Codex CLI、VSCode
+- 配置 root/full-access 运行环境和 systemd 服务
+- 写入不同 provider 对应的 API key、base URL、模型配置
+- 配对 Telegram（如果安装时输入了 bot token）
+
+### 第3步：在Telegram测试
+
+在Telegram给bot发：
+
+```
+/ai 状态
+```
+
+如果安装时跳过了 Telegram token，再手动配对：
 
 ```bash
 cd /root/FFC-AI
 sudo bash scripts/pair-telegram.sh --discover-chat-id
 ```
 
-按提示粘贴bot token，脚本会自动发现你的chat ID。
-
-看到chat ID后，执行正式配对：
-
-```bash
-cd /root/FFC-AI
-sudo bash scripts/pair-telegram.sh --telegram-id 你的数字ID
-```
-
-**完成！** 在Telegram给bot发 `/ai 状态` 测试。
+**完成！** 之后就可以直接在Telegram里给服务器上的AI下任务。
 
 ---
 
@@ -80,38 +67,15 @@ sudo bash scripts/pair-telegram.sh --telegram-id 你的数字ID
 /ai 帮助          # 查看所有命令
 /ai 功能          # 查看功能列表
 /ai 子agent状态   # 查看Codex子agent状态显示开关
+/ai 定时继续      # 查看当前聊天的自动继续设置
+/ai 强行停止      # 终止runner已登记的活动任务
 ```
 
 ---
 
 ## 🔧 使用第三方API（可选）
 
-如果你用的是第三方OpenAI兼容API（比如国内代理），安装时一次配置好：
-
-```bash
-set -e
-cd /root
-apt-get update && apt-get install -y sudo git curl ca-certificates
-
-# 交互式输入API配置
-read -r -p "第三方API地址（例如 https://api.example.com/v1）: " CODEX_BASE_URL
-read -r -p "模型名（例如 gpt-4o）: " CODEX_MODEL
-read -r -s -p "API Key（不会显示）: " OPENAI_API_KEY
-echo
-
-export CODEX_BASE_URL CODEX_MODEL OPENAI_API_KEY
-
-# 安装
-if [ -d /root/FFC-AI/.git ]; then
-  cd /root/FFC-AI && git pull --ff-only
-else
-  git clone https://github.com/vpn3288/FFC-AI.git /root/FFC-AI && cd /root/FFC-AI
-fi
-
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
-```
-
-然后继续第3步配对Telegram。
+如果你用的是第三方OpenAI兼容API或Anthropic兼容API，推荐直接用上面的 bootstrap 安装；它会分别询问 Codex/OpenAI 和 Claude/Anthropic 的配置，不会把两种 key 混用。
 
 ### 安装后修改API配置
 
@@ -124,11 +88,36 @@ AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 /ai 配置 查看 codex
 ```
 
+Claude Code 和 VSCode 使用 Anthropic/Claude 配置面：
+
+```
+/ai 代理 设置 claude-code https://你的Claude代理地址
+/ai 密钥 设置 claude-code sk-ant-你的密钥
+/ai Claude模型 设置 claude-code claude-opus-4-8
+/ai 代理 设置 vscode https://你的Claude代理地址
+/ai 密钥 设置 vscode sk-ant-你的密钥
+/ai GPT模型 设置 vscode gpt-5.5
+```
+
 ---
 
 ## 🎯 不同AI工具选择
 
-推荐一台机器只装一种主 AI 工具：`all`、`full`、`core` 这类混装入口已默认拒绝，避免多个 AI 抢同一台机器的资源和配置。
+需要一台 Debian 12 VM/VPS 同时准备三套工具时，可以直接全量安装：
+
+```bash
+AI_RUNNER_COMPONENTS=all,telegram sudo -E bash scripts/install-runner.sh
+```
+
+全量安装会全局准备 Claude Code、Codex、VSCode、runner 和 Telegram 服务。runner 仍然一次只使用一个默认 provider，避免同一个任务同时乱跑多套工具；可以在 Telegram 里切换：
+
+```
+/ai 提供商 使用 codex
+/ai 提供商 使用 claude-code
+/ai 提供商 使用 vscode
+```
+
+如果你希望单机更轻，也可以只安装其中一种工具：
 
 ### Codex（推荐新手）
 ```bash
@@ -256,6 +245,16 @@ AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 /ai 执行 python3 --version
 ```
 
+### 长任务控制
+```
+/ai 继续
+/ai 定时继续 设置 300
+/ai 定时继续 关闭
+/ai 强行停止
+```
+
+`/ai 定时继续 设置 300` 会在当前 Telegram chat 每 300 秒发送一次普通提示 `继续`；如果同一个 chat 里已有任务还在跑，会跳过本轮，避免叠加任务。`/ai 强行停止` 只终止 runner 自己登记启动的 provider 或本机命令进程，不会按进程名乱杀系统里的其它 `codex`、`claude`、`node` 或 `python`。
+
 ### 配置不同模型
 ```
 /ai 模型 列表 codex
@@ -339,7 +338,7 @@ sudo grep MATTERMOST_ADMIN /opt/ffc-ai-mattermost/.env
 ```bash
 cd /root/FFC-AI
 git pull
-AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
+AI_RUNNER_COMPONENTS=all,telegram sudo -E bash scripts/install-runner.sh
 ```
 
 ### 卸载

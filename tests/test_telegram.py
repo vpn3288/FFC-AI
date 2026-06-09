@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from ai_remote_runner.executor import RunnerRuntime
 from ai_remote_runner.providers import ProviderResult
-from ai_remote_runner.telegram import TelegramBot, TelegramClient, TelegramConfig, load_config_env
+from ai_remote_runner.telegram import TelegramBot, TelegramClient, TelegramConfig, TelegramTask, load_config_env
 
 
 class FakeTelegramClient(TelegramClient):
@@ -585,6 +585,80 @@ class TelegramBotTests(unittest.TestCase):
             failure_log = state / "telegram-poll-failures.jsonl"
             self.assertTrue(failure_log.exists())
             self.assertIn("RemoteDisconnected", failure_log.read_text(encoding="utf-8"))
+
+    def test_auto_continue_due_starts_continue_task_when_chat_is_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"}, status_interval_seconds=0.01)
+            client = FakeTelegramClient(config)
+            runtime = RunnerRuntime(state, Path(tmp) / "workspaces")
+            bot = TelegramBot(config, client, runtime, state)
+            bot.save_auto_continue(
+                {
+                    "chats": {
+                        "123": {
+                            "enabled": True,
+                            "interval_seconds": 300,
+                            "prompt": "继续",
+                            "next_due_at": 100,
+                        }
+                    }
+                }
+            )
+            fake = ProviderResult("run", "claude-code", "completed", "auto continue ok", None, 0)
+
+            with (
+                patch.dict("os.environ", {"AI_RUNNER_PROVIDERS": "claude-code"}, clear=False),
+                patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke,
+            ):
+                started = bot.run_due_auto_continue(now=1000)
+                self.assertTrue(wait_for_text(client, "auto continue ok"))
+
+            self.assertEqual(len(started), 1)
+            provider_prompt = invoke.call_args.args[0]
+            self.assertIn("继续", provider_prompt)
+            saved = bot.load_auto_continue()["chats"]["123"]
+            self.assertEqual(saved["next_due_at"], 1300)
+            self.assertEqual(saved["last_task_id"], started[0].task_id)
+            self.assertEqual(saved["last_triggered_at"], 1000)
+
+    def test_auto_continue_skips_when_same_chat_has_running_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"})
+            client = FakeTelegramClient(config)
+            runtime = RunnerRuntime(state, Path(tmp) / "workspaces")
+            bot = TelegramBot(config, client, runtime, state)
+            bot.save_auto_continue(
+                {
+                    "chats": {
+                        "123": {
+                            "enabled": True,
+                            "interval_seconds": 300,
+                            "prompt": "继续",
+                            "next_due_at": 100,
+                        }
+                    }
+                }
+            )
+            with bot._tasks_lock:
+                bot._tasks["busy"] = TelegramTask(
+                    task_id="busy",
+                    chat_id="123",
+                    message_id=1,
+                    started_at=time.time(),
+                    provider="codex",
+                    done=False,
+                )
+
+            with patch("ai_remote_runner.executor.invoke_claude") as invoke:
+                started = bot.run_due_auto_continue(now=1000)
+
+            self.assertEqual(started, [])
+            invoke.assert_not_called()
+            saved = bot.load_auto_continue()["chats"]["123"]
+            self.assertEqual(saved["last_skip_reason"], "chat_has_running_task")
+            self.assertEqual(saved["next_due_at"], 1300)
 
     def test_codex_realtime_events_are_visible_in_status_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

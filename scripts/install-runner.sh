@@ -38,8 +38,9 @@ AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-}"
 AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
 AI_PERMISSION_SCOPE="${AI_PERMISSION_SCOPE:-full}"
 AI_REQUIRE_SHELL_CONFIRMATION="${AI_REQUIRE_SHELL_CONFIRMATION:-0}"
+AI_PROCESS_CONTROL_ENABLED="${AI_PROCESS_CONTROL_ENABLED:-1}"
 AI_PRIMARY_PROVIDERS_CSV="claude-code,vscode,codex"
-AI_PRIMARY_PROVIDER_USAGE="codex,telegram | claude-code,telegram | vscode,telegram | vscode"
+AI_PRIMARY_PROVIDER_USAGE="all,telegram | codex,telegram | claude-code,telegram | vscode,telegram | vscode"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-$REPO_ROOT/src}"
@@ -51,7 +52,7 @@ read_lock() {
 usage() {
   printf 'usage: %s [--dry-run] [--enable-telegram]\n' "$0"
   printf '       AI_RUNNER_COMPONENTS is required: %s\n' "$AI_PRIMARY_PROVIDER_USAGE"
-  printf '       all/full/core are rejected by default; use one AI/tool per VM.\n'
+  printf '       all/full/core install Claude Code, Codex, VSCode, and the runner on one VM.\n'
 }
 
 log() {
@@ -173,6 +174,7 @@ root_env_run() {
     AI_RUNNER_PROVIDERS="$AI_RUNNER_PROVIDERS"
     AI_PERMISSION_SCOPE="$AI_PERMISSION_SCOPE"
     AI_REQUIRE_SHELL_CONFIRMATION="$AI_REQUIRE_SHELL_CONFIRMATION"
+    AI_PROCESS_CONTROL_ENABLED="$AI_PROCESS_CONTROL_ENABLED"
   )
   if [ "${REQUEST_CLAUDE:-false}" = true ] || [ "${REQUEST_VSCODE_CLAUDE_BACKEND:-false}" = true ]; then
     env_args+=(
@@ -431,32 +433,43 @@ node_major() {
 }
 
 ensure_codex_node() {
-  local major
+  local major min_major install_major setup_script
+  min_major="${CODEX_NODE_MIN_MAJOR:-$(read_lock codex_node_min_major || true)}"
+  install_major="${CODEX_NODE_INSTALL_MAJOR:-$(read_lock codex_node_install_major || true)}"
+  min_major="${min_major:-22}"
+  install_major="${install_major:-24}"
+  case "$min_major" in
+    ''|*[!0-9]*) log 'codex_node_min_major must be numeric'; exit 2 ;;
+  esac
+  case "$install_major" in
+    ''|*[!0-9]*) log 'codex_node_install_major must be numeric'; exit 2 ;;
+  esac
   major="$(node_major || true)"
   case "$major" in
     ''|*[!0-9]*) major=0 ;;
   esac
-  if [ "$major" -ge 20 ]; then
+  if [ "$major" -ge "$min_major" ] && [ $((major % 2)) -eq 0 ]; then
     return 0
   fi
   if ! command -v apt-get >/dev/null 2>&1; then
-    log 'Node.js 20+ is required for Codex CLI; install Node.js 20+ and npm before rerunning'
+    log "Node.js ${min_major}+ even-major stable/LTS is required for Codex CLI; install Node.js ${install_major}.x LTS and npm before rerunning"
     return 1
   fi
-  log 'Node.js 20+ is required for Codex CLI; installing Node.js 20 from NodeSource'
+  log "Node.js ${min_major}+ even-major stable/LTS is required for Codex CLI; installing Node.js ${install_major}.x LTS from NodeSource"
+  setup_script="/tmp/nodesource_setup_${install_major}.x.sh"
   if [ "$DRY_RUN" = false ]; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/nodesource_setup_20.x.sh
-    sudo env DEBIAN_FRONTEND=noninteractive bash /tmp/nodesource_setup_20.x.sh
+    curl -fsSL "https://deb.nodesource.com/setup_${install_major}.x" -o "$setup_script"
+    sudo env DEBIAN_FRONTEND=noninteractive bash "$setup_script"
   else
-    log 'would download and run https://deb.nodesource.com/setup_20.x'
+    log "would download and run https://deb.nodesource.com/setup_${install_major}.x"
   fi
   apt_install nodejs
   major="$(node_major || true)"
   case "$major" in
     ''|*[!0-9]*) major=0 ;;
   esac
-  if [ "$DRY_RUN" = false ] && [ "$major" -lt 20 ]; then
-    log 'Node.js 20+ install failed; Codex CLI cannot be installed safely'
+  if [ "$DRY_RUN" = false ] && { [ "$major" -lt "$min_major" ] || [ $((major % 2)) -ne 0 ]; }; then
+    log "Node.js ${min_major}+ even-major stable/LTS install failed; Codex CLI cannot be installed safely"
     exit 1
   fi
 }
@@ -485,85 +498,84 @@ REQUEST_VSCODE_CLAUDE_BACKEND=false
 REQUEST_RUNNER=false
 REQUEST_TELEGRAM=false
 if [ -z "$AI_RUNNER_COMPONENTS" ]; then
-  log 'AI_RUNNER_COMPONENTS is required so each machine gets only the requested AI/tool.'
+  log 'AI_RUNNER_COMPONENTS is required so the installer knows which AI tools and channels to prepare.'
   usage
   exit 2
 fi
-case "$AI_RUNNER_COMPONENTS" in
-  all|full|core)
-    log "AI_RUNNER_COMPONENTS=all/full/core is disabled. Use one AI/tool per VM: $AI_PRIMARY_PROVIDER_USAGE."
-    exit 2
-    ;;
-  *)
-    IFS=',' read -r -a REQUESTED_COMPONENTS_ARRAY <<< "$AI_RUNNER_COMPONENTS"
-    for raw_component in "${REQUESTED_COMPONENTS_ARRAY[@]}"; do
-      component="$(printf '%s' "$raw_component" | tr -d '[:space:]')"
-      case "$component" in
-        claude|claude-code)
-          REQUEST_CLAUDE=true
-          REQUEST_RUNNER=true
-          ;;
-        codex)
-          REQUEST_CODEX=true
-          REQUEST_RUNNER=true
-          ;;
-        vscode|code)
-          REQUEST_VSCODE=true
-          ;;
-        runner)
-          REQUEST_RUNNER=true
-          ;;
-        telegram)
-          ENABLE_TELEGRAM=true
-          REQUEST_TELEGRAM=true
-          REQUEST_RUNNER=true
-          ;;
-        all|full|core)
-          log "AI_RUNNER_COMPONENTS=all/full/core is disabled. Use one AI/tool per VM: $AI_PRIMARY_PROVIDER_USAGE."
-          exit 2
-          ;;
-        *)
-          log "AI_RUNNER_COMPONENTS contains unsupported component: $component"
-          exit 2
-          ;;
-      esac
-    done
-    if [ "$REQUEST_RUNNER" = true ] && [ "$REQUEST_CLAUDE" != true ] && [ "$REQUEST_CODEX" != true ] && [ "$REQUEST_VSCODE" != true ]; then
-      log 'runner/telegram selected without an AI provider; installing management-only runner commands without Claude Code, Codex, or VSCode backend'
-    fi
-    ;;
-esac
-PRIMARY_TOOL_COUNT=0
-[ "$REQUEST_CLAUDE" = true ] && PRIMARY_TOOL_COUNT=$((PRIMARY_TOOL_COUNT + 1))
-[ "$REQUEST_CODEX" = true ] && PRIMARY_TOOL_COUNT=$((PRIMARY_TOOL_COUNT + 1))
-[ "$REQUEST_VSCODE" = true ] && PRIMARY_TOOL_COUNT=$((PRIMARY_TOOL_COUNT + 1))
-if [ "$PRIMARY_TOOL_COUNT" -gt 1 ]; then
-  log 'AI_RUNNER_COMPONENTS must select exactly one primary tool per VM: codex, claude-code, or vscode. Telegram may be added as a communication channel.'
-  exit 2
+IFS=',' read -r -a REQUESTED_COMPONENTS_ARRAY <<< "$AI_RUNNER_COMPONENTS"
+for raw_component in "${REQUESTED_COMPONENTS_ARRAY[@]}"; do
+  component="$(printf '%s' "$raw_component" | tr -d '[:space:]')"
+  case "$component" in
+    claude|claude-code)
+      REQUEST_CLAUDE=true
+      REQUEST_RUNNER=true
+      ;;
+    codex)
+      REQUEST_CODEX=true
+      REQUEST_RUNNER=true
+      ;;
+    vscode|code)
+      REQUEST_VSCODE=true
+      ;;
+    runner)
+      REQUEST_RUNNER=true
+      ;;
+    telegram)
+      ENABLE_TELEGRAM=true
+      REQUEST_TELEGRAM=true
+      REQUEST_RUNNER=true
+      ;;
+    all|full|core)
+      REQUEST_CLAUDE=true
+      REQUEST_CODEX=true
+      REQUEST_VSCODE=true
+      REQUEST_RUNNER=true
+      ;;
+    *)
+      log "AI_RUNNER_COMPONENTS contains unsupported component: $component"
+      exit 2
+      ;;
+  esac
+done
+if [ "$REQUEST_RUNNER" = true ] && [ "$REQUEST_CLAUDE" != true ] && [ "$REQUEST_CODEX" != true ] && [ "$REQUEST_VSCODE" != true ]; then
+  log 'runner/telegram selected without an AI provider; installing management-only runner commands without Claude Code, Codex, or VSCode backend'
 fi
 if [ "$REQUEST_VSCODE" = true ] && [ "$REQUEST_RUNNER" = true ]; then
   REQUEST_VSCODE_CLAUDE_BACKEND=true
 fi
+append_runner_provider() {
+  local provider="$1"
+  case ",$AI_RUNNER_PROVIDERS," in
+    *",$provider,"*) return 0 ;;
+  esac
+  AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:+$AI_RUNNER_PROVIDERS,}$provider"
+}
 AI_RUNNER_PROVIDERS=""
-AI_ADAPTER_TYPE="management"
+if [ "$REQUEST_CODEX" = true ]; then
+  append_runner_provider codex
+fi
 if [ "$REQUEST_CLAUDE" = true ]; then
-  AI_RUNNER_PROVIDERS="claude-code"
-  AI_ADAPTER_TYPE="claude-code"
+  append_runner_provider claude-code
 fi
 if [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
-  AI_RUNNER_PROVIDERS="vscode"
-  AI_ADAPTER_TYPE="vscode"
+  append_runner_provider vscode
 fi
-if [ "$REQUEST_CODEX" = true ]; then
-  AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:+$AI_RUNNER_PROVIDERS,}codex"
-  AI_ADAPTER_TYPE="codex"
+AI_ADAPTER_TYPE="management"
+RUNNER_PROVIDER_COUNT=0
+[ -n "$AI_RUNNER_PROVIDERS" ] && RUNNER_PROVIDER_COUNT="$(printf '%s' "$AI_RUNNER_PROVIDERS" | awk -F, '{print NF}')"
+if [ "$RUNNER_PROVIDER_COUNT" -gt 1 ]; then
+  AI_ADAPTER_TYPE="multi"
+elif [ "$RUNNER_PROVIDER_COUNT" -eq 1 ]; then
+  AI_ADAPTER_TYPE="$AI_RUNNER_PROVIDERS"
 fi
 if [ "$REQUEST_VSCODE" = true ] && [ "$REQUEST_RUNNER" != true ]; then
   AI_ADAPTER_TYPE="vscode"
 fi
 if [ -z "$AI_DEFAULT_PROVIDER" ]; then
-  case "$AI_RUNNER_PROVIDERS" in
-    claude-code|vscode|codex) AI_DEFAULT_PROVIDER="$AI_RUNNER_PROVIDERS" ;;
+  case ",$AI_RUNNER_PROVIDERS," in
+    *,codex,*) AI_DEFAULT_PROVIDER="codex" ;;
+    *,claude-code,*) AI_DEFAULT_PROVIDER="claude-code" ;;
+    *,vscode,*) AI_DEFAULT_PROVIDER="vscode" ;;
   esac
 fi
 if [ "$REQUEST_RUNNER" = true ] && [ -n "$AI_DEFAULT_PROVIDER" ]; then
@@ -581,6 +593,50 @@ case "$AI_REQUIRE_SHELL_CONFIRMATION" in
   0|1|true|false|yes|no) ;;
   *) log 'AI_REQUIRE_SHELL_CONFIRMATION must be 0/1, true/false, or yes/no'; exit 2 ;;
 esac
+
+validate_secret_value() {
+  local name="$1"
+  local value="${!name:-}"
+  if [ -z "$value" ]; then
+    return 0
+  fi
+  case "$value" in
+    *[[:space:]]*) log "$name must not contain whitespace"; exit 2 ;;
+  esac
+}
+
+validate_http_url_value() {
+  local name="$1"
+  local value="${!name:-}"
+  if [ -z "$value" ]; then
+    return 0
+  fi
+  case "$value" in
+    http://*|https://*) ;;
+    *) log "$name must be an http(s) URL"; exit 2 ;;
+  esac
+  case "$value" in
+    *[[:space:]\"\'\\]*) log "$name must not contain whitespace, quotes, or backslashes"; exit 2 ;;
+  esac
+}
+
+validate_provider_runtime_config() {
+  validate_secret_value OPENAI_API_KEY
+  validate_secret_value CODEX_API_KEY
+  validate_secret_value ANTHROPIC_AUTH_TOKEN
+  validate_secret_value ANTHROPIC_API_KEY
+  validate_http_url_value CODEX_BASE_URL
+  validate_http_url_value CODEX_OPENAI_BASE_URL
+  validate_http_url_value ANTHROPIC_BASE_URL
+  if [ "$REQUEST_CODEX" = true ]; then
+    local codex_key="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
+    case "${codex_key,,}" in
+      sk-ant-*) log 'Codex/OpenAI config cannot use an Anthropic sk-ant-* key; use ANTHROPIC_AUTH_TOKEN for claude-code/vscode.'; exit 2 ;;
+    esac
+  fi
+}
+
+validate_provider_runtime_config
 
 log 'stage 01: detect OS, WSL, architecture, systemd availability, shell, PATH'
 OS_ID="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-unknown}")"
@@ -655,7 +711,7 @@ log 'stage 04: install or verify requested Codex CLI provider'
 CODEX_NPM_PACKAGE="$(read_lock codex_npm_package || true)"
 CODEX_NPM_VERSION="$(read_lock codex_npm_version || true)"
 CODEX_NPM_PACKAGE="${CODEX_NPM_PACKAGE:-@openai/codex}"
-CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.137.0}"
+CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.138.0}"
 CODEX_READY=false
 CODEX_STATUS="install_required"
 CODEX_REMEDIATION_ZH="Codex CLI 必须由安装脚本全局安装；若失败请检查网络、Node.js/npm、以及版本锁。"
@@ -848,6 +904,7 @@ if [ "$DRY_RUN" = false ]; then
   PREVIOUS_TELEGRAM_GROUP_MODE="$(config_value TELEGRAM_GROUP_MODE)"
   PREVIOUS_AI_LOCAL_EXEC_TIMEOUT_SECONDS="$(config_value AI_LOCAL_EXEC_TIMEOUT_SECONDS)"
   PREVIOUS_AI_LOCAL_EXEC_MAX_OUTPUT_BYTES="$(config_value AI_LOCAL_EXEC_MAX_OUTPUT_BYTES)"
+  PREVIOUS_AI_PROCESS_CONTROL_ENABLED="$(config_value AI_PROCESS_CONTROL_ENABLED)"
   PREVIOUS_AI_TASK_RESERVED_USD="$(config_value AI_TASK_RESERVED_USD)"
   PREVIOUS_CLAUDE_MAX_TURNS="$(config_value CLAUDE_MAX_TURNS)"
   PREVIOUS_CLAUDE_API_RETRY_ATTEMPTS="$(config_value CLAUDE_API_RETRY_ATTEMPTS)"
@@ -864,6 +921,7 @@ if [ "$DRY_RUN" = false ]; then
   EFFECTIVE_VSCODE_CLAUDE_API_RETRY_ATTEMPTS="${VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-${PREVIOUS_VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-3}}"
   EFFECTIVE_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS="${VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-${PREVIOUS_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-12}}"
   EFFECTIVE_CODEX_EXEC_EPHEMERAL="${CODEX_EXEC_EPHEMERAL:-${PREVIOUS_CODEX_EXEC_EPHEMERAL:-1}}"
+  EFFECTIVE_AI_PROCESS_CONTROL_ENABLED="${AI_PROCESS_CONTROL_ENABLED:-${PREVIOUS_AI_PROCESS_CONTROL_ENABLED:-1}}"
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
@@ -871,6 +929,7 @@ AI_ADAPTER_TYPE=$AI_ADAPTER_TYPE
 AI_RUNNER_PROVIDERS=$AI_RUNNER_PROVIDERS
 AI_PERMISSION_SCOPE=$AI_PERMISSION_SCOPE
 AI_REQUIRE_SHELL_CONFIRMATION=$AI_REQUIRE_SHELL_CONFIRMATION
+AI_PROCESS_CONTROL_ENABLED=$EFFECTIVE_AI_PROCESS_CONTROL_ENABLED
 HOME=$AI_TOOL_HOME
 CODEX_HOME=$CODEX_HOME
 PATH=$SERVICE_PATH
@@ -1182,6 +1241,7 @@ if [ "$DRY_RUN" = false ]; then
   "task_reserved_usd": "$EFFECTIVE_AI_TASK_RESERVED_USD",
   "permission_scope": "$AI_PERMISSION_SCOPE",
   "shell_confirmation_required": "$AI_REQUIRE_SHELL_CONFIRMATION",
+  "process_control_enabled": "$EFFECTIVE_AI_PROCESS_CONTROL_ENABLED",
   "telegram_enabled": $ENABLE_TELEGRAM,
   "telegram_status": "pending_pairing",
   "snapshots": {

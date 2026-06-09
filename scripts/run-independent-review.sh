@@ -195,8 +195,9 @@ Do not inspect the parent repository work/reviews directory, sibling snapshots, 
 Each reviewer is launched with a fresh HOME. Codex is launched with a fresh CODEX_HOME containing only copied auth/config files when available. Claude Code receives only explicit reviewer API env/auth inputs and must not use resume/continue state.
 
 Current user requirements to verify:
-	- Installer must require explicit AI_RUNNER_COMPONENTS and must reject mixed primary tools by default. Lab deployments use one AI/tool per VM: codex,telegram OR claude-code,telegram OR vscode,telegram.
-	- Installer must install/verify only the explicitly requested provider/tool globally for root usage and must clean stale unrequested provider config files when a VM is re-role-installed.
+	- Installer must support AI_RUNNER_COMPONENTS=all,telegram for one Debian 12 VM with Claude Code, Codex, VSCode, runner, and Telegram installed globally for root usage.
+	- Focused deployments must still work with codex,telegram OR claude-code,telegram OR vscode,telegram; mixed primary tools are allowed, but the runner must keep one active default provider at a time and switch explicitly.
+	- Installer must install/verify every explicitly requested provider/tool globally for root usage and must clean stale unrequested provider config files when a VM is re-role-installed.
 	- Runner and Telegram services must run as root unless explicitly overridden.
 	- Claude Code and Codex must default to full access inside the VM: network access, shell access, file access, install-anything capability.
 	- VSCode must be installed or verified during runner install and must be usable as a root/full-access tool through the root wrapper.

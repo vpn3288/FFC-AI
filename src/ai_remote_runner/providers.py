@@ -15,6 +15,13 @@ from typing import Any, Callable
 from .budget import BudgetLedger
 from .instructions import InstructionStore
 from .model_aliases import normalize_model_name
+from .paths import state_root
+from .task_control import (
+    popen_process_group_kwargs,
+    register_process,
+    run_registered,
+    unregister_process,
+)
 
 
 PROBE_TIMEOUT_SECONDS = 30
@@ -68,7 +75,7 @@ def configured_provider_names_from_env(default_all: bool = False) -> list[str] |
 def _run_probe(command: list[str], timeout_seconds: int = PROBE_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(command, text=True, capture_output=True, check=False, timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return None
 
 
@@ -443,9 +450,40 @@ def _short_chat_fallback(prompt: str) -> str | None:
     return None
 
 
-def _run_claude_command(command: list[str], workspace: Path, prompt: str, timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+def _state_from_ledger(ledger: BudgetLedger) -> Path:
+    try:
+        return ledger.path.parent.parent
+    except Exception:
+        return state_root()
+
+
+def _run_claude_command(
+    command: list[str],
+    workspace: Path,
+    prompt: str,
+    timeout_seconds: int,
+    *,
+    state: Path | None = None,
+    run_id: str = "",
+    provider: str = "claude-code",
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    if state is None or not run_id:
+        return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    return run_registered(
+        state,
+        run_id,
+        provider,
+        command,
+        cwd=workspace,
+        env=env,
+        input=prompt,
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+        check=False,
+        action="provider",
+    )
 
 
 def _format_budget_usd(budget_usd: float) -> str:
@@ -1041,11 +1079,39 @@ def _run_codex_command(
     timeout_seconds: int,
     run_id: str,
     emit: Callable[[dict[str, Any]], None] | None = None,
+    state: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = _codex_subprocess_env()
     if emit is None:
-        return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
-    process = subprocess.Popen(command, cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if state is None:
+            return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+        return run_registered(
+            state,
+            run_id,
+            "codex",
+            command,
+            cwd=workspace,
+            env=env,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+            action="provider",
+        )
+    popen_kwargs = popen_process_group_kwargs()
+    process = subprocess.Popen(
+        command,
+        cwd=workspace,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **popen_kwargs,
+    )
+    if state is not None:
+        register_process(state, run_id, "codex", process, command, workspace, action="provider")
     assert process.stdin is not None
     assert process.stdout is not None
     assert process.stderr is not None
@@ -1099,6 +1165,8 @@ def _run_codex_command(
             process.kill()
         raise
     finally:
+        if state is not None:
+            unregister_process(state, run_id, int(process.pid))
         for pipe in (process.stdin, process.stdout, process.stderr):
             if pipe is not None and not pipe.closed:
                 pipe.close()
@@ -1145,8 +1213,9 @@ def _invoke_claude_backend(
                 "public_message_zh": f"正在调用 {public_name_zh}：模型思考、工具执行或联网等待中。",
             }
         )
+    state = _state_from_ledger(ledger)
     try:
-        result = _run_claude_command(command, workspace, prompt, timeout_seconds)
+        result = _run_claude_command(command, workspace, prompt, timeout_seconds, state=state, run_id=actual_run_id, provider=provider_id)
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
         if emit:
@@ -1174,7 +1243,7 @@ def _invoke_claude_backend(
         if delay_seconds > 0:
             time.sleep(delay_seconds)
         try:
-            result = _run_claude_command(command, workspace, prompt, timeout_seconds)
+            result = _run_claude_command(command, workspace, prompt, timeout_seconds, state=state, run_id=actual_run_id, provider=provider_id)
         except subprocess.TimeoutExpired:
             actual_cost_usd = _claude_recorded_attempt_cost(attempt_costs, True, reserved_usd)
             ledger.complete(actual_run_id, actual_cost_usd, status="timeout")
@@ -1203,7 +1272,15 @@ def _invoke_claude_backend(
                 emit({"run_id": actual_run_id, "provider": provider_id, "phase": "warning", "public_message_zh": "模型返回空内容，正在自动重试一次。"})
             try:
                 retry_started = True
-                retry_result = _run_claude_command(_claude_command_with_budget(command, remaining_budget_usd), workspace, _claude_chat_retry_prompt(prompt), timeout_seconds)
+                retry_result = _run_claude_command(
+                    _claude_command_with_budget(command, remaining_budget_usd),
+                    workspace,
+                    _claude_chat_retry_prompt(prompt),
+                    timeout_seconds,
+                    state=state,
+                    run_id=actual_run_id,
+                    provider=provider_id,
+                )
                 retry_raw, retry_output = _claude_output(retry_result)
                 retry_cost_usd = _actual_cost_usd(retry_raw)
                 attempt_costs.append(retry_cost_usd)
@@ -1371,8 +1448,17 @@ def invoke_codex(
                 "public_message_zh": "正在调用 Codex：模型思考、工具执行或联网等待中。",
             }
         )
+    state = _state_from_ledger(ledger)
     try:
-        result = _run_codex_command(command, workspace, _codex_effective_prompt(prompt, instruction_prompt), timeout_seconds, actual_run_id, emit)
+        result = _run_codex_command(
+            command,
+            workspace,
+            _codex_effective_prompt(prompt, instruction_prompt),
+            timeout_seconds,
+            actual_run_id,
+            emit,
+            state=state,
+        )
     except subprocess.TimeoutExpired:
         ledger.complete(actual_run_id, None, status="timeout")
         if emit:

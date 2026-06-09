@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,7 @@ from .runtime_config import (
     split_target_args,
 )
 from .storage import atomic_write_json
+from .task_control import active_processes, process_control_enabled, request_stop, run_registered, terminate_active_processes
 
 
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -57,6 +59,8 @@ DEFAULT_TASK_RESERVED_USD = 0.0
 UNLIMITED_BUDGET_VALUES = {"", "0", "off", "none", "no", "false", "unlimited", "infinite", "inf", "无限", "不限", "关闭"}
 DEFAULT_LOCAL_EXEC_TIMEOUT_SECONDS = 300
 DEFAULT_LOCAL_EXEC_MAX_OUTPUT_BYTES = 120000
+MIN_AUTO_CONTINUE_INTERVAL_SECONDS = 30
+MAX_AUTO_CONTINUE_INTERVAL_SECONDS = 86400
 
 
 @dataclass
@@ -412,6 +416,52 @@ def _telegram_tasks(rt: RunnerRuntime, limit: int = 10) -> list[dict[str, Any]]:
     return tasks[:limit]
 
 
+def _auto_continue_path(rt: RunnerRuntime) -> Path:
+    return rt.state / "telegram-auto-continue.json"
+
+
+def _load_auto_continue(rt: RunnerRuntime) -> dict[str, Any]:
+    path = _auto_continue_path(rt)
+    if not path.exists():
+        return {"chats": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"chats": {}}
+    if not isinstance(data, dict):
+        return {"chats": {}}
+    if not isinstance(data.get("chats"), dict):
+        data["chats"] = {}
+    return data
+
+
+def _save_auto_continue(rt: RunnerRuntime, data: dict[str, Any]) -> None:
+    data.setdefault("chats", {})
+    atomic_write_json(_auto_continue_path(rt), data)
+
+
+def _chat_id_from_envelope(envelope: dict[str, Any]) -> str:
+    return str(envelope.get("chat_id") or "").strip()
+
+
+def _parse_interval_seconds(raw: str) -> int:
+    value = raw.strip().lower()
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(s|sec|secs|second|seconds|秒|m|min|mins|minute|minutes|分钟|h|hour|hours|小时)?", value)
+    if not match:
+        raise ValueError("invalid_interval")
+    amount = float(match.group(1))
+    unit = match.group(2) or "s"
+    multiplier = 1
+    if unit in {"m", "min", "mins", "minute", "minutes", "分钟"}:
+        multiplier = 60
+    elif unit in {"h", "hour", "hours", "小时"}:
+        multiplier = 3600
+    seconds = int(amount * multiplier)
+    if seconds < MIN_AUTO_CONTINUE_INTERVAL_SECONDS or seconds > MAX_AUTO_CONTINUE_INTERVAL_SECONDS:
+        raise ValueError("interval_out_of_range")
+    return seconds
+
+
 def _command_index_with_availability(items: list[dict[str, Any]], providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     any_provider_available = any(item.get("available") for item in providers)
     codex_available = any(item.get("provider") == "codex" and item.get("available") for item in providers)
@@ -447,6 +497,8 @@ def current_status(runtime: RunnerRuntime) -> dict[str, Any]:
         "default_workspace": _selected_workspace(runtime) or "default",
         "recent_runs": _recent_run_events(runtime),
         "telegram_tasks": _telegram_tasks(runtime),
+        "active_processes": active_processes(runtime.state),
+        "telegram_auto_continue": _load_auto_continue(runtime),
         "codex_subagent_status_events_enabled": _codex_subagent_status_events_enabled(runtime),
         "state_root": str(runtime.state),
         "workspace_root": str(runtime.workspaces),
@@ -539,17 +591,35 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         max_output_bytes = _local_exec_max_output_bytes()
         rt.events.emit(status_event(run_id, "running_command", f"本机命令执行中：{_preview_command(command)}", provider))
         try:
-            result = subprocess.run(
-                command,
-                cwd=workspace,
-                env=_local_subprocess_env(),
-                shell=True,
-                executable="/bin/bash",
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
+            if process_control_enabled():
+                result = run_registered(
+                    rt.state,
+                    run_id,
+                    provider,
+                    command,
+                    cwd=workspace,
+                    env=_local_subprocess_env(),
+                    input=None,
+                    shell=True,
+                    executable="/bin/bash" if Path("/bin/bash").exists() else None,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                    action="local.exec",
+                )
+            else:
+                result = subprocess.run(
+                    command,
+                    cwd=workspace,
+                    env=_local_subprocess_env(),
+                    shell=True,
+                    executable="/bin/bash" if Path("/bin/bash").exists() else None,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout if isinstance(exc.stdout, str) else ""
             stderr = exc.stderr if isinstance(exc.stderr, str) else ""
@@ -743,14 +813,23 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         if not rest:
             return _error(request_id, "missing_api_key", "usage: /ai 密钥 设置 [claude-code|codex|vscode] <api_key>")
-        return _ok(request_id, run_id, "API key 已更新", apply_api_key(rt.state, target, "".join(rest).strip()))
+        try:
+            return _ok(request_id, run_id, "API key 已更新", apply_api_key(rt.state, target, "".join(rest).strip()))
+        except ValueError as exc:
+            code = str(exc)
+            if code == "wrong_api_key_family":
+                return _error(request_id, code, "Codex/OpenAI provider cannot use an Anthropic sk-ant-* key; use /ai 密钥 设置 claude-code ... for Claude.")
+            return _error(request_id, "invalid_api_key", "API key cannot be empty or contain whitespace.")
     if action == "provider_config.set_base_url":
         target, rest = _config_target_from_args(rt, args)
         if target is None:
             return _error(request_id, "invalid_target", f"target must be {SUPPORTED_PROVIDER_USAGE}")
         if not rest:
             return _error(request_id, "missing_base_url", "usage: /ai 代理 设置 [claude-code|codex|vscode] <base_url>")
-        return _ok(request_id, run_id, "第三方代理地址已更新", apply_base_url(rt.state, target, " ".join(rest).strip()))
+        try:
+            return _ok(request_id, run_id, "第三方代理地址已更新", apply_base_url(rt.state, target, " ".join(rest).strip()))
+        except ValueError:
+            return _error(request_id, "invalid_base_url", "base_url must be an http(s) URL without whitespace, for example https://api.example.com/v1")
     if action == "provider_config.show":
         targets = [normalize_target(item) for item in args] if args else list(SUPPORTED_PROVIDER_NAMES)
         valid_targets = [target for target in targets if target]
@@ -782,6 +861,41 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if parse_reserved_usd(reserved_usd, -1.0) < 0:
             return _error(request_id, "invalid_budget", "budget must be a number, 0, unlimited, or 无限")
         return _ok(request_id, run_id, "单次任务预算已更新", apply_task_budget(rt.state, reserved_usd))
+    if action in {"auto_continue.status", "auto_continue.set", "auto_continue.disable"}:
+        chat_id = _chat_id_from_envelope(envelope)
+        data = _load_auto_continue(rt)
+        chats = data.setdefault("chats", {})
+        if action == "auto_continue.status":
+            if chat_id:
+                return _ok(request_id, run_id, "定时继续状态已读取", {"chat_id": chat_id, "schedule": chats.get(chat_id, {"enabled": False})})
+            return _ok(request_id, run_id, "定时继续状态已读取", data)
+        if not chat_id:
+            return _error(request_id, "telegram_chat_required", "定时继续是Telegram chat级功能，请从已配对Telegram聊天里设置。")
+        if action == "auto_continue.disable":
+            existing = chats.get(chat_id, {})
+            chats[chat_id] = dict(existing) | {"enabled": False, "updated_at": int(time.time())}
+            _save_auto_continue(rt, data)
+            return _ok(request_id, run_id, "定时继续已关闭", {"chat_id": chat_id, "schedule": chats[chat_id]})
+        if not args:
+            return _error(request_id, "missing_interval", "usage: /ai 定时继续 设置 <秒数|5m|1h>")
+        try:
+            interval_seconds = _parse_interval_seconds(args[0])
+        except ValueError as exc:
+            code = str(exc)
+            if code == "interval_out_of_range":
+                return _error(request_id, code, "interval must be between 30 seconds and 24 hours")
+            return _error(request_id, "invalid_interval", "interval examples: 300, 5m, 1h")
+        now = int(time.time())
+        chats[chat_id] = {
+            "enabled": True,
+            "interval_seconds": interval_seconds,
+            "prompt": "继续",
+            "next_due_at": now + interval_seconds,
+            "updated_at": now,
+            "chat_id": chat_id,
+        }
+        _save_auto_continue(rt, data)
+        return _ok(request_id, run_id, "定时继续已设置", {"chat_id": chat_id, "schedule": chats[chat_id]})
     if action == "claude.max_turns.set":
         target, rest = _claude_control_target_from_args(rt, args)
         if target is None:
@@ -920,9 +1034,15 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         rt.save_policy(data)
         return _ok(request_id, run_id, "执行权限模式已更新", data)
     if action == "cancel":
-        data = {"cancel_requested": True, "detail": "取消标记已记录；当前版本不会强制终止已经启动的 provider 进程。"}
-        _write_json_state(rt.state / "cancel-request.json", data | {"time": run_id})
+        data = request_stop(rt.state, force=False) | {"detail": "取消标记已记录；如需终止本runner启动的活动进程，请发送 /ai 强行停止。"}
+        _write_json_state(rt.state / "cancel-request.json", data | {"run_id": run_id})
         return _ok(request_id, run_id, data["detail"], data)
+    if action == "task.force_stop":
+        target_run_id = args[0] if args else None
+        request_stop(rt.state, force=True)
+        result = terminate_active_processes(rt.state, target_run_id=target_run_id, grace_seconds=1.0)
+        rt.events.emit(status_event(run_id, "warning", f"强行停止完成：匹配 {result['matched']} 个活动进程，已终止 {result['terminated']} 个。", "runner"))
+        return _ok(request_id, run_id, "强行停止已执行", result)
     if action == "confirm":
         return _error(request_id, "confirmation_not_found", "没有找到可确认的待执行请求，或确认已过期。")
     if action == "workspace.list":

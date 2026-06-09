@@ -22,14 +22,14 @@ Style: AI可执行规范，面向优化和审查流程
 
 ### 2.1 AI工具部署原则
 
-**每个虚拟机/VPS只装一种主AI工具**：
-- 一台机器只装 `codex`
-- 一台机器只装 `claude-code`
-- 一台机器只装 `vscode`
-- 可以同时启用 `telegram`，例如：`codex,telegram`
+**默认支持一台 Debian 12 VM/VPS 全量安装三种主AI工具**：
+- `all,telegram` 必须安装 Claude Code、Codex、VSCode、runner 和 Telegram
+- `codex,telegram`、`claude-code,telegram`、`vscode,telegram` 仍然作为轻量安装模式保留
+- 多 provider 同机时，runner 一次只使用一个默认 provider
+- 必须可以通过 `/ai 提供商 使用 codex|claude-code|vscode` 显式切换
 
 **最高权限原则**：
-- 每个AI工具在其专属虚拟机/VPS内必须拥有最高权限
+- 每个AI工具在用户指定的虚拟机/VPS内必须拥有最高权限
 - root/full-access 是默认配置
 - 虚拟机和VPS本身就是安全和隐私边界
 - 无需额外的安全限制和隐私保护层
@@ -518,7 +518,7 @@ fi
 - ✓ 三种AI工具（codex, claude-code, vscode）都完美工作
 - ✓ 第三方API完美支持
 - ✓ 命令系统无冗余、有模板、全兼容
-- ✓ 每个VM只装一种AI工具
+- ✓ 支持全量安装三种AI工具，也支持轻量单工具安装
 - ✓ AI工具拥有VM内最高权限
 - ✓ 审查流程高效、独立、有价值
 
@@ -610,7 +610,7 @@ Runner:
 
 必须验证：
 - Telegram和Mattermost平等第一级
-- 每个VM只装一种AI工具
+- 全量安装三种AI工具时 runner 一次只使用一个 active provider
 - AI工具拥有最高权限
 - 第三方API完美支持
 - 命令中文化、模板化、去重化

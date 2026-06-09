@@ -57,7 +57,7 @@ VPS communication server MUST NOT require AI provider secrets for core operation
 
 ## 3. Core Runner Installer Scope
 
-The core runner installer MUST install or verify every explicitly requested runtime component required for phone-controlled Claude Code/Codex/VSCode operation. Lab deployments MUST use one AI/tool per VM and MUST pass `AI_RUNNER_COMPONENTS` explicitly, for example `codex,telegram`, `claude-code,telegram`, or `vscode,telegram`. Mixed primary tool selections such as `all`, `full`, `core`, `claude-code,codex`, or `codex,vscode` MUST be rejected by default.
+The core runner installer MUST install or verify every explicitly requested runtime component required for phone-controlled Claude Code/Codex/VSCode operation. Full Debian 12 deployments may pass `AI_RUNNER_COMPONENTS=all,telegram` to install Claude Code, Codex, VSCode, the runner, and Telegram on one VM. Focused deployments may still pass `codex,telegram`, `claude-code,telegram`, or `vscode,telegram`. When multiple providers are installed, the runner MUST keep one active default provider at a time and switch explicitly with `/ai 提供商 使用 <provider>`.
 
 Core runner installer MUST execute these stages:
 
