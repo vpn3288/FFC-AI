@@ -114,7 +114,7 @@ normalize_gpt_model_alias() {
   normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
   case "$normalized" in
     gpt|gpt5|gpt-5|gpt5.5|openai) printf 'gpt-5.5' ;;
-    codex) printf 'gpt-5.3-codex' ;;
+    codex) printf 'gpt-5.5' ;;
     *) printf '%s' "$raw" ;;
   esac
 }
@@ -858,8 +858,6 @@ model_provider = "$CODEX_EFFECTIVE_MODEL_PROVIDER"
 model = "${CODEX_MODEL:-gpt-5.5}"
 review_model = "${CODEX_REVIEW_MODEL:-${CODEX_MODEL:-gpt-5.5}}"
 model_reasoning_effort = "${CODEX_REASONING_EFFORT:-xhigh}"
-disable_response_storage = ${CODEX_DISABLE_RESPONSE_STORAGE:-false}
-windows_wsl_setup_acknowledged = ${CODEX_WINDOWS_WSL_SETUP_ACKNOWLEDGED:-true}
 openai_base_url = "$CODEX_EFFECTIVE_BASE_URL"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -1248,7 +1246,23 @@ fi
 if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
   root_has_command codex || { log 'codex is required before core_ready for requested provider codex'; exit 1; }
   CODEX_EXEC_HELP_TEXT="$(root_env_run codex exec --help 2>&1)" || { log 'codex exec is required before core_ready for requested provider codex'; exit 1; }
-  root_env_run codex exec --strict-config --help >/dev/null || { log 'codex config.toml is not accepted by this Codex CLI under --strict-config'; exit 1; }
+  grep -q -- '--output-schema' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --output-schema is required for local strict config preflight'; exit 1; }
+  CODEX_STRICT_CONFIG_PROBE_SCHEMA="$STATE_ROOT/.codex-strict-config-probe.$$.missing.json"
+  rm -f "$CODEX_STRICT_CONFIG_PROBE_SCHEMA"
+  CODEX_STRICT_CONFIG_OUTPUT="$(root_env_run codex exec --strict-config --skip-git-repo-check --cd "$WORKSPACE_ROOT" --output-schema "$CODEX_STRICT_CONFIG_PROBE_SCHEMA" --json 'strict config preflight' 2>&1)" || {
+    if grep -q 'Failed to read output schema file' <<< "$CODEX_STRICT_CONFIG_OUTPUT"; then
+      :
+    else
+      printf '%s\n' "$CODEX_STRICT_CONFIG_OUTPUT" >&2
+      log 'codex config.toml is not accepted by this Codex CLI under --strict-config'
+      exit 1
+    fi
+  }
+  if [ -n "$CODEX_STRICT_CONFIG_OUTPUT" ] && grep -q 'Error loading config.toml' <<< "$CODEX_STRICT_CONFIG_OUTPUT"; then
+    printf '%s\n' "$CODEX_STRICT_CONFIG_OUTPUT" >&2
+    log 'codex config.toml is not accepted by this Codex CLI under --strict-config'
+    exit 1
+  fi
   grep -q -- '--json' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --json is required for realtime Codex status events'; exit 1; }
   CODEX_EXEC_JSON_AVAILABLE=true
   grep -q -- '--ephemeral' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --ephemeral is required so phone-triggered runs do not persist sessions'; exit 1; }

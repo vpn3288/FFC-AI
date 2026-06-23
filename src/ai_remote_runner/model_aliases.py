@@ -14,7 +14,7 @@ GPT_MODEL_ALIASES = {
     "gpt-5": "gpt-5.5",
     "gpt5.5": "gpt-5.5",
     "openai": "gpt-5.5",
-    "codex": "gpt-5.3-codex",
+    "codex": "gpt-5.5",
 }
 
 LEGACY_CLAUDE_MODEL_ALIASES = CLAUDE_MODEL_ALIASES | {key: value for key, value in GPT_MODEL_ALIASES.items() if key != "codex"}

@@ -233,6 +233,79 @@ PY
             self.assertIn('openai_base_url = "https://review.example/v1"', observed_text)
             self.assertIn('base_url = "https://review.example/v1"', observed_text)
 
+    def test_codex_review_base_url_override_updates_active_custom_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            review_root = root / "reviews"
+            codex_home = root / "codex-home-source"
+            fakebin.mkdir()
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model_provider = "proxy"',
+                        'openai_base_url = "https://old-openai.example/v1"',
+                        "",
+                        "[model_providers.proxy]",
+                        'base_url = "https://old-proxy.example/v1"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (codex_home / "auth.json").write_text('{"OPENAI_API_KEY":"test"}\n', encoding="utf-8")
+            observed_config = root / "observed-config.toml"
+            write_executable(
+                fakebin / "claude",
+                """
+                #!/usr/bin/env bash
+                printf '{"result":"%s"}\\n' "${PASSING_REVIEW_JSON:?}"
+                """,
+            )
+            write_executable(
+                fakebin / "codex",
+                f"""
+                #!/usr/bin/env bash
+                if [ "${{1:-}}" = "exec" ] && [ "${{2:-}}" = "--help" ]; then
+                  printf 'usage: codex exec [--json] [--output-last-message] [--dangerously-bypass-approvals-and-sandbox] [--add-dir]\\n'
+                  exit 0
+                fi
+                cp "${{CODEX_HOME:?}}/config.toml" "{observed_config}"
+                last=''
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = "--output-last-message" ]; then last="$2"; shift 2; continue; fi
+                  shift
+                done
+                printf '%s' "${{PASSING_REVIEW:?}}" > "$last"
+                printf '{{}}\\n'
+                """,
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REVIEW_ROOT": str(review_root),
+                    "AI_REVIEW_RUN_ID": "custom-provider-review",
+                    "CODEX_HOME": str(codex_home),
+                    "CODEX_REVIEW_BASE_URL": "https://review.example/v1",
+                    "CLAUDE_REVIEW_AUTH_TOKEN": "review-token",
+                    "PASSING_REVIEW": PASSING_REVIEW,
+                    "PASSING_REVIEW_JSON": PASSING_REVIEW.replace("\\", "\\\\").replace("\n", "\\n"),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "run-independent-review.sh"), "--user-requirements", "full access"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observed_text = observed_config.read_text(encoding="utf-8")
+            self.assertIn('openai_base_url = "https://review.example/v1"', observed_text)
+            self.assertIn('[model_providers.proxy]\nbase_url = "https://review.example/v1"', observed_text)
+
     def test_codex_review_api_key_override_replaces_placeholder_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

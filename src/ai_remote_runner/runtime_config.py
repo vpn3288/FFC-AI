@@ -21,7 +21,7 @@ CLAUDE_MODEL_FALLBACKS = [
     "claude-opus-4-8-thinking",
     "claude-opus-4-8",
 ]
-CODEX_MODEL_FALLBACKS = ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"]
+CODEX_MODEL_FALLBACKS = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
 TARGET_ALIASES = {
     "claude": "claude-code",
     "claude-code": "claude-code",
@@ -228,12 +228,31 @@ def _replace_or_prepend_toml_key(text: str, key: str, value: str) -> str:
     return line + "\n" + text
 
 
+def _replace_or_insert_provider_base_url(text: str, provider_id: str, base_url: str) -> str:
+    block_pattern = re.compile(
+        rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)"
+    )
+    match = block_pattern.search(text)
+    if not match:
+        return text.rstrip() + f'\n\n[model_providers.{provider_id}]\nbase_url = "{base_url}"\n'
+    block = match.group(1)
+    base_url_pattern = re.compile(r'(?m)^base_url\s*=\s*".*"$')
+    if base_url_pattern.search(block):
+        replacement = base_url_pattern.sub(f'base_url = "{base_url}"', block, count=1)
+    else:
+        replacement = block.replace(f"[model_providers.{provider_id}]\n", f'[model_providers.{provider_id}]\nbase_url = "{base_url}"\n', 1)
+    return text[: match.start(1)] + replacement + text[match.end(1) :]
+
+
 def _replace_or_append_provider_base_url(text: str, base_url: str) -> str:
     openai_base_pattern = re.compile(r'(?m)^openai_base_url\s*=\s*".*"$')
     if openai_base_pattern.search(text):
         text = openai_base_pattern.sub(f'openai_base_url = "{base_url}"', text, count=1)
     else:
         text = f'openai_base_url = "{base_url}"\n' + text
+    model_provider = _top_level_toml_string_value(text, "model_provider") or "openai"
+    if model_provider.lower() != "openai":
+        text = _replace_or_insert_provider_base_url(text, model_provider, base_url)
     if "[model_providers.OpenAI]" in text:
         provider_block_pattern = re.compile(
             r'(?ms)(^\[model_providers\.OpenAI\]\n.*?)(?=^\[|\Z)'
@@ -248,6 +267,32 @@ def _replace_or_append_provider_base_url(text: str, base_url: str) -> str:
 
         text = provider_block_pattern.sub(replace_legacy_provider, text, count=1)
     return text
+
+
+def _top_level_toml_string_value(text: str, key: str) -> str:
+    top_level = re.split(r"(?m)^\s*\[", text, maxsplit=1)[0]
+    return _toml_string_value(top_level, key)
+
+
+def _provider_block_toml_string_value(text: str, provider_id: str, key: str) -> str:
+    block_pattern = re.compile(
+        rf"(?ms)^\[model_providers\.{re.escape(provider_id)}\]\n(.*?)(?=^\[|\Z)"
+    )
+    match = block_pattern.search(text)
+    if not match:
+        return ""
+    return _toml_string_value(match.group(1), key)
+
+
+def _codex_config_base_url(text: str) -> str:
+    provider = _top_level_toml_string_value(text, "model_provider") or "openai"
+    if provider.lower() == "openai":
+        return _top_level_toml_string_value(text, "openai_base_url") or _provider_block_toml_string_value(text, "OpenAI", "base_url")
+    return (
+        _provider_block_toml_string_value(text, provider, "base_url")
+        or _top_level_toml_string_value(text, "openai_base_url")
+        or _provider_block_toml_string_value(text, "OpenAI", "base_url")
+    )
 
 
 def _write_codex_config(text: str) -> None:
@@ -462,8 +507,8 @@ def config_summary(target: str) -> dict[str, Any]:
         text = _read_codex_config()
         return {
             "target": target,
-            "model": os.environ.get("CODEX_MODEL") or _toml_string_value(text, "model"),
-            "base_url": os.environ.get("CODEX_BASE_URL") or _toml_string_value(text, "base_url") or _toml_string_value(text, "openai_base_url"),
+            "model": os.environ.get("CODEX_MODEL") or _top_level_toml_string_value(text, "model"),
+            "base_url": os.environ.get("CODEX_BASE_URL") or _codex_config_base_url(text),
             "api_key_configured": bool(os.environ.get("OPENAI_API_KEY") or auth.get("OPENAI_API_KEY")),
             "config_file": str(codex_home() / "config.toml"),
             "auth_file": str(codex_home() / "auth.json"),

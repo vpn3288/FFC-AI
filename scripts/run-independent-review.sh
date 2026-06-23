@@ -79,12 +79,25 @@ text = path.read_text(encoding="utf-8") if path.exists() else ""
 updated = re.sub(r'(?m)^(openai_base_url\s*=\s*").*(")\s*$', rf'\1{base_url}\2', text, count=1)
 if updated == text:
     updated = f'openai_base_url = "{base_url}"\n' + text
+top_level = re.split(r"(?m)^\s*\[", updated, maxsplit=1)[0]
+match = re.search(r'(?m)^model_provider\s*=\s*"([^"]+)"', top_level)
+provider = match.group(1) if match else "openai"
+
+def replace_provider_base_url(config: str, provider_id: str) -> str:
+    block_pattern = re.compile(rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)")
+    block_match = block_pattern.search(config)
+    if not block_match:
+        return config.rstrip() + f'\n\n[model_providers.{provider_id}]\nbase_url = "{base_url}"\n'
+    block = block_match.group(1)
+    replaced_block = re.sub(r'(?m)^(base_url\s*=\s*").*(")\s*$', rf'\1{base_url}\2', block, count=1)
+    if replaced_block == block:
+        replaced_block = block.replace(f"[model_providers.{provider_id}]\n", f'[model_providers.{provider_id}]\nbase_url = "{base_url}"\n', 1)
+    return config[: block_match.start(1)] + replaced_block + config[block_match.end(1) :]
+
+if provider.lower() != "openai":
+    updated = replace_provider_base_url(updated, provider)
 if "[model_providers.OpenAI]" in updated:
-    replaced = re.sub(r'(?m)^(base_url\s*=\s*").*(")\s*$', rf'\1{base_url}\2', updated, count=1)
-    if replaced == updated:
-        updated = updated.replace("[model_providers.OpenAI]\n", f'[model_providers.OpenAI]\nbase_url = "{base_url}"\n', 1)
-    else:
-        updated = replaced
+    updated = replace_provider_base_url(updated, "OpenAI")
 path.write_text(updated, encoding="utf-8")
 PY
 fi

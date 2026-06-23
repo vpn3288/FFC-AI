@@ -118,12 +118,12 @@ PY
                   exit 0
                 fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
-                  printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'
+                  printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'
                   exit 0
                 fi
-                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "-c" ]; then
-                  printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'
-                  exit 0
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then
+                  printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\\n' >&2
+                  exit 1
                 fi
                 exit 0
                 """,
@@ -193,7 +193,7 @@ PY
             config = (state / "config.env").read_text(encoding="utf-8")
             self.assertIn("AI_RUNNER_PROVIDERS=codex\n", config)
             self.assertIn("OPENAI_API_KEY=test-openai-key\n", config)
-            self.assertIn("CODEX_MODEL=gpt-5.3-codex\n", config)
+            self.assertIn("CODEX_MODEL=gpt-5.5\n", config)
             self.assertIn("CODEX_BASE_URL=https://example.invalid/v1\n", config)
             self.assertIn("CODEX_EXEC_EPHEMERAL=1\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
@@ -222,7 +222,7 @@ PY
             self.assertIn("-m ai_remote_runner.cli parse /ai 状态", runner_calls)
             codex_config = (root_home / ".codex" / "config.toml").read_text(encoding="utf-8")
             self.assertIn('model_provider = "openai"', codex_config)
-            self.assertIn('model = "gpt-5.3-codex"', codex_config)
+            self.assertIn('model = "gpt-5.5"', codex_config)
             self.assertIn('openai_base_url = "https://example.invalid/v1"', codex_config)
             self.assertIn('approval_policy = "never"', codex_config)
             self.assertIn('sandbox_mode = "danger-full-access"', codex_config)
@@ -232,7 +232,8 @@ PY
             self.assertNotIn("workspace_write_network_access", codex_config)
             self.assertNotIn("dangerously_bypass_approvals_and_sandbox", codex_config)
             self.assertIn('inherit = "all"', codex_config)
-            self.assertIn("disable_response_storage = false", codex_config)
+            self.assertNotIn("disable_response_storage", codex_config)
+            self.assertNotIn("windows_wsl_setup_acknowledged", codex_config)
             self.assertFalse(vscode_wrapper.exists())
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertFalse(manifest["vscode_ready"])
@@ -298,7 +299,8 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
-                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\\n' >&2; exit 1; fi
                 exit 0
                 """,
             )
@@ -376,7 +378,8 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX
@@ -446,6 +449,88 @@ PY
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("npm install -g", npm_calls.read_text(encoding="utf-8"))
+
+    def test_codex_preflight_rejects_strict_config_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            state = root / "state"
+            workspaces = root / "workspaces"
+            install = root / "install"
+            state.mkdir()
+            (state / "config.env").write_text("AI_BRIDGE_SHARED_SECRET=" + "A" * 43 + "\n", encoding="utf-8")
+
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  exec env "$@"
+                fi
+                if [ "${1:-}" = "python3" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "venv" ]; then
+                  mkdir -p "$4/bin"
+                  cat > "$4/bin/python" <<'PY'
+#!/usr/bin/env bash
+exit 0
+PY
+                  chmod +x "$4/bin/python"
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pip" ]; then
+                  exit 0
+                fi
+                if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
+                  exit 0
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+            write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(
+                fakebin / "codex",
+                """
+                #!/usr/bin/env bash
+                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then
+                  printf 'Error loading config.toml: unknown configuration field `bad_field`\\n' >&2
+                  exit 1
+                fi
+                exit 0
+                """,
+            )
+
+            env = clean_env()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REMOTE_STATE": str(state),
+                    "AI_WORKSPACE_ROOT": str(workspaces),
+                    "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_COMPONENTS": "codex",
+                    "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_DEFAULT_PROVIDER": "codex",
+                    "CODEX_API_KEY": "test-openai-key",
+                    "FAKE_SYSTEMD_DIR": str(root),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-runner.sh")],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("unknown configuration field", result.stdout + result.stderr)
+            self.assertIn("codex config.toml is not accepted", result.stdout + result.stderr)
 
     def test_missing_claude_installs_stable_npm_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -563,7 +648,8 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX

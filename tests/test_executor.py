@@ -149,6 +149,103 @@ class ExecutorTests(unittest.TestCase):
             self.assertNotIn("[model_providers.OpenAI]", config)
             self.assertEqual(summary["base_url"], "https://proxy.example/v1")
 
+    def test_codex_base_url_runtime_config_updates_active_custom_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model_provider = "proxy"',
+                        'model = "gpt-5.5"',
+                        'openai_base_url = "https://old-openai.example/v1"',
+                        "",
+                        "[model_providers.other]",
+                        'base_url = "https://other.example/v1"',
+                        "",
+                        "[model_providers.proxy]",
+                        'name = "proxy"',
+                        'base_url = "https://old-proxy.example/v1"',
+                        'wire_api = "responses"',
+                        'env_key = "OPENAI_API_KEY"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                result = apply_base_url(runtime.state, "codex", "https://new-proxy.example/v1")
+                config = (codex_home / "config.toml").read_text(encoding="utf-8")
+                summary = config_summary("codex")
+
+            self.assertEqual(result["base_url"], "https://new-proxy.example/v1")
+            self.assertIn('openai_base_url = "https://new-proxy.example/v1"', config)
+            self.assertIn('[model_providers.proxy]\nname = "proxy"\nbase_url = "https://new-proxy.example/v1"', config)
+            self.assertIn('[model_providers.other]\nbase_url = "https://other.example/v1"', config)
+            self.assertEqual(summary["base_url"], "https://new-proxy.example/v1")
+
+    def test_codex_base_url_runtime_config_uses_top_level_model_provider_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model_provider = "openai"',
+                        'openai_base_url = "https://old-openai.example/v1"',
+                        "",
+                        "[model_providers.proxy]",
+                        'model_provider = "not-top-level"',
+                        'base_url = "https://proxy.example/v1"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                apply_base_url(runtime.state, "codex", "https://new-openai.example/v1")
+                config = (codex_home / "config.toml").read_text(encoding="utf-8")
+                summary = config_summary("codex")
+
+            self.assertIn('openai_base_url = "https://new-openai.example/v1"', config)
+            self.assertIn('base_url = "https://proxy.example/v1"', config)
+            self.assertNotIn("[model_providers.not-top-level]", config)
+            self.assertEqual(summary["base_url"], "https://new-openai.example/v1")
+
+    def test_codex_config_summary_uses_active_provider_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model_provider = "proxy"',
+                        'model = "gpt-5.5"',
+                        'openai_base_url = "https://openai.example/v1"',
+                        "",
+                        "[model_providers.other]",
+                        'base_url = "https://other.example/v1"',
+                        "",
+                        "[model_providers.proxy]",
+                        'base_url = "https://proxy.example/v1"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                summary = config_summary("codex")
+
+            self.assertEqual(summary["model"], "gpt-5.5")
+            self.assertEqual(summary["base_url"], "https://proxy.example/v1")
+
     def test_vscode_config_summary_does_not_fall_back_to_claude_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -471,7 +568,7 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn("ANTHROPIC_BASE_URL", vscode_gpt["data"]["note_zh"])
             self.assertEqual(vscode_claude["data"]["model"], "opus")
             self.assertEqual(vscode_claude["data"]["model_family"], "claude")
-            self.assertEqual(codex_gpt["data"]["model"], "gpt-5.3-codex")
+            self.assertEqual(codex_gpt["data"]["model"], "gpt-5.5")
             self.assertEqual(codex_gpt["data"]["config_key"], "CODEX_MODEL")
             self.assertEqual(codex_claude["data"]["model"], "claude-opus-4-8")
             self.assertEqual(codex_claude["data"]["model_family"], "claude")
