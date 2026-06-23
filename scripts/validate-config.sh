@@ -3,7 +3,7 @@
 set -euo pipefail
 
 STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
-CODEX_HOME="${AI_CODEX_HOME:-/root/.codex}"
+CODEX_HOME="${CODEX_HOME:-${AI_CODEX_HOME:-/root/.codex}}"
 CLAUDE_SETTINGS="/root/.claude/settings.json"
 VSCODE_SETTINGS="/root/.vscode-root/User/settings.json"
 
@@ -77,6 +77,24 @@ check_toml_value() {
   fi
 }
 
+check_codex_base_url() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    error "✗ Codex配置文件不存在: $file"
+    return 1
+  fi
+  if grep -q '^openai_base_url\s*=' "$file" 2>/dev/null; then
+    log "✓ Codex Base URL 已配置: openai_base_url"
+    return 0
+  fi
+  if grep -q '^\[model_providers\.' "$file" 2>/dev/null && grep -q '^base_url\s*=' "$file" 2>/dev/null; then
+    log "✓ Codex Base URL 已配置: model_providers.*.base_url"
+    return 0
+  fi
+  log "○ Codex Base URL 未配置（可能使用官方默认值）"
+  return 0
+}
+
 check_json_key() {
   local file="$1"
   local key="$2"
@@ -124,7 +142,7 @@ if [ -d "$CODEX_HOME" ]; then
   if [ -f "$CODEX_HOME/config.toml" ]; then
     log "✓ Codex配置文件存在"
     check_toml_value "$CODEX_HOME/config.toml" "model" "Codex模型"
-    check_toml_value "$CODEX_HOME/config.toml" "openai_base_url" "Codex Base URL"
+    check_codex_base_url "$CODEX_HOME/config.toml"
     check_toml_value "$CODEX_HOME/config.toml" "approval_policy" "Codex审批策略"
     check_toml_value "$CODEX_HOME/config.toml" "sandbox_mode" "Codex沙箱模式"
   else

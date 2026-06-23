@@ -27,6 +27,7 @@ from .task_control import (
 PROBE_TIMEOUT_SECONDS = 30
 AUTH_PROBE_TIMEOUT_SECONDS = 60
 CODEX_EXEC_HELP_COMMAND = ["codex", "exec", "--help"]
+CODEX_EXEC_RESUME_HELP_COMMAND = ["codex", "exec", "resume", "--help"]
 
 
 @dataclass(frozen=True)
@@ -201,6 +202,9 @@ def discover_vscode() -> dict[str, Any]:
 def discover_codex() -> dict[str, Any]:
     base = _version("codex")
     exec_available = _returns_ok(CODEX_EXEC_HELP_COMMAND)
+    resume_available = _returns_ok(CODEX_EXEC_RESUME_HELP_COMMAND)
+    resume_json_available = _help_has(CODEX_EXEC_RESUME_HELP_COMMAND, "--json")
+    resume_output_last_message_available = _help_has(CODEX_EXEC_RESUME_HELP_COMMAND, "--output-last-message")
     approval_config_available = _returns_ok(["codex", "exec", "-c", 'approval_policy="never"', "--help"])
     sandbox_available = _codex_exec_help_has("--sandbox")
     bypass_available = _codex_exec_help_has("--dangerously-bypass-approvals-and-sandbox")
@@ -224,7 +228,7 @@ def discover_codex() -> dict[str, Any]:
     base["available"] = bool(base["available"] and exec_available and json_available and output_last_message_available and cd_available and full_access_available)
     base["capabilities"] = {
         "new_conversation": True,
-        "continue_conversation": _returns_ok(["codex", "exec", "resume", "--help"]),
+        "continue_conversation": bool(resume_available and resume_json_available and resume_output_last_message_available),
         "manual_compact": False,
         "auto_compact": False,
         "context_usage": "estimated",
@@ -241,6 +245,9 @@ def discover_codex() -> dict[str, Any]:
         "output_last_message_available": output_last_message_available,
         "json_available": json_available,
         "jsonl_status_events": json_available,
+        "resume_available": resume_available,
+        "resume_json_available": resume_json_available,
+        "resume_output_last_message_available": resume_output_last_message_available,
         "telegram_live_status_available": json_available and output_last_message_available,
         "cd_available": cd_available,
         "add_dir_available": add_dir_available,
@@ -845,6 +852,8 @@ CODEX_TRANSIENT_STREAM_ERROR_MARKERS = (
     "failed to connect to websocket",
     "connection reset",
     "connection closed",
+    "connection aborted",
+    "response.completed",
     "stream timeout",
     "stream error",
 )
@@ -856,6 +865,8 @@ CODEX_PERMANENT_STREAM_ERROR_MARKERS = (
     "invalid api key",
     "incorrect api key",
     "missing bearer",
+    "unauthorized",
+    "forbidden",
     "model not found",
     "unsupported model",
     "unknown model",
@@ -877,6 +888,47 @@ def _codex_error_phase(message: str) -> str:
     if any(marker in lowered for marker in CODEX_TRANSIENT_STREAM_ERROR_MARKERS):
         return "warning"
     return "error"
+
+
+def _codex_stream_error_kind(text: str) -> str:
+    lowered = text.lower()
+    if any(marker in lowered for marker in CODEX_PERMANENT_STREAM_ERROR_MARKERS):
+        return "permanent"
+    if any(marker in lowered for marker in CODEX_TRANSIENT_STREAM_ERROR_MARKERS):
+        return "transient"
+    return ""
+
+
+def _codex_stream_error_fingerprint(text: str, kind: str) -> str:
+    lowered = text.lower()
+    if "websocket" in lowered or "responses_websocket" in lowered:
+        return f"{kind}:websocket"
+    if "reconnecting..." in lowered:
+        return f"{kind}:reconnecting"
+    if "401" in lowered or "403" in lowered or "unauthorized" in lowered or "forbidden" in lowered:
+        return f"{kind}:auth"
+    return f"{kind}:{_preview_text(text, 120)}"
+
+
+def _codex_failure_diagnostic(stdout: str, stderr: str) -> str:
+    haystack = "\n".join(part for part in (stdout, stderr) if part)
+    kind = _codex_stream_error_kind(haystack)
+    if kind == "permanent":
+        return (
+            "Codex 认证、模型或代理配置被服务端拒绝。请检查 OPENAI_API_KEY、Codex model、"
+            "base_url 是否属于同一个 OpenAI/兼容网关；如果错误里出现 401/403，这不是网络抖动。"
+        )
+    if kind != "transient":
+        return ""
+    if "websocket" in haystack.lower() or "responses_websocket" in haystack.lower():
+        return (
+            "Codex 流式连接在自动重试后中断。runner 已按失败处理。"
+            "第三方 OpenAI 兼容代理在 Linux 服务环境中常见原因是 websocket 流不兼容；"
+            "安装脚本会把非官方 base_url 写入自定义 model_provider，并设置 wire_api=\"responses\"、"
+            "supports_websockets=false、stream_max_retries=10。请重新运行安装脚本或用 /ai 代理 设置 codex <base_url> "
+            "刷新配置后再试。"
+        )
+    return "Codex 流式连接在自动重试后中断。runner 已按失败处理；请继续或重试该任务。"
 
 
 STATUS_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -1131,6 +1183,30 @@ def _emit_codex_jsonl_event(event: dict[str, Any], run_id: str, emit: Callable[[
     emit({"run_id": run_id, "provider": "codex", "phase": _codex_event_phase(item, label_event_type), "public_message_zh": label})
 
 
+def _emit_codex_stderr_line(line: str, run_id: str, emit: Callable[[dict[str, Any]], None], seen: set[str]) -> None:
+    text = line.strip()
+    if not text:
+        return
+    kind = _codex_stream_error_kind(text)
+    if not kind:
+        return
+    fingerprint = f"stderr-stream:{_codex_stream_error_fingerprint(text, kind)}"
+    if fingerprint in seen:
+        return
+    seen.add(fingerprint)
+    if kind == "permanent":
+        emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": _preview_text(text, 240)})
+        return
+    emit(
+        {
+            "run_id": run_id,
+            "provider": "codex",
+            "phase": "warning",
+            "public_message_zh": f"Codex 流连接正在重试：{_preview_text(text, 180)}",
+        }
+    )
+
+
 def _emit_codex_jsonl_events(
     output: str,
     run_id: str,
@@ -1222,6 +1298,7 @@ def _run_codex_command(
         try:
             for line in stream:
                 stderr_lines.append(line)
+                _emit_codex_stderr_line(line, run_id, emit, seen_events)
         except (ValueError, OSError):
             return
 
@@ -1506,6 +1583,10 @@ def codex_command(
     if _codex_exec_help_has("--skip-git-repo-check"):
         command.insert(command.index("--cd"), "--skip-git-repo-check")
     if resume_session_id and not use_ephemeral:
+        if not _help_has(CODEX_EXEC_RESUME_HELP_COMMAND, "--json"):
+            raise RuntimeError("codex_resume_json_unavailable")
+        if not _help_has(CODEX_EXEC_RESUME_HELP_COMMAND, "--output-last-message"):
+            raise RuntimeError("codex_resume_output_last_message_unavailable")
         command.extend(["resume", resume_session_id, "-"])
     else:
         command.extend(["--", "-"])
@@ -1565,6 +1646,11 @@ def invoke_codex(
         output_text = output_file.read_text(encoding="utf-8")
     else:
         output_text = _codex_jsonl_last_agent_message(result.stdout) or result.stderr or result.stdout
+    if result.returncode != 0:
+        output_text = _redact_status_text(output_text)
+        diagnostic = _codex_failure_diagnostic(result.stdout, result.stderr)
+        if diagnostic:
+            output_text = f"{diagnostic}\n\n原始错误:\n{output_text.rstrip()}" if output_text.strip() else diagnostic
     jsonl_summary = _codex_jsonl_run_summary(result.stdout)
     codex_thread_id = _codex_jsonl_thread_id(result.stdout)
     if result.stdout.strip():

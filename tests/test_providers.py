@@ -17,6 +17,7 @@ from ai_remote_runner.providers import (
     provider_status,
 )
 from ai_remote_runner.providers import _emit_codex_jsonl_events
+from ai_remote_runner.providers import _emit_codex_stderr_line
 from ai_remote_runner.providers import discover_codex
 from ai_remote_runner.providers import discover_vscode
 from ai_remote_runner.budget import BudgetLedger
@@ -328,6 +329,21 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(events[0]["phase"], "error")
         self.assertIn("401 Unauthorized", str(events[0].get("error") or ""))
 
+    def test_codex_stderr_stream_retry_status_is_deduplicated(self) -> None:
+        events: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for second in ("14", "15"):
+            _emit_codex_stderr_line(
+                f"2026-06-23T14:01:{second}Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket",
+                "run-1",
+                events.append,
+                seen,
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["phase"], "warning")
+        self.assertIn("流连接正在重试", str(events[0].get("public_message_zh") or ""))
+
     def test_invoke_codex_returns_stderr_when_last_message_missing(self) -> None:
         import subprocess
         import tempfile
@@ -342,6 +358,45 @@ class ProviderTests(unittest.TestCase):
                 result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.output_text, "not inside a trusted directory")
+
+    def test_invoke_codex_explains_websocket_stream_failure(self) -> None:
+        import subprocess
+        import tempfile
+
+        stderr = (
+            "2026-06-23T14:01:14Z ERROR codex_api::endpoint::responses_websocket: "
+            "failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://proxy.example/v1/responses"
+        )
+        completed = subprocess.CompletedProcess(["codex"], 1, stdout="", stderr=stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.run_registered", return_value=completed),
+            ):
+                result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("不是网络抖动", result.output_text)
+        self.assertIn("原始错误", result.output_text)
+
+    def test_invoke_codex_explains_transient_websocket_retry_failure(self) -> None:
+        import subprocess
+        import tempfile
+
+        stderr = "Reconnecting... 5/5 (stream disconnected before completion: websocket closed by server before response.completed)"
+        completed = subprocess.CompletedProcess(["codex"], 1, stdout="", stderr=stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.run_registered", return_value=completed),
+            ):
+                result = invoke_codex("noop", Path(tmp), ledger, timeout_seconds=1, reserved_usd=0.01)
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("第三方 OpenAI 兼容代理", result.output_text)
+        self.assertIn('supports_websockets=false', result.output_text)
 
     def test_invoke_codex_sends_prompt_on_stdin(self) -> None:
         import subprocess

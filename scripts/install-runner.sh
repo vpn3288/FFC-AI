@@ -821,6 +821,9 @@ CODEX_STATUS="install_required"
 CODEX_REMEDIATION_ZH="Codex CLI 必须由安装脚本全局安装；若失败请检查网络、Node.js/npm、以及版本锁。"
 CODEX_EXEC_JSON_AVAILABLE=false
 CODEX_EXEC_EPHEMERAL_AVAILABLE=false
+CODEX_EXEC_RESUME_AVAILABLE=false
+CODEX_EXEC_RESUME_JSON_AVAILABLE=false
+CODEX_EXEC_RESUME_OUTPUT_LAST_MESSAGE_AVAILABLE=false
 CODEX_EXEC_CD_AVAILABLE=false
 CODEX_EXEC_OUTPUT_LAST_MESSAGE_AVAILABLE=false
 CODEX_EXEC_ADD_DIR_AVAILABLE=false
@@ -866,7 +869,7 @@ if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENA
     CODEX_EFFECTIVE_BASE_URL="https://api.openai.com/v1"
   fi
   CODEX_EFFECTIVE_MODEL_PROVIDER="${CODEX_MODEL_PROVIDER:-openai}"
-  if [ -z "${CODEX_MODEL_PROVIDER:-}" ] && [ "$CODEX_EFFECTIVE_BASE_URL" != "https://api.openai.com/v1" ]; then
+  if [ "$CODEX_EFFECTIVE_BASE_URL" != "https://api.openai.com/v1" ] && [ "$CODEX_EFFECTIVE_MODEL_PROVIDER" = "openai" ]; then
     CODEX_EFFECTIVE_MODEL_PROVIDER="$CODEX_OPENAI_COMPAT_PROVIDER"
   fi
 
@@ -1300,6 +1303,12 @@ if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
   fi
   grep -q -- '--json' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --json is required for realtime Codex status events'; exit 1; }
   CODEX_EXEC_JSON_AVAILABLE=true
+  CODEX_EXEC_RESUME_HELP_TEXT="$(root_env_run codex exec resume --help 2>&1)" || { log 'codex exec resume is required for default long conversation mode'; exit 1; }
+  CODEX_EXEC_RESUME_AVAILABLE=true
+  grep -q -- '--json' <<< "$CODEX_EXEC_RESUME_HELP_TEXT" || { log 'codex exec resume --json is required for default long conversation mode'; exit 1; }
+  CODEX_EXEC_RESUME_JSON_AVAILABLE=true
+  grep -q -- '--output-last-message' <<< "$CODEX_EXEC_RESUME_HELP_TEXT" || { log 'codex exec resume --output-last-message is required for default long conversation mode'; exit 1; }
+  CODEX_EXEC_RESUME_OUTPUT_LAST_MESSAGE_AVAILABLE=true
   if grep -q -- '--ephemeral' <<< "$CODEX_EXEC_HELP_TEXT"; then
     CODEX_EXEC_EPHEMERAL_AVAILABLE=true
   fi
@@ -1358,6 +1367,9 @@ if [ "$DRY_RUN" = false ]; then
   "codex_exec_json_available": $CODEX_EXEC_JSON_AVAILABLE,
   "codex_exec_ephemeral_available": $CODEX_EXEC_EPHEMERAL_AVAILABLE,
   "codex_exec_ephemeral_enabled": "$(if [ "$REQUEST_CODEX" = true ]; then printf '%s' "$EFFECTIVE_CODEX_EXEC_EPHEMERAL"; fi)",
+  "codex_exec_resume_available": $CODEX_EXEC_RESUME_AVAILABLE,
+  "codex_exec_resume_json_available": $CODEX_EXEC_RESUME_JSON_AVAILABLE,
+  "codex_exec_resume_output_last_message_available": $CODEX_EXEC_RESUME_OUTPUT_LAST_MESSAGE_AVAILABLE,
   "codex_exec_cd_available": $CODEX_EXEC_CD_AVAILABLE,
   "codex_exec_output_last_message_available": $CODEX_EXEC_OUTPUT_LAST_MESSAGE_AVAILABLE,
   "codex_exec_add_dir_available": $CODEX_EXEC_ADD_DIR_AVAILABLE,

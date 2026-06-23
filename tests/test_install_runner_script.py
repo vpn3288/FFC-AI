@@ -117,6 +117,7 @@ PY
                   printf 'codex-cli 0.138.0\\n'
                   exit 0
                 fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then
                   printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'
                   exit 0
@@ -172,6 +173,7 @@ PY
                     "AI_DEFAULT_PROVIDER": "codex",
                     "CODEX_API_KEY": "test-openai-key",
                     "CODEX_MODEL": "codex",
+                    "CODEX_MODEL_PROVIDER": "openai",
                     "CODEX_OPENAI_BASE_URL": "https://example.invalid/v1",
                     "FAKE_SYSTEMD_DIR": str(root),
                     "SYSTEMCTL_CALLS": str(systemctl_calls),
@@ -248,6 +250,9 @@ PY
             self.assertEqual(manifest["process_control_enabled"], "1")
             self.assertTrue(manifest["codex_exec_json_available"])
             self.assertTrue(manifest["codex_exec_ephemeral_available"])
+            self.assertTrue(manifest["codex_exec_resume_available"])
+            self.assertTrue(manifest["codex_exec_resume_json_available"])
+            self.assertTrue(manifest["codex_exec_resume_output_last_message_available"])
             self.assertTrue(manifest["codex_exec_add_dir_available"])
             self.assertTrue(manifest["codex_exec_skip_git_repo_check_available"])
             self.assertEqual(manifest["codex_exec_full_access_mode"], "sandbox")
@@ -306,6 +311,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\\n' >&2; exit 1; fi
                 exit 0
@@ -385,6 +391,7 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
@@ -504,6 +511,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
+                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then
                   printf 'Error loading config.toml: unknown configuration field `bad_field`\\n' >&2
@@ -655,6 +663,7 @@ PY
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
