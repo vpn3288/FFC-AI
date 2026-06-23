@@ -1006,7 +1006,7 @@ if [ "$DRY_RUN" = false ]; then
   EFFECTIVE_VSCODE_CLAUDE_MAX_TURNS="${VSCODE_CLAUDE_MAX_TURNS:-${PREVIOUS_VSCODE_CLAUDE_MAX_TURNS:-0}}"
   EFFECTIVE_VSCODE_CLAUDE_API_RETRY_ATTEMPTS="${VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-${PREVIOUS_VSCODE_CLAUDE_API_RETRY_ATTEMPTS:-3}}"
   EFFECTIVE_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS="${VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-${PREVIOUS_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-12}}"
-  EFFECTIVE_CODEX_EXEC_EPHEMERAL="${CODEX_EXEC_EPHEMERAL:-${PREVIOUS_CODEX_EXEC_EPHEMERAL:-1}}"
+  EFFECTIVE_CODEX_EXEC_EPHEMERAL="${CODEX_EXEC_EPHEMERAL:-0}"
   EFFECTIVE_AI_PROCESS_CONTROL_ENABLED="${AI_PROCESS_CONTROL_ENABLED:-${PREVIOUS_AI_PROCESS_CONTROL_ENABLED:-1}}"
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
@@ -1118,7 +1118,7 @@ default = {
     "policy": "continue",
     "conversation_id": "default",
     "provider_conversations": {},
-    "auto_compact_enabled": True,
+    "auto_compact_enabled": False,
     "auto_compact_threshold_percent": 80,
 }
 try:
@@ -1126,6 +1126,7 @@ try:
 except json.JSONDecodeError:
     data = {}
 data = default | data
+data["auto_compact_enabled"] = False
 data["permission_scope"] = scope
 path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 path.chmod(0o600)
@@ -1265,8 +1266,9 @@ if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
   fi
   grep -q -- '--json' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --json is required for realtime Codex status events'; exit 1; }
   CODEX_EXEC_JSON_AVAILABLE=true
-  grep -q -- '--ephemeral' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --ephemeral is required so phone-triggered runs do not persist sessions'; exit 1; }
-  CODEX_EXEC_EPHEMERAL_AVAILABLE=true
+  if grep -q -- '--ephemeral' <<< "$CODEX_EXEC_HELP_TEXT"; then
+    CODEX_EXEC_EPHEMERAL_AVAILABLE=true
+  fi
   grep -q -- '--cd' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --cd is required before core_ready for requested provider codex'; exit 1; }
   CODEX_EXEC_CD_AVAILABLE=true
   grep -q -- '--output-last-message' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --output-last-message is required before core_ready for requested provider codex'; exit 1; }

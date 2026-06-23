@@ -40,6 +40,7 @@ class CommandTests(unittest.TestCase):
         cases = {
             "/ai 索引": "command_index",
             "/ai new": "new_conversation",
+            "/ai 开启新对话": "new_conversation",
             "/ai continue": "continue_conversation",
             "/ai mode new_each": "set_policy_new_each_request",
             "/ai mode continue": "set_policy_continue",

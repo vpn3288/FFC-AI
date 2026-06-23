@@ -694,6 +694,21 @@ def _codex_jsonl_last_agent_message(output: str) -> str:
     return last_message
 
 
+def _codex_jsonl_thread_id(output: str) -> str:
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "thread.started":
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str) and thread_id.strip():
+                return thread_id.strip()
+    return ""
+
+
 def _codex_event_item(event: dict[str, Any]) -> dict[str, Any]:
     for key in ("item", "payload"):
         value = event.get(key)
@@ -1401,23 +1416,29 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_prompt: str = "") -> list[str]:
+def codex_command(
+    prompt: str,
+    workspace: Path,
+    output_file: Path,
+    instruction_prompt: str = "",
+    native_session_id: str | None = None,
+) -> list[str]:
     if not _codex_exec_help_has("--json"):
         raise RuntimeError("codex_json_unavailable")
     if not _codex_exec_help_has("--cd"):
         raise RuntimeError("codex_cd_unavailable")
     if not _codex_exec_help_has("--output-last-message"):
         raise RuntimeError("codex_output_last_message_unavailable")
+    use_ephemeral = _env_truthy("CODEX_EXEC_EPHEMERAL", default=False) and _codex_exec_help_has("--ephemeral")
+    resume_session_id = (native_session_id or "").strip()
     command = [
         *CODEX_EXEC_TEMPLATE,
         "--cd",
         str(workspace),
         "--output-last-message",
         str(output_file),
-        "--",
-        "-",
     ]
-    if _env_truthy("CODEX_EXEC_EPHEMERAL", default=True) and _codex_exec_help_has("--ephemeral"):
+    if use_ephemeral:
         command.insert(command.index("--cd"), "--ephemeral")
     if _codex_exec_help_has("--color"):
         command[command.index("--cd") : command.index("--cd")] = ["--color", "never"]
@@ -1435,6 +1456,10 @@ def codex_command(prompt: str, workspace: Path, output_file: Path, instruction_p
         command[command.index("--cd") : command.index("--cd")] = ["--add-dir", "/"]
     if _codex_exec_help_has("--skip-git-repo-check"):
         command.insert(command.index("--cd"), "--skip-git-repo-check")
+    if resume_session_id and not use_ephemeral:
+        command.extend(["resume", resume_session_id, "-"])
+    else:
+        command.extend(["--", "-"])
     return command
 
 
@@ -1448,13 +1473,14 @@ def invoke_codex(
     timeout_seconds: int = 1800,
     max_output_bytes: int = 200000,
     emit: Callable[[dict[str, Any]], None] | None = None,
+    native_session_id: str | None = None,
 ) -> ProviderResult:
     actual_run_id = run_id or str(uuid.uuid4())
     ledger.reserve(actual_run_id, "codex", reserved_usd, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
     output_file = workspace / f".ai-remote-codex-{actual_run_id}-last-message.txt"
     output_file.unlink(missing_ok=True)
     try:
-        command = codex_command(prompt, workspace, output_file, instruction_prompt)
+        command = codex_command(prompt, workspace, output_file, instruction_prompt, native_session_id=native_session_id)
     except RuntimeError as exc:
         ledger.complete(actual_run_id, None, status="failed")
         if emit:
@@ -1491,9 +1517,11 @@ def invoke_codex(
     else:
         output_text = _codex_jsonl_last_agent_message(result.stdout) or result.stderr or result.stdout
     jsonl_summary = _codex_jsonl_run_summary(result.stdout)
+    codex_thread_id = _codex_jsonl_thread_id(result.stdout)
     if result.stdout.strip():
         raw = {
             "stdout_jsonl": result.stdout,
+            "native_session_id": codex_thread_id,
             "jsonl_summary": {
                 "pending_tool_call_count": jsonl_summary.pending_tool_call_count,
                 "pending_tool_call_labels": list(jsonl_summary.pending_tool_call_labels),

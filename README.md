@@ -368,6 +368,7 @@ AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 /ai 上下文          # 查看当前上下文
 /ai 压缩            # 手动压缩上下文
 /ai 新对话          # 开始新对话
+/ai 开启新对话      # 同上，只有明确发送才更换对话
 ```
 
 ### 权限控制
@@ -402,7 +403,7 @@ AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 
 ### Codex子agent实时状态
 Codex运行时会把JSONL事件流转换成Telegram里的实时状态。默认会高亮显示审查者AI、子agent、命令执行、文件修改等状态。
-安装脚本默认开启 `CODEX_EXEC_EPHEMERAL=1`，由runner保存长期对话记忆，避免Codex CLI自己把历史工具输出越滚越大。若Codex上下文接近上限，Telegram会显示警告；若Codex退出时仍有工具调用没返回结果，runner会按“中断”处理，不会误报完成。
+安装脚本默认写入 `CODEX_EXEC_EPHEMERAL=0`，普通 Telegram 消息会继续复用当前 runner 对话；Codex 返回 thread_id 后，runner 会在后续同一对话里使用 `codex exec resume` 续接。只有发送 `/ai 新对话` 或 `/ai 开启新对话` 才更换对话。若 Codex 上下文接近上限，Telegram 会显示警告；若 Codex 退出时仍有工具调用没返回结果，runner 会按“中断”处理，不会误报完成。
 
 ```
 /ai 子agent状态          # 查看当前是否开启

@@ -195,6 +195,12 @@ COMMANDS: dict[tuple[str, ...], CommandSpec] = {
         "/ai 新对话",
         "/ai 新对话"
     ),
+    ("开启新对话",): CommandSpec(
+        "new_conversation",
+        "创建新的提供商会话。",
+        "/ai 开启新对话",
+        "/ai 开启新对话"
+    ),
     ("new",): CommandSpec(
         "new_conversation",
         "创建新的提供商会话。",

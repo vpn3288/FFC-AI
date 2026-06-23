@@ -30,6 +30,7 @@ class ExecutorTests(unittest.TestCase):
             "CODEX_BASE_URL",
             "CODEX_MODEL",
             "CODEX_HOME",
+            "CODEX_EXEC_EPHEMERAL",
             "CODEX_SUBAGENT_STATUS_EVENTS",
             "AI_CODEX_HOME",
             "AI_TOOL_HOME",
@@ -707,6 +708,59 @@ class ExecutorTests(unittest.TestCase):
                 response = execute(parsed, {"request_id": "ps2", "raw_text": "do work"}, runtime)
             self.assertEqual(response["data"]["provider"], "codex")
             invoke.assert_called_once()
+
+    def test_codex_continue_policy_reuses_native_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 提供商 使用 codex"), {"request_id": "codex-provider", "raw_text": "/ai 提供商 使用 codex"}, runtime)
+            first_parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            second_parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "continue"}, "requires_confirmation": False}
+            first = ProviderResult("run-1", "codex", "completed", "first", {"native_session_id": "thread-1"}, 0)
+            second = ProviderResult("run-2", "codex", "completed", "second", {}, 0)
+            with patch("ai_remote_runner.executor.invoke_codex", side_effect=[first, second]) as invoke:
+                execute(first_parsed, {"request_id": "codex-1", "raw_text": "do work"}, runtime)
+                response = execute(second_parsed, {"request_id": "codex-2", "raw_text": "continue"}, runtime)
+            self.assertEqual(response["data"]["conversation_id"], "default")
+            self.assertEqual(invoke.call_args_list[0].kwargs["native_session_id"], "")
+            self.assertEqual(invoke.call_args_list[1].kwargs["native_session_id"], "thread-1")
+            self.assertIn("# 当前用户消息\ncontinue", invoke.call_args_list[1].args[0])
+            self.assertNotIn("# 持续对话历史", invoke.call_args_list[1].args[0])
+            self.assertNotIn("do work", invoke.call_args_list[1].args[0])
+            self.assertNotIn("first", invoke.call_args_list[1].args[0])
+
+    def test_codex_new_conversation_does_not_resume_previous_native_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 提供商 使用 codex"), {"request_id": "codex-provider", "raw_text": "/ai 提供商 使用 codex"}, runtime)
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            first = ProviderResult("run-1", "codex", "completed", "first", {"native_session_id": "thread-1"}, 0)
+            second = ProviderResult("run-2", "codex", "completed", "second", {"native_session_id": "thread-2"}, 0)
+            with patch("ai_remote_runner.executor.invoke_codex", side_effect=[first, second]) as invoke:
+                first_response = execute(parsed, {"request_id": "codex-1", "raw_text": "do work"}, runtime)
+                execute(parse_command("/ai 新对话"), {"request_id": "codex-new", "raw_text": "/ai 新对话"}, runtime)
+                second_response = execute(parsed, {"request_id": "codex-2", "raw_text": "fresh work"}, runtime)
+            self.assertNotEqual(first_response["data"]["conversation_id"], second_response["data"]["conversation_id"])
+            self.assertEqual(invoke.call_args_list[0].kwargs["native_session_id"], "")
+            self.assertEqual(invoke.call_args_list[1].kwargs["native_session_id"], "")
+
+    def test_codex_ephemeral_mode_keeps_runner_history_instead_of_native_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            execute(parse_command("/ai 提供商 使用 codex"), {"request_id": "codex-provider", "raw_text": "/ai 提供商 使用 codex"}, runtime)
+            first_parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "remember alpha"}, "requires_confirmation": False}
+            second_parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "continue"}, "requires_confirmation": False}
+            first = ProviderResult("run-1", "codex", "completed", "alpha saved", {"native_session_id": "thread-1"}, 0)
+            second = ProviderResult("run-2", "codex", "completed", "second", {}, 0)
+            with (
+                patch.dict("os.environ", {"CODEX_EXEC_EPHEMERAL": "1"}, clear=False),
+                patch("ai_remote_runner.executor.invoke_codex", side_effect=[first, second]) as invoke,
+            ):
+                execute(first_parsed, {"request_id": "codex-1", "raw_text": "remember alpha"}, runtime)
+                execute(second_parsed, {"request_id": "codex-2", "raw_text": "continue"}, runtime)
+            self.assertEqual(invoke.call_args_list[1].kwargs["native_session_id"], "")
+            self.assertIn("# 持续对话历史", invoke.call_args_list[1].args[0])
+            self.assertIn("remember alpha", invoke.call_args_list[1].args[0])
+            self.assertIn("alpha saved", invoke.call_args_list[1].args[0])
 
     def test_codex_rejects_non_full_permission_scope_without_misleading_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

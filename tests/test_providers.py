@@ -58,7 +58,10 @@ class ProviderTests(unittest.TestCase):
             }
             return all(needle in flags for needle in needles)
 
-        with patch("ai_remote_runner.providers._help_has", side_effect=supported):
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("ai_remote_runner.providers._help_has", side_effect=supported),
+        ):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
         self.assertIn("-c", command)
         self.assertIn('approval_policy="never"', command)
@@ -71,11 +74,11 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("--add-dir", command)
         self.assertEqual(command[command.index("--add-dir") + 1], "/")
         self.assertNotIn("--sandbox", command)
-        self.assertIn("--ephemeral", command)
+        self.assertNotIn("--ephemeral", command)
         self.assertNotIn("--ask-for-approval", command)
         self.assertNotIn("--ignore-user-config", command)
 
-    def test_codex_command_can_disable_ephemeral_exec(self) -> None:
+    def test_codex_command_can_enable_ephemeral_exec(self) -> None:
         def supported(_: list[str], *needles: str) -> bool:
             flags = {
                 "--dangerously-bypass-approvals-and-sandbox",
@@ -87,11 +90,21 @@ class ProviderTests(unittest.TestCase):
             return all(needle in flags for needle in needles)
 
         with (
-            patch.dict("os.environ", {"CODEX_EXEC_EPHEMERAL": "0"}, clear=False),
+            patch.dict("os.environ", {"CODEX_EXEC_EPHEMERAL": "1"}, clear=False),
             patch("ai_remote_runner.providers._help_has", side_effect=supported),
         ):
             command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"))
-        self.assertNotIn("--ephemeral", command)
+        self.assertIn("--ephemeral", command)
+
+    def test_codex_command_resumes_native_session_when_available(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("ai_remote_runner.providers._help_has", return_value=True),
+        ):
+            command = codex_command("hello", Path("/tmp/work"), Path("/tmp/out.txt"), native_session_id="thread-1")
+        self.assertIn("resume", command)
+        self.assertEqual(command[command.index("resume") + 1 :], ["thread-1", "-"])
+        self.assertNotIn("--", command)
 
     def test_codex_command_includes_instruction_prompt(self) -> None:
         with patch("ai_remote_runner.providers._help_has", return_value=True):
@@ -339,6 +352,21 @@ class ProviderTests(unittest.TestCase):
                     reserved_usd=0.01,
                 )
         self.assertEqual(result.status, "completed")
+
+    def test_invoke_codex_records_native_thread_id(self) -> None:
+        import subprocess
+        import tempfile
+
+        stdout = '{"type":"thread.started","thread_id":"thread-1"}\n'
+        completed = subprocess.CompletedProcess(["codex"], 0, stdout=stdout, stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("ai_remote_runner.providers._help_has", return_value=True),
+                patch("ai_remote_runner.providers.run_registered", return_value=completed),
+            ):
+                result = invoke_codex("noop", Path(tmp), BudgetLedger(Path(tmp) / "ledger.json"), timeout_seconds=1, reserved_usd=0.01)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.raw["native_session_id"], "thread-1")
 
     def test_invoke_codex_falls_back_to_jsonl_agent_message(self) -> None:
         import subprocess

@@ -107,7 +107,7 @@ class RunnerRuntime:
             "policy": "continue",
             "conversation_id": "default",
             "provider_conversations": {},
-            "auto_compact_enabled": True,
+            "auto_compact_enabled": False,
             "auto_compact_threshold_percent": 80,
             "permission_scope": os.environ.get("AI_PERMISSION_SCOPE", "full"),
         }
@@ -139,6 +139,74 @@ def _json_state(path: Path) -> dict[str, Any]:
 
 def _write_json_state(path: Path, data: dict[str, Any]) -> None:
     atomic_write_json(path, data)
+
+
+def _native_sessions_path(rt: RunnerRuntime) -> Path:
+    return rt.state / "provider-native-sessions.json"
+
+
+def _load_native_sessions(rt: RunnerRuntime) -> dict[str, Any]:
+    path = _native_sessions_path(rt)
+    if not path.exists():
+        return {"providers": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"providers": {}}
+    if not isinstance(data, dict):
+        return {"providers": {}}
+    if not isinstance(data.get("providers"), dict):
+        data["providers"] = {}
+    return data
+
+
+def _native_session_id(rt: RunnerRuntime, provider: str, conversation_id: str) -> str:
+    data = _load_native_sessions(rt)
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        return ""
+    conversations = providers.get(provider)
+    if not isinstance(conversations, dict):
+        return ""
+    value = conversations.get(conversation_id)
+    return str(value).strip() if value else ""
+
+
+def _codex_native_resume_enabled() -> bool:
+    return os.environ.get("CODEX_EXEC_EPHEMERAL", "0").strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def _record_native_session_id(rt: RunnerRuntime, provider: str, conversation_id: str, native_session_id: str) -> None:
+    session_id = native_session_id.strip()
+    if not session_id:
+        return
+    data = _load_native_sessions(rt)
+    providers = data.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+        data["providers"] = providers
+    conversations = providers.setdefault(provider, {})
+    if not isinstance(conversations, dict):
+        conversations = {}
+        providers[provider] = conversations
+    conversations[conversation_id] = session_id
+    data["updated_at"] = int(time.time())
+    atomic_write_json(_native_sessions_path(rt), data)
+
+
+def _forget_native_session_id(rt: RunnerRuntime, provider: str, conversation_id: str) -> None:
+    if not conversation_id:
+        return
+    data = _load_native_sessions(rt)
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        return
+    conversations = providers.get(provider)
+    if not isinstance(conversations, dict) or conversation_id not in conversations:
+        return
+    del conversations[conversation_id]
+    data["updated_at"] = int(time.time())
+    atomic_write_json(_native_sessions_path(rt), data)
 
 
 def _selected_workspace(rt: RunnerRuntime) -> str | None:
@@ -762,7 +830,10 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if existing.get("summary_artifact") and Path(existing["summary_artifact"]).exists():
             instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(existing['summary_artifact']).read_text(encoding='utf-8')}\n"
         threshold = _context_threshold(policy)
-        transcript = "" if policy.get("policy") == "new_each_request" else rt.contexts.transcript(conversation_id, provider)
+        native_session_id_for_run = ""
+        if provider == "codex" and policy.get("policy") != "new_each_request" and _codex_native_resume_enabled():
+            native_session_id_for_run = _native_session_id(rt, provider, conversation_id)
+        transcript = "" if policy.get("policy") == "new_each_request" or native_session_id_for_run else rt.contexts.transcript(conversation_id, provider)
         provider_prompt = _prompt_with_history(prompt, transcript)
         used = existing["context_used_tokens"] + estimate_tokens(instruction_prompt, provider_prompt)
         context_state = ContextState(conversation_id, provider, existing["context_limit_tokens"], used, auto_compact_threshold_percent=threshold)
@@ -781,17 +852,31 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
                 _set_policy_conversation_id(policy, provider, conversation_id)
                 rt.save_policy(policy)
                 instruction_prompt = f"{instruction_prompt}\n\n# Previous Context Summary\n{Path(compacted['summary_artifact']).read_text(encoding='utf-8')}\n"
+                native_session_id_for_run = ""
                 transcript = rt.contexts.transcript(conversation_id, provider)
                 provider_prompt = _prompt_with_history(prompt, transcript)
         workspace = rt.workspaces / workspace_id
         workspace.mkdir(parents=True, exist_ok=True)
         emit = rt.events.emit
         if provider == "codex":
-            result = invoke_codex(provider_prompt, workspace, rt.ledger, instruction_prompt=instruction_prompt, run_id=run_id, reserved_usd=reserved_usd, emit=emit)
+            result = invoke_codex(
+                provider_prompt,
+                workspace,
+                rt.ledger,
+                instruction_prompt=instruction_prompt,
+                run_id=run_id,
+                reserved_usd=reserved_usd,
+                emit=emit,
+                native_session_id=native_session_id_for_run,
+            )
         elif provider == "vscode":
             result = invoke_vscode(provider_prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=permission_scope)
         else:
             result = invoke_claude(provider_prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=permission_scope)
+        native_session_id = ""
+        if provider == "codex" and isinstance(result.raw, dict):
+            native_session_id = str(result.raw.get("native_session_id") or "").strip()
+            _record_native_session_id(rt, provider, conversation_id, native_session_id)
         rt.contexts.add_exchange(conversation_id, provider, instruction_prompt, prompt, result.output_text)
         data = {
             "provider": result.provider,
@@ -801,6 +886,8 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
             "global_md_sha256": global_info["sha256"],
             "project_md_sha256": project_info["sha256"],
         }
+        if native_session_id:
+            data["native_session_id"] = native_session_id
         if result.status != "completed":
             return {
                 "request_id": request_id,
@@ -1124,6 +1211,8 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if not provider:
             return _error(request_id, "ai_provider_not_configured", "这台机器没有配置 Claude Code、VSCode 或 Codex，无法更新 AI 会话策略。")
         if action == "new_conversation":
+            old_conversation_id = _policy_conversation_id(data, provider)
+            _forget_native_session_id(rt, provider, old_conversation_id)
             _set_policy_conversation_id(data, provider, str(uuid.uuid4()))
             data["policy"] = "continue"
         elif action == "set_policy_new_each_request":

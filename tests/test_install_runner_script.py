@@ -195,7 +195,7 @@ PY
             self.assertIn("OPENAI_API_KEY=test-openai-key\n", config)
             self.assertIn("CODEX_MODEL=gpt-5.5\n", config)
             self.assertIn("CODEX_BASE_URL=https://example.invalid/v1\n", config)
-            self.assertIn("CODEX_EXEC_EPHEMERAL=1\n", config)
+            self.assertIn("CODEX_EXEC_EPHEMERAL=0\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
             self.assertIn("AI_PROCESS_CONTROL_ENABLED=1\n", config)
@@ -350,7 +350,7 @@ PY
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertTrue(manifest["telegram_enabled"])
             self.assertEqual(manifest["permission_scope"], "full")
-            self.assertEqual(manifest["codex_exec_ephemeral_enabled"], "1")
+            self.assertEqual(manifest["codex_exec_ephemeral_enabled"], "0")
 
     def test_missing_codex_installs_through_sudo_npm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
