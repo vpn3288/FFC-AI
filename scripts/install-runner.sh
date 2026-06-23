@@ -21,6 +21,7 @@ CLAUDE_API_RETRY_ATTEMPTS="${CLAUDE_API_RETRY_ATTEMPTS:-}"
 CLAUDE_API_RETRY_SLEEP_SECONDS="${CLAUDE_API_RETRY_SLEEP_SECONDS:-}"
 CODEX_MODEL="${CODEX_MODEL:-}"
 CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
+CODEX_OPENAI_COMPAT_PROVIDER="${CODEX_OPENAI_COMPAT_PROVIDER:-ffc_openai_compat}"
 
 # 确定VSCode Claude模型（优先级：VSCODE_CLAUDE_MODEL > VSCODE_MODEL > 默认值）
 if [ -n "${VSCODE_CLAUDE_MODEL:-}" ]; then
@@ -37,6 +38,7 @@ AI_TASK_RESERVED_USD="${AI_TASK_RESERVED_USD:-}"
 AI_DEFAULT_PROVIDER="${AI_DEFAULT_PROVIDER:-}"
 AI_RUNNER_PROVIDERS="${AI_RUNNER_PROVIDERS:-}"
 AI_PERMISSION_SCOPE="${AI_PERMISSION_SCOPE:-full}"
+AI_TASK_TIMEOUT_SECONDS="${AI_TASK_TIMEOUT_SECONDS:-}"
 AI_REQUIRE_SHELL_CONFIRMATION="${AI_REQUIRE_SHELL_CONFIRMATION:-0}"
 AI_PROCESS_CONTROL_ENABLED="${AI_PROCESS_CONTROL_ENABLED:-1}"
 AI_INSTALL_CC_SWITCH="${AI_INSTALL_CC_SWITCH:-auto}"
@@ -710,6 +712,19 @@ validate_http_url_value() {
   esac
 }
 
+validate_codex_model_provider_value() {
+  local value="${CODEX_MODEL_PROVIDER:-}"
+  if [ -z "$value" ]; then
+    return 0
+  fi
+  case "$value" in
+    *[!A-Za-z0-9_-]*) log 'CODEX_MODEL_PROVIDER must contain only letters, numbers, underscores, or hyphens'; exit 2 ;;
+  esac
+  case "$value" in
+    ollama|lmstudio) log 'CODEX_MODEL_PROVIDER cannot override reserved built-in provider ids ollama or lmstudio'; exit 2 ;;
+  esac
+}
+
 validate_provider_runtime_config() {
   validate_secret_value OPENAI_API_KEY
   validate_secret_value CODEX_API_KEY
@@ -718,6 +733,7 @@ validate_provider_runtime_config() {
   validate_http_url_value CODEX_BASE_URL
   validate_http_url_value CODEX_OPENAI_BASE_URL
   validate_http_url_value ANTHROPIC_BASE_URL
+  validate_codex_model_provider_value
   if [ "$REQUEST_CODEX" = true ]; then
     local codex_key="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
     case "${codex_key,,}" in
@@ -840,7 +856,6 @@ else
 fi
 if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; }; then
   CODEX_KEY="${CODEX_API_KEY:-$OPENAI_API_KEY}"
-  CODEX_EFFECTIVE_MODEL_PROVIDER="${CODEX_MODEL_PROVIDER:-openai}"
 
   # 确定有效的BASE URL（优先级：CODEX_OPENAI_BASE_URL > CODEX_BASE_URL > 默认值）
   if [ -n "${CODEX_OPENAI_BASE_URL:-}" ]; then
@@ -850,20 +865,28 @@ if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENA
   else
     CODEX_EFFECTIVE_BASE_URL="https://api.openai.com/v1"
   fi
+  CODEX_EFFECTIVE_MODEL_PROVIDER="${CODEX_MODEL_PROVIDER:-openai}"
+  if [ -z "${CODEX_MODEL_PROVIDER:-}" ] && [ "$CODEX_EFFECTIVE_BASE_URL" != "https://api.openai.com/v1" ]; then
+    CODEX_EFFECTIVE_MODEL_PROVIDER="$CODEX_OPENAI_COMPAT_PROVIDER"
+  fi
 
   if [ "$DRY_RUN" = false ]; then
     sudo mkdir -p "$CODEX_HOME"
+    CODEX_OPENAI_BASE_URL_CONFIG_LINE=""
+    if [ "$CODEX_EFFECTIVE_MODEL_PROVIDER" = "openai" ]; then
+      CODEX_OPENAI_BASE_URL_CONFIG_LINE="openai_base_url = \"$CODEX_EFFECTIVE_BASE_URL\""
+    fi
     sudo tee "$CODEX_HOME/config.toml" >/dev/null <<EOF
 model_provider = "$CODEX_EFFECTIVE_MODEL_PROVIDER"
 model = "${CODEX_MODEL:-gpt-5.5}"
 review_model = "${CODEX_REVIEW_MODEL:-${CODEX_MODEL:-gpt-5.5}}"
 model_reasoning_effort = "${CODEX_REASONING_EFFORT:-xhigh}"
-openai_base_url = "$CODEX_EFFECTIVE_BASE_URL"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 model_context_window = ${CODEX_CONTEXT_WINDOW:-200000}
 model_auto_compact_token_limit = ${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-160000}
 hide_agent_reasoning = false
+$CODEX_OPENAI_BASE_URL_CONFIG_LINE
 
 [shell_environment_policy]
 inherit = "all"
@@ -882,6 +905,9 @@ name = "$CODEX_EFFECTIVE_MODEL_PROVIDER"
 base_url = "$CODEX_EFFECTIVE_BASE_URL"
 wire_api = "responses"
 env_key = "OPENAI_API_KEY"
+supports_websockets = false
+stream_max_retries = 10
+stream_idle_timeout_ms = 600000
 EOF
     fi
     sudo env CODEX_KEY="$CODEX_KEY" CODEX_HOME="$CODEX_HOME" python3 - <<'PY'
@@ -992,6 +1018,7 @@ if [ "$DRY_RUN" = false ]; then
   PREVIOUS_AI_LOCAL_EXEC_MAX_OUTPUT_BYTES="$(config_value AI_LOCAL_EXEC_MAX_OUTPUT_BYTES)"
   PREVIOUS_AI_PROCESS_CONTROL_ENABLED="$(config_value AI_PROCESS_CONTROL_ENABLED)"
   PREVIOUS_AI_TASK_RESERVED_USD="$(config_value AI_TASK_RESERVED_USD)"
+  PREVIOUS_AI_TASK_TIMEOUT_SECONDS="$(config_value AI_TASK_TIMEOUT_SECONDS)"
   PREVIOUS_CLAUDE_MAX_TURNS="$(config_value CLAUDE_MAX_TURNS)"
   PREVIOUS_CLAUDE_API_RETRY_ATTEMPTS="$(config_value CLAUDE_API_RETRY_ATTEMPTS)"
   PREVIOUS_CLAUDE_API_RETRY_SLEEP_SECONDS="$(config_value CLAUDE_API_RETRY_SLEEP_SECONDS)"
@@ -1000,6 +1027,7 @@ if [ "$DRY_RUN" = false ]; then
   PREVIOUS_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS="$(config_value VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS)"
   PREVIOUS_CODEX_EXEC_EPHEMERAL="$(config_value CODEX_EXEC_EPHEMERAL)"
   EFFECTIVE_AI_TASK_RESERVED_USD="${AI_TASK_RESERVED_USD:-${PREVIOUS_AI_TASK_RESERVED_USD:-0}}"
+  EFFECTIVE_AI_TASK_TIMEOUT_SECONDS="${AI_TASK_TIMEOUT_SECONDS:-${PREVIOUS_AI_TASK_TIMEOUT_SECONDS:-7200}}"
   EFFECTIVE_CLAUDE_MAX_TURNS="${CLAUDE_MAX_TURNS:-${PREVIOUS_CLAUDE_MAX_TURNS:-0}}"
   EFFECTIVE_CLAUDE_API_RETRY_ATTEMPTS="${CLAUDE_API_RETRY_ATTEMPTS:-${PREVIOUS_CLAUDE_API_RETRY_ATTEMPTS:-3}}"
   EFFECTIVE_CLAUDE_API_RETRY_SLEEP_SECONDS="${CLAUDE_API_RETRY_SLEEP_SECONDS:-${PREVIOUS_CLAUDE_API_RETRY_SLEEP_SECONDS:-12}}"
@@ -1021,6 +1049,7 @@ CODEX_HOME=$CODEX_HOME
 PATH=$SERVICE_PATH
 TERM=$AI_SERVICE_TERM
 AI_TASK_RESERVED_USD=$EFFECTIVE_AI_TASK_RESERVED_USD
+AI_TASK_TIMEOUT_SECONDS=$EFFECTIVE_AI_TASK_TIMEOUT_SECONDS
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 EOF
   if [ "$REQUEST_CLAUDE" = true ]; then
@@ -1057,6 +1086,7 @@ EOF
   fi
   if [ "$REQUEST_CODEX" = true ]; then
     printf 'CODEX_MODEL=%s\n' "${CODEX_MODEL:-gpt-5.5}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    printf 'CODEX_MODEL_PROVIDER=%s\n' "${CODEX_EFFECTIVE_MODEL_PROVIDER:-openai}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     printf 'CODEX_EXEC_EPHEMERAL=%s\n' "$EFFECTIVE_CODEX_EXEC_EPHEMERAL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
   fi
   if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_OPENAI_BASE_URL:-}" ] || [ -n "${CODEX_BASE_URL:-}" ]; }; then
@@ -1250,7 +1280,11 @@ if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
   grep -q -- '--output-schema' <<< "$CODEX_EXEC_HELP_TEXT" || { log 'codex exec --output-schema is required for local strict config preflight'; exit 1; }
   CODEX_STRICT_CONFIG_PROBE_SCHEMA="$STATE_ROOT/.codex-strict-config-probe.$$.missing.json"
   rm -f "$CODEX_STRICT_CONFIG_PROBE_SCHEMA"
-  CODEX_STRICT_CONFIG_OUTPUT="$(root_env_run codex exec --strict-config --skip-git-repo-check --cd "$WORKSPACE_ROOT" --output-schema "$CODEX_STRICT_CONFIG_PROBE_SCHEMA" --json 'strict config preflight' 2>&1)" || {
+  CODEX_STRICT_CONFIG_ARGS=(exec --strict-config)
+  grep -q -- '--ignore-rules' <<< "$CODEX_EXEC_HELP_TEXT" && CODEX_STRICT_CONFIG_ARGS+=(--ignore-rules)
+  grep -q -- '--skip-git-repo-check' <<< "$CODEX_EXEC_HELP_TEXT" && CODEX_STRICT_CONFIG_ARGS+=(--skip-git-repo-check)
+  CODEX_STRICT_CONFIG_ARGS+=(--cd "$WORKSPACE_ROOT" --output-schema "$CODEX_STRICT_CONFIG_PROBE_SCHEMA" --json 'strict config preflight')
+  CODEX_STRICT_CONFIG_OUTPUT="$(root_env_run codex "${CODEX_STRICT_CONFIG_ARGS[@]}" 2>&1)" || {
     if grep -q 'Failed to read output schema file' <<< "$CODEX_STRICT_CONFIG_OUTPUT"; then
       :
     else

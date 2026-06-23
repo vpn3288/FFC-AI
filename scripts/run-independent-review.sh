@@ -75,13 +75,35 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 base_url = sys.argv[2]
+compat_provider = "ffc_openai_compat"
 text = path.read_text(encoding="utf-8") if path.exists() else ""
-updated = re.sub(r'(?m)^(openai_base_url\s*=\s*").*(")\s*$', rf'\1{base_url}\2', text, count=1)
-if updated == text:
-    updated = f'openai_base_url = "{base_url}"\n' + text
+
+def remove_top_level_key(config: str, key: str) -> str:
+    top, sep, rest = config.partition("\n[")
+    top = re.sub(rf'(?m)^{re.escape(key)}\s*=\s*".*"\n?', "", top)
+    return top + (sep + rest if sep else "")
+
+def replace_or_prepend_top_level_string(config: str, key: str, value: str) -> str:
+    line = f'{key} = "{value}"'
+    pattern = re.compile(rf'(?m)^{re.escape(key)}\s*=\s*".*"$')
+    top, sep, rest = config.partition("\n[")
+    if pattern.search(top):
+        top = pattern.sub(line, top, count=1)
+    else:
+        top = f"{line}\n{top}"
+    return top + (sep + rest if sep else "")
+
+updated = text
 top_level = re.split(r"(?m)^\s*\[", updated, maxsplit=1)[0]
 match = re.search(r'(?m)^model_provider\s*=\s*"([^"]+)"', top_level)
 provider = match.group(1) if match else "openai"
+if provider.lower() == "openai":
+    provider = compat_provider
+    updated = replace_or_prepend_top_level_string(updated, "model_provider", provider)
+    updated = remove_top_level_key(updated, "openai_base_url")
+else:
+    if re.search(r'(?m)^openai_base_url\s*=', top_level):
+        updated = replace_or_prepend_top_level_string(updated, "openai_base_url", base_url)
 
 def replace_provider_base_url(config: str, provider_id: str) -> str:
     block_pattern = re.compile(rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)")
@@ -94,8 +116,49 @@ def replace_provider_base_url(config: str, provider_id: str) -> str:
         replaced_block = block.replace(f"[model_providers.{provider_id}]\n", f'[model_providers.{provider_id}]\nbase_url = "{base_url}"\n', 1)
     return config[: block_match.start(1)] + replaced_block + config[block_match.end(1) :]
 
-if provider.lower() != "openai":
-    updated = replace_provider_base_url(updated, provider)
+def replace_provider_string(config: str, provider_id: str, key: str, value: str) -> str:
+    block_pattern = re.compile(rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)")
+    block_match = block_pattern.search(config)
+    if not block_match:
+        return config.rstrip() + f'\n\n[model_providers.{provider_id}]\n{key} = "{value}"\n'
+    block = block_match.group(1)
+    replaced_block = re.sub(rf'(?m)^{re.escape(key)}\s*=\s*".*"$', f'{key} = "{value}"', block, count=1)
+    if replaced_block == block:
+        replaced_block = block.replace(f"[model_providers.{provider_id}]\n", f'[model_providers.{provider_id}]\n{key} = "{value}"\n', 1)
+    return config[: block_match.start(1)] + replaced_block + config[block_match.end(1) :]
+
+def replace_provider_bool(config: str, provider_id: str, key: str, value: bool) -> str:
+    block_pattern = re.compile(rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)")
+    line = f"{key} = {'true' if value else 'false'}"
+    block_match = block_pattern.search(config)
+    if not block_match:
+        return config.rstrip() + f"\n\n[model_providers.{provider_id}]\n{line}\n"
+    block = block_match.group(1)
+    replaced_block = re.sub(rf"(?m)^{re.escape(key)}\s*=\s*(?:true|false)$", line, block, count=1)
+    if replaced_block == block:
+        replaced_block = block.replace(f"[model_providers.{provider_id}]\n", f"[model_providers.{provider_id}]\n{line}\n", 1)
+    return config[: block_match.start(1)] + replaced_block + config[block_match.end(1) :]
+
+def replace_provider_int(config: str, provider_id: str, key: str, value: int) -> str:
+    block_pattern = re.compile(rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)")
+    line = f"{key} = {value}"
+    block_match = block_pattern.search(config)
+    if not block_match:
+        return config.rstrip() + f"\n\n[model_providers.{provider_id}]\n{line}\n"
+    block = block_match.group(1)
+    replaced_block = re.sub(rf"(?m)^{re.escape(key)}\s*=\s*[0-9]+$", line, block, count=1)
+    if replaced_block == block:
+        replaced_block = block.replace(f"[model_providers.{provider_id}]\n", f"[model_providers.{provider_id}]\n{line}\n", 1)
+    return config[: block_match.start(1)] + replaced_block + config[block_match.end(1) :]
+
+updated = replace_provider_base_url(updated, provider)
+updated = replace_provider_string(updated, provider, "wire_api", "responses")
+updated = replace_provider_string(updated, provider, "env_key", "OPENAI_API_KEY")
+updated = replace_provider_bool(updated, provider, "supports_websockets", False)
+updated = replace_provider_int(updated, provider, "stream_max_retries", 10)
+updated = replace_provider_int(updated, provider, "stream_idle_timeout_ms", 600000)
+if provider == compat_provider:
+    updated = replace_provider_string(updated, provider, "name", "OpenAI-compatible proxy")
 if "[model_providers.OpenAI]" in updated:
     updated = replace_provider_base_url(updated, "OpenAI")
 path.write_text(updated, encoding="utf-8")
@@ -136,12 +199,33 @@ excluded_prefixes = (
     ".pytest_cache/",
     ".mypy_cache/",
     ".ruff_cache/",
+    ".tox/",
+    ".nox/",
+    ".venv/",
+    ".venv-test/",
     "__pycache__/",
+    "build/",
+    "dist/",
+    "htmlcov/",
+    "node_modules/",
     "work/reviews/",
     "work/independent-reviews/",
     "work/private/",
 )
 excluded_suffixes = (".pyc", ".pyo", ".swp", ".tmp")
+excluded_dir_names = {
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    "__pycache__",
+    "build",
+    "dist",
+    "htmlcov",
+    "node_modules",
+}
 seen: set[str] = set()
 for raw in candidates.read_text(encoding="utf-8").splitlines():
     rel = raw.strip()
@@ -152,6 +236,8 @@ for raw in candidates.read_text(encoding="utf-8").splitlines():
         continue
     normalized = rel_path.as_posix()
     if normalized.startswith(excluded_prefixes) or normalized.endswith(excluded_suffixes):
+        continue
+    if any(part in excluded_dir_names or part.startswith(".venv") for part in rel_path.parts):
         continue
     full = root / rel_path
     if not full.is_file():
@@ -192,6 +278,28 @@ make_snapshot "$CODEX_REPO"
   printf '\n  }\n'
   printf '}\n'
 } > "$RUN_DIR/manifest.json"
+
+REVIEW_MANIFEST_SUMMARY="$RUN_DIR/manifest-summary.json"
+python3 - "$RUN_DIR/manifest.json" "$REVIEW_INPUT_FILES" "$REVIEW_MANIFEST_SUMMARY" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+input_files_path = Path(sys.argv[2])
+summary_path = Path(sys.argv[3])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+input_files = input_files_path.read_text(encoding="utf-8").splitlines()
+summary = {
+    "run_id": manifest.get("run_id"),
+    "repository": manifest.get("repository"),
+    "input_file_count": len(input_files),
+    "input_file_sample": input_files[:120],
+    "full_manifest_file": str(manifest_path),
+    "review_input_files_file": str(input_files_path),
+}
+summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+PY
 
 if [ -n "$USER_REQUIREMENTS_FILE" ]; then
   cp "$USER_REQUIREMENTS_FILE" "$RUN_DIR/user-requirements.txt"
@@ -246,8 +354,8 @@ Claude Code reviewer focus:
 Isolated repository snapshot: $CLAUDE_REPO
 User requirements:
 $(cat "$RUN_DIR/user-requirements.txt")
-Manifest:
-$(cat "$RUN_DIR/manifest.json")
+Manifest summary:
+$(cat "$REVIEW_MANIFEST_SUMMARY")
 EOF
 
 CODEX_PROMPT="$RUN_DIR/codex-review-prompt.md"
@@ -266,8 +374,8 @@ Codex/GPT reviewer focus:
 Isolated repository snapshot: $CODEX_REPO
 User requirements:
 $(cat "$RUN_DIR/user-requirements.txt")
-Manifest:
-$(cat "$RUN_DIR/manifest.json")
+Manifest summary:
+$(cat "$REVIEW_MANIFEST_SUMMARY")
 EOF
 
 run_claude_review() {

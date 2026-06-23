@@ -25,6 +25,7 @@ class ExecutorTests(unittest.TestCase):
             "AI_PERMISSION_SCOPE",
             "AI_REQUIRE_SHELL_CONFIRMATION",
             "AI_TASK_RESERVED_USD",
+            "AI_TASK_TIMEOUT_SECONDS",
             "TELEGRAM_RESERVED_USD",
             "OPENAI_API_KEY",
             "CODEX_BASE_URL",
@@ -141,8 +142,13 @@ class ExecutorTests(unittest.TestCase):
                 config = (codex_home / "config.toml").read_text(encoding="utf-8")
                 summary = config_summary("codex")
             self.assertEqual(result["base_url"], "https://proxy.example/v1")
-            self.assertIn('model_provider = "openai"', config)
-            self.assertIn('openai_base_url = "https://proxy.example/v1"', config)
+            self.assertIn('model_provider = "ffc_openai_compat"', config)
+            self.assertIn("[model_providers.ffc_openai_compat]", config)
+            self.assertIn('base_url = "https://proxy.example/v1"', config)
+            self.assertIn('wire_api = "responses"', config)
+            self.assertIn('env_key = "OPENAI_API_KEY"', config)
+            self.assertIn("supports_websockets = false", config)
+            self.assertNotIn('openai_base_url = "https://proxy.example/v1"', config)
             self.assertIn("[sandbox_workspace_write]", config)
             self.assertIn("network_access = true", config)
             self.assertNotIn('network_access = "enabled"', config)
@@ -182,8 +188,11 @@ class ExecutorTests(unittest.TestCase):
                 summary = config_summary("codex")
 
             self.assertEqual(result["base_url"], "https://new-proxy.example/v1")
-            self.assertIn('openai_base_url = "https://new-proxy.example/v1"', config)
-            self.assertIn('[model_providers.proxy]\nname = "proxy"\nbase_url = "https://new-proxy.example/v1"', config)
+            self.assertIn('openai_base_url = "https://old-openai.example/v1"', config)
+            self.assertIn("[model_providers.proxy]", config)
+            self.assertIn('name = "proxy"', config)
+            self.assertIn('base_url = "https://new-proxy.example/v1"', config)
+            self.assertIn("supports_websockets = false", config)
             self.assertIn('[model_providers.other]\nbase_url = "https://other.example/v1"', config)
             self.assertEqual(summary["base_url"], "https://new-proxy.example/v1")
 
@@ -209,14 +218,43 @@ class ExecutorTests(unittest.TestCase):
             )
 
             with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
-                apply_base_url(runtime.state, "codex", "https://new-openai.example/v1")
+                apply_base_url(runtime.state, "codex", "https://api.openai.com/v1")
                 config = (codex_home / "config.toml").read_text(encoding="utf-8")
                 summary = config_summary("codex")
 
-            self.assertIn('openai_base_url = "https://new-openai.example/v1"', config)
+            self.assertIn('openai_base_url = "https://api.openai.com/v1"', config)
             self.assertIn('base_url = "https://proxy.example/v1"', config)
             self.assertNotIn("[model_providers.not-top-level]", config)
-            self.assertEqual(summary["base_url"], "https://new-openai.example/v1")
+            self.assertEqual(summary["base_url"], "https://api.openai.com/v1")
+
+    def test_codex_model_runtime_config_updates_top_level_model_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = RunnerRuntime(root / "state", root / "workspaces")
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model_provider = "proxy"',
+                        'model = "old-top-level"',
+                        "",
+                        "[model_providers.proxy]",
+                        'model = "provider-model-should-stay"',
+                        'base_url = "https://proxy.example/v1"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                result = apply_model(runtime.state, "codex", "gpt-5.5")
+                config = (codex_home / "config.toml").read_text(encoding="utf-8")
+
+            self.assertEqual(result["model"], "gpt-5.5")
+            self.assertIn('model = "gpt-5.5"', config.split("[model_providers.proxy]", 1)[0])
+            self.assertIn('model = "provider-model-should-stay"', config)
 
     def test_codex_config_summary_uses_active_provider_base_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -377,6 +415,25 @@ class ExecutorTests(unittest.TestCase):
             with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
                 execute(parsed, {"request_id": "r8b", "raw_text": "do work"}, runtime)
             self.assertEqual(invoke.call_args.kwargs["reserved_usd"], 0.0)
+
+    def test_task_run_uses_long_default_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                execute(parsed, {"request_id": "timeout-default", "raw_text": "do work"}, runtime)
+            self.assertEqual(invoke.call_args.kwargs["timeout_seconds"], 7200)
+
+    def test_task_run_uses_configured_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = RunnerRuntime(Path(tmp) / "state", Path(tmp) / "workspaces")
+            parsed = {"status": "accepted", "canonical_action": "task.run", "args": {"prompt": "do work"}, "requires_confirmation": False}
+            fake = ProviderResult("run", "claude-code", "completed", "done", None, 0)
+            with patch.dict("os.environ", {"AI_TASK_TIMEOUT_SECONDS": "3600"}, clear=False):
+                with patch("ai_remote_runner.executor.invoke_claude", return_value=fake) as invoke:
+                    execute(parsed, {"request_id": "timeout-configured", "raw_text": "do work"}, runtime)
+            self.assertEqual(invoke.call_args.kwargs["timeout_seconds"], 3600)
 
     def test_default_permission_scope_is_full_access(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -837,6 +837,48 @@ def _codex_jsonl_run_summary(output: str) -> CodexJsonlRunSummary:
     )
 
 
+CODEX_TRANSIENT_STREAM_ERROR_MARKERS = (
+    "reconnecting...",
+    "stream disconnected before completion",
+    "websocket closed by server",
+    "responses_websocket",
+    "failed to connect to websocket",
+    "connection reset",
+    "connection closed",
+    "stream timeout",
+    "stream error",
+)
+
+
+CODEX_PERMANENT_STREAM_ERROR_MARKERS = (
+    "401 unauthorized",
+    "403 forbidden",
+    "invalid api key",
+    "incorrect api key",
+    "missing bearer",
+    "model not found",
+    "unsupported model",
+    "unknown model",
+)
+
+
+def _codex_error_message(event: dict[str, Any]) -> str:
+    message = event.get("message") or event.get("error") or ""
+    if isinstance(message, dict):
+        nested = message.get("message") or message.get("detail") or message.get("error") or ""
+        return str(nested or message)
+    return str(message)
+
+
+def _codex_error_phase(message: str) -> str:
+    lowered = message.lower()
+    if any(marker in lowered for marker in CODEX_PERMANENT_STREAM_ERROR_MARKERS):
+        return "error"
+    if any(marker in lowered for marker in CODEX_TRANSIENT_STREAM_ERROR_MARKERS):
+        return "warning"
+    return "error"
+
+
 STATUS_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b"),
@@ -1063,7 +1105,14 @@ def _emit_codex_jsonl_event(event: dict[str, Any], run_id: str, emit: Callable[[
         emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("error") or "turn_failed")})
         return
     if event_type == "error":
-        emit({"run_id": run_id, "provider": "codex", "phase": "error", "error": str(event.get("message") or event.get("error") or "codex_error")})
+        message = _codex_error_message(event) or "codex_error"
+        phase = _codex_error_phase(message)
+        payload = {"run_id": run_id, "provider": "codex", "phase": phase}
+        if phase == "warning":
+            payload["public_message_zh"] = f"Codex 流连接正在重试：{_preview_text(message, 180)}"
+        else:
+            payload["error"] = message
+        emit(payload)
         return
     item = _codex_event_item(event)
     if not item:

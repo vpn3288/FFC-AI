@@ -230,8 +230,13 @@ PY
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             observed_text = observed_config.read_text(encoding="utf-8")
-            self.assertIn('openai_base_url = "https://review.example/v1"', observed_text)
+            self.assertIn('model_provider = "ffc_openai_compat"', observed_text)
+            self.assertNotIn('openai_base_url = "https://review.example/v1"', observed_text)
+            self.assertIn("[model_providers.ffc_openai_compat]", observed_text)
             self.assertIn('base_url = "https://review.example/v1"', observed_text)
+            self.assertIn("supports_websockets = false", observed_text)
+            self.assertIn("stream_max_retries = 10", observed_text)
+            self.assertIn("stream_idle_timeout_ms = 600000", observed_text)
 
     def test_codex_review_base_url_override_updates_active_custom_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -304,7 +309,11 @@ PY
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             observed_text = observed_config.read_text(encoding="utf-8")
             self.assertIn('openai_base_url = "https://review.example/v1"', observed_text)
-            self.assertIn('[model_providers.proxy]\nbase_url = "https://review.example/v1"', observed_text)
+            self.assertIn("[model_providers.proxy]", observed_text)
+            self.assertIn('base_url = "https://review.example/v1"', observed_text)
+            self.assertIn("supports_websockets = false", observed_text)
+            self.assertIn("stream_max_retries = 10", observed_text)
+            self.assertIn("stream_idle_timeout_ms = 600000", observed_text)
 
     def test_codex_review_api_key_override_replaces_placeholder_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

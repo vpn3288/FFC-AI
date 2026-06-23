@@ -309,6 +309,25 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("上下文接近上限", message)
         self.assertIn("177158/190000", message)
 
+    def test_codex_reconnecting_jsonl_event_is_warning_until_turn_failed(self) -> None:
+        events: list[dict[str, object]] = []
+        output = '{"type":"error","message":"Reconnecting... 5/5 (stream disconnected before completion: websocket closed by server before response.completed)"}\n'
+
+        _emit_codex_jsonl_events(output, "run-1", events.append)
+
+        self.assertEqual(events[0]["phase"], "warning")
+        self.assertIn("流连接正在重试", str(events[0].get("public_message_zh") or ""))
+        self.assertNotIn("error", events[0])
+
+    def test_codex_auth_reconnecting_jsonl_event_remains_error(self) -> None:
+        events: list[dict[str, object]] = []
+        output = '{"type":"error","message":"Reconnecting... 5/5 (unexpected status 401 Unauthorized: Missing bearer authentication)"}\n'
+
+        _emit_codex_jsonl_events(output, "run-1", events.append)
+
+        self.assertEqual(events[0]["phase"], "error")
+        self.assertIn("401 Unauthorized", str(events[0].get("error") or ""))
+
     def test_invoke_codex_returns_stderr_when_last_message_missing(self) -> None:
         import subprocess
         import tempfile

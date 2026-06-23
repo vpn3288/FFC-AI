@@ -22,6 +22,8 @@ CLAUDE_MODEL_FALLBACKS = [
     "claude-opus-4-8",
 ]
 CODEX_MODEL_FALLBACKS = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+CODEX_OPENAI_COMPAT_PROVIDER = "ffc_openai_compat"
+CODEX_OPENAI_COMPAT_PROVIDER_NAME = "OpenAI-compatible proxy"
 TARGET_ALIASES = {
     "claude": "claude-code",
     "claude-code": "claude-code",
@@ -138,8 +140,10 @@ def apply_config_env(state: Path, updates: dict[str, str]) -> dict[str, str]:
         "VSCODE_CLAUDE_API_RETRY_ATTEMPTS",
         "VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS",
         "CODEX_MODEL",
+        "CODEX_MODEL_PROVIDER",
         "CODEX_SUBAGENT_STATUS_EVENTS",
         "AI_TASK_RESERVED_USD",
+        "AI_TASK_TIMEOUT_SECONDS",
         "TELEGRAM_RESERVED_USD",
         "TELEGRAM_GROUP_MODE",
         "ANTHROPIC_BASE_URL",
@@ -220,12 +224,41 @@ def _read_codex_config() -> str:
     )
 
 
+def _toml_string_value(text: str, key: str) -> str:
+    match = re.search(rf'(?m)^{re.escape(key)}\s*=\s*"([^"]*)"', text)
+    return match.group(1) if match else ""
+
+
+def _top_level_toml_string_value(text: str, key: str) -> str:
+    top_level = re.split(r"(?m)^\s*\[", text, maxsplit=1)[0]
+    return _toml_string_value(top_level, key)
+
+
+def _provider_block_toml_string_value(text: str, provider_id: str, key: str) -> str:
+    block_pattern = re.compile(
+        rf"(?ms)^\[model_providers\.{re.escape(provider_id)}\]\n(.*?)(?=^\[|\Z)"
+    )
+    match = block_pattern.search(text)
+    if not match:
+        return ""
+    return _toml_string_value(match.group(1), key)
+
+
 def _replace_or_prepend_toml_key(text: str, key: str, value: str) -> str:
     line = f'{key} = "{value}"'
     pattern = re.compile(rf"(?m)^{re.escape(key)}\s*=\s*\".*\"$")
-    if pattern.search(text):
-        return pattern.sub(line, text, count=1)
-    return line + "\n" + text
+    top_level, separator, rest = text.partition("\n[")
+    if pattern.search(top_level):
+        top_level = pattern.sub(line, top_level, count=1)
+    else:
+        top_level = line + "\n" + top_level
+    return top_level + (separator + rest if separator else "")
+
+
+def _remove_top_level_toml_key(text: str, key: str) -> str:
+    top_level, separator, rest = text.partition("\n[")
+    top_level = re.sub(rf"(?m)^{re.escape(key)}\s*=\s*\".*\"\n?", "", top_level, count=1)
+    return top_level + (separator + rest if separator else "")
 
 
 def _replace_or_insert_provider_base_url(text: str, provider_id: str, base_url: str) -> str:
@@ -244,13 +277,95 @@ def _replace_or_insert_provider_base_url(text: str, provider_id: str, base_url: 
     return text[: match.start(1)] + replacement + text[match.end(1) :]
 
 
+def _replace_or_insert_provider_string(text: str, provider_id: str, key: str, value: str) -> str:
+    block_pattern = re.compile(
+        rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)"
+    )
+    match = block_pattern.search(text)
+    if not match:
+        return text.rstrip() + f'\n\n[model_providers.{provider_id}]\n{key} = "{value}"\n'
+    block = match.group(1)
+    pattern = re.compile(rf'(?m)^{re.escape(key)}\s*=\s*".*"$')
+    if pattern.search(block):
+        replacement = pattern.sub(f'{key} = "{value}"', block, count=1)
+    else:
+        replacement = block.replace(f"[model_providers.{provider_id}]\n", f'[model_providers.{provider_id}]\n{key} = "{value}"\n', 1)
+    return text[: match.start(1)] + replacement + text[match.end(1) :]
+
+
+def _replace_or_insert_provider_bool(text: str, provider_id: str, key: str, value: bool) -> str:
+    block_pattern = re.compile(
+        rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)"
+    )
+    match = block_pattern.search(text)
+    line = f"{key} = {'true' if value else 'false'}"
+    if not match:
+        return text.rstrip() + f"\n\n[model_providers.{provider_id}]\n{line}\n"
+    block = match.group(1)
+    pattern = re.compile(rf"(?m)^{re.escape(key)}\s*=\s*(?:true|false)$")
+    if pattern.search(block):
+        replacement = pattern.sub(line, block, count=1)
+    else:
+        replacement = block.replace(f"[model_providers.{provider_id}]\n", f"[model_providers.{provider_id}]\n{line}\n", 1)
+    return text[: match.start(1)] + replacement + text[match.end(1) :]
+
+
+def _replace_or_insert_provider_int(text: str, provider_id: str, key: str, value: int) -> str:
+    block_pattern = re.compile(
+        rf"(?ms)(^\[model_providers\.{re.escape(provider_id)}\]\n.*?)(?=^\[|\Z)"
+    )
+    match = block_pattern.search(text)
+    line = f"{key} = {value}"
+    if not match:
+        return text.rstrip() + f"\n\n[model_providers.{provider_id}]\n{line}\n"
+    block = match.group(1)
+    pattern = re.compile(rf"(?m)^{re.escape(key)}\s*=\s*[0-9]+$")
+    if pattern.search(block):
+        replacement = pattern.sub(line, block, count=1)
+    else:
+        replacement = block.replace(f"[model_providers.{provider_id}]\n", f"[model_providers.{provider_id}]\n{line}\n", 1)
+    return text[: match.start(1)] + replacement + text[match.end(1) :]
+
+
+def _codex_config_with_openai_compatible_provider(
+    text: str,
+    provider_id: str,
+    base_url: str,
+    *,
+    set_as_active: bool = False,
+    provider_name: str = "",
+) -> str:
+    if set_as_active:
+        text = _replace_or_prepend_toml_key(text, "model_provider", provider_id)
+        text = _remove_top_level_toml_key(text, "openai_base_url")
+    if provider_name:
+        text = _replace_or_insert_provider_string(text, provider_id, "name", provider_name)
+    text = _replace_or_insert_provider_base_url(text, provider_id, base_url)
+    text = _replace_or_insert_provider_string(text, provider_id, "wire_api", "responses")
+    text = _replace_or_insert_provider_string(text, provider_id, "env_key", "OPENAI_API_KEY")
+    text = _replace_or_insert_provider_bool(text, provider_id, "supports_websockets", False)
+    text = _replace_or_insert_provider_int(text, provider_id, "stream_max_retries", 10)
+    text = _replace_or_insert_provider_int(text, provider_id, "stream_idle_timeout_ms", 600000)
+    return text
+
+
 def _replace_or_append_provider_base_url(text: str, base_url: str) -> str:
+    model_provider = _top_level_toml_string_value(text, "model_provider") or "openai"
+    if base_url != "https://api.openai.com/v1":
+        if model_provider.lower() == "openai":
+            return _codex_config_with_openai_compatible_provider(
+                text,
+                CODEX_OPENAI_COMPAT_PROVIDER,
+                base_url,
+                set_as_active=True,
+                provider_name=CODEX_OPENAI_COMPAT_PROVIDER_NAME,
+            )
+        return _codex_config_with_openai_compatible_provider(text, model_provider, base_url)
     openai_base_pattern = re.compile(r'(?m)^openai_base_url\s*=\s*".*"$')
     if openai_base_pattern.search(text):
         text = openai_base_pattern.sub(f'openai_base_url = "{base_url}"', text, count=1)
     else:
         text = f'openai_base_url = "{base_url}"\n' + text
-    model_provider = _top_level_toml_string_value(text, "model_provider") or "openai"
     if model_provider.lower() != "openai":
         text = _replace_or_insert_provider_base_url(text, model_provider, base_url)
     if "[model_providers.OpenAI]" in text:
@@ -267,21 +382,6 @@ def _replace_or_append_provider_base_url(text: str, base_url: str) -> str:
 
         text = provider_block_pattern.sub(replace_legacy_provider, text, count=1)
     return text
-
-
-def _top_level_toml_string_value(text: str, key: str) -> str:
-    top_level = re.split(r"(?m)^\s*\[", text, maxsplit=1)[0]
-    return _toml_string_value(top_level, key)
-
-
-def _provider_block_toml_string_value(text: str, provider_id: str, key: str) -> str:
-    block_pattern = re.compile(
-        rf"(?ms)^\[model_providers\.{re.escape(provider_id)}\]\n(.*?)(?=^\[|\Z)"
-    )
-    match = block_pattern.search(text)
-    if not match:
-        return ""
-    return _toml_string_value(match.group(1), key)
 
 
 def _codex_config_base_url(text: str) -> str:
@@ -419,7 +519,8 @@ def apply_api_key(state: Path, target: str, api_key: str) -> dict[str, Any]:
 def apply_base_url(state: Path, target: str, base_url: str) -> dict[str, Any]:
     base_url = _validated_base_url(base_url)
     if target == "codex":
-        _write_codex_config(_replace_or_append_provider_base_url(_read_codex_config(), base_url))
+        config_text = _replace_or_append_provider_base_url(_read_codex_config(), base_url)
+        _write_codex_config(config_text)
         apply_config_env(state, {"CODEX_BASE_URL": base_url})
     elif target in {"claude-code", "vscode"}:
         _write_claude_env({"ANTHROPIC_BASE_URL": base_url})
@@ -494,11 +595,6 @@ def apply_codex_subagent_status_events(state: Path, enabled: bool) -> dict[str, 
         "config_key": "CODEX_SUBAGENT_STATUS_EVENTS",
         "state_config_file": str(state / "config.env"),
     }
-
-
-def _toml_string_value(text: str, key: str) -> str:
-    match = re.search(rf'(?m)^{re.escape(key)}\s*=\s*"([^"]*)"', text)
-    return match.group(1) if match else ""
 
 
 def config_summary(target: str) -> dict[str, Any]:

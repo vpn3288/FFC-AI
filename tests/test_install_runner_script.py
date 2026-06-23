@@ -121,7 +121,7 @@ PY
                   printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'
                   exit 0
                 fi
-                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then
+                if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then
                   printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\\n' >&2
                   exit 1
                 fi
@@ -194,11 +194,13 @@ PY
             self.assertIn("AI_RUNNER_PROVIDERS=codex\n", config)
             self.assertIn("OPENAI_API_KEY=test-openai-key\n", config)
             self.assertIn("CODEX_MODEL=gpt-5.5\n", config)
+            self.assertIn("CODEX_MODEL_PROVIDER=ffc_openai_compat\n", config)
             self.assertIn("CODEX_BASE_URL=https://example.invalid/v1\n", config)
             self.assertIn("CODEX_EXEC_EPHEMERAL=0\n", config)
             self.assertIn("AI_PERMISSION_SCOPE=full\n", config)
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
             self.assertIn("AI_PROCESS_CONTROL_ENABLED=1\n", config)
+            self.assertIn("AI_TASK_TIMEOUT_SECONDS=7200\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
             self.assertIn(f"CODEX_HOME={root_home / '.codex'}\n", config)
             self.assertIn("TERM=xterm-256color\n", config)
@@ -221,9 +223,14 @@ PY
             self.assertIn("-m ai_remote_runner.cli providers", runner_calls)
             self.assertIn("-m ai_remote_runner.cli parse /ai 状态", runner_calls)
             codex_config = (root_home / ".codex" / "config.toml").read_text(encoding="utf-8")
-            self.assertIn('model_provider = "openai"', codex_config)
+            self.assertIn('model_provider = "ffc_openai_compat"', codex_config)
             self.assertIn('model = "gpt-5.5"', codex_config)
-            self.assertIn('openai_base_url = "https://example.invalid/v1"', codex_config)
+            self.assertNotIn('openai_base_url = "https://example.invalid/v1"', codex_config)
+            self.assertIn("[model_providers.ffc_openai_compat]", codex_config)
+            self.assertIn('base_url = "https://example.invalid/v1"', codex_config)
+            self.assertIn('wire_api = "responses"', codex_config)
+            self.assertIn('env_key = "OPENAI_API_KEY"', codex_config)
+            self.assertIn("supports_websockets = false", codex_config)
             self.assertIn('approval_policy = "never"', codex_config)
             self.assertIn('sandbox_mode = "danger-full-access"', codex_config)
             self.assertIn("[sandbox_workspace_write]", codex_config)
@@ -300,7 +307,7 @@ PY
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
-                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\\n' >&2; exit 1; fi
+                if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\\n' >&2; exit 1; fi
                 exit 0
                 """,
             )
@@ -379,7 +386,7 @@ PY
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
+if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX
@@ -498,7 +505,7 @@ PY
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
-                if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then
+                if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then
                   printf 'Error loading config.toml: unknown configuration field `bad_field`\\n' >&2
                   exit 1
                 fi
@@ -649,7 +656,7 @@ PY
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
-if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--strict-config" ]; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
+if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
 if [ "${1:-}" = "exec" ]; then exit 0; fi
 exit 0
 CODEX

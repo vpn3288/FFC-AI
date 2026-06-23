@@ -57,6 +57,7 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("bridge_secret_assignment", re.compile(r"\bAI_BRIDGE_SHARED_SECRET\s*=\s*(?!<|\\$|\\{)[A-Za-z0-9_-]{32,}\b")),
 )
 DEFAULT_TASK_RESERVED_USD = 0.0
+DEFAULT_TASK_TIMEOUT_SECONDS = 7200
 UNLIMITED_BUDGET_VALUES = {"", "0", "off", "none", "no", "false", "unlimited", "infinite", "inf", "无限", "不限", "关闭"}
 DEFAULT_LOCAL_EXEC_TIMEOUT_SECONDS = 300
 DEFAULT_LOCAL_EXEC_MAX_OUTPUT_BYTES = 120000
@@ -337,6 +338,15 @@ def parse_reserved_usd(raw: object, default: float = DEFAULT_TASK_RESERVED_USD) 
 
 def _default_reserved_usd() -> float:
     return parse_reserved_usd(os.environ.get("AI_TASK_RESERVED_USD", str(DEFAULT_TASK_RESERVED_USD)))
+
+
+def _task_timeout_seconds() -> int:
+    raw = os.environ.get("AI_TASK_TIMEOUT_SECONDS", str(DEFAULT_TASK_TIMEOUT_SECONDS))
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return DEFAULT_TASK_TIMEOUT_SECONDS
+    return min(86400, max(60, value))
 
 
 def _local_exec_timeout_seconds() -> int:
@@ -791,6 +801,7 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
         if configured is not None and provider not in configured:
             return _error(request_id, "ai_provider_not_configured", f"{provider} 没有配置在这台机器上；当前配置: {','.join(configured) or 'none'}")
         reserved_usd = parse_reserved_usd(envelope.get("reserved_usd", _default_reserved_usd()))
+        timeout_seconds = _task_timeout_seconds()
         budget_ok, budget_reason = rt.ledger.can_reserve(reserved_usd)
         if not budget_ok:
             return _error(request_id, budget_reason, f"Budget preflight failed before provider start: {budget_reason}")
@@ -866,13 +877,34 @@ def execute(parsed: dict[str, Any], envelope: dict[str, Any], runtime: RunnerRun
                 instruction_prompt=instruction_prompt,
                 run_id=run_id,
                 reserved_usd=reserved_usd,
+                timeout_seconds=timeout_seconds,
                 emit=emit,
                 native_session_id=native_session_id_for_run,
             )
         elif provider == "vscode":
-            result = invoke_vscode(provider_prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=permission_scope)
+            result = invoke_vscode(
+                provider_prompt,
+                workspace,
+                instruction_prompt,
+                rt.ledger,
+                run_id=run_id,
+                reserved_usd=reserved_usd,
+                timeout_seconds=timeout_seconds,
+                emit=emit,
+                permission_scope=permission_scope,
+            )
         else:
-            result = invoke_claude(provider_prompt, workspace, instruction_prompt, rt.ledger, run_id=run_id, reserved_usd=reserved_usd, emit=emit, permission_scope=permission_scope)
+            result = invoke_claude(
+                provider_prompt,
+                workspace,
+                instruction_prompt,
+                rt.ledger,
+                run_id=run_id,
+                reserved_usd=reserved_usd,
+                timeout_seconds=timeout_seconds,
+                emit=emit,
+                permission_scope=permission_scope,
+            )
         native_session_id = ""
         if provider == "codex" and isinstance(result.raw, dict):
             native_session_id = str(result.raw.get("native_session_id") or "").strip()
