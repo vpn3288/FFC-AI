@@ -474,6 +474,35 @@ AI_RUNNER_COMPONENTS=codex,telegram sudo -E bash scripts/install-runner.sh
 /ai jsonl 关闭           # 同上，英文缩写别名
 ```
 
+### ❓ Claude Code 超时或连接问题
+
+如果使用 Claude Code 时遇到超时、连接中断或 API 错误，特别是使用第三方 Claude 兼容 API 时：
+
+**一键诊断：**
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/diagnose-claude-code.sh
+```
+
+**一键修复：**
+
+```bash
+cd /root/FFC-AI
+sudo bash scripts/fix-claude-code-timeout.sh
+sudo systemctl restart ai-telegram-bot
+```
+
+修复脚本会自动优化第三方 API 配置：
+- `requestTimeout: 180000` (3分钟请求超时)
+- `streamTimeout: 600000` (10分钟流式超时)
+- `maxRetries: 5` (最大重试5次)
+- 自动禁用不必要的网络流量
+
+**技术说明：**
+
+第三方 Claude 兼容 API 在 Linux 服务器上可能需要更长的超时时间和更多重试次数。修复脚本会在 `~/.claude/settings.json` 中添加优化配置，确保与 Windows 环境的行为一致。
+
 ---
 
 ## 🏢 团队使用（Mattermost）

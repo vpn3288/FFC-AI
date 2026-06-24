@@ -335,6 +335,9 @@ write_claude_settings() {
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}" \
     CLAUDE_CODE_ATTRIBUTION_HEADER="${CLAUDE_CODE_ATTRIBUTION_HEADER:-}" \
+    CLAUDE_REQUEST_TIMEOUT="${CLAUDE_REQUEST_TIMEOUT:-180000}" \
+    CLAUDE_MAX_RETRIES="${CLAUDE_MAX_RETRIES:-5}" \
+    CLAUDE_STREAM_TIMEOUT="${CLAUDE_STREAM_TIMEOUT:-600000}" \
     python3 - <<'PY'
 import json
 import os
@@ -351,8 +354,23 @@ for key in (
     value = os.environ.get(key, "")
     if value:
         env[key] = value
+
+third_party_api = bool(os.environ.get("ANTHROPIC_BASE_URL", "").strip())
+request_timeout = int(os.environ.get("CLAUDE_REQUEST_TIMEOUT", "180000"))
+max_retries = int(os.environ.get("CLAUDE_MAX_RETRIES", "5"))
+stream_timeout = int(os.environ.get("CLAUDE_STREAM_TIMEOUT", "600000"))
+
+data = {"env": env}
+if third_party_api:
+    data["thirdPartyApi"] = True
+    data["requestTimeout"] = request_timeout
+    data["maxRetries"] = max_retries
+    data["streamTimeout"] = stream_timeout
+    if "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in env:
+        env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+
 path = Path(os.environ["AI_TOOL_HOME"]) / ".claude" / "settings.json"
-path.write_text(json.dumps({"env": env}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
 PY
   sudo chown -R root:root "$AI_TOOL_HOME/.claude" 2>/dev/null || true
@@ -373,6 +391,9 @@ write_vscode_claude_settings() {
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}" \
     CLAUDE_CODE_ATTRIBUTION_HEADER="${CLAUDE_CODE_ATTRIBUTION_HEADER:-0}" \
+    CLAUDE_REQUEST_TIMEOUT="${CLAUDE_REQUEST_TIMEOUT:-180000}" \
+    CLAUDE_MAX_RETRIES="${CLAUDE_MAX_RETRIES:-5}" \
+    CLAUDE_STREAM_TIMEOUT="${CLAUDE_STREAM_TIMEOUT:-600000}" \
     python3 - <<'PY'
 import json
 import os
@@ -396,6 +417,14 @@ for key in (
     value = os.environ.get(key, "")
     if value:
         env[key] = value
+
+third_party_api = bool(os.environ.get("ANTHROPIC_BASE_URL", "").strip())
+if third_party_api:
+    data["thirdPartyApi"] = True
+    data["requestTimeout"] = int(os.environ.get("CLAUDE_REQUEST_TIMEOUT", "180000"))
+    data["maxRetries"] = int(os.environ.get("CLAUDE_MAX_RETRIES", "5"))
+    data["streamTimeout"] = int(os.environ.get("CLAUDE_STREAM_TIMEOUT", "600000"))
+
 data["env"] = env
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 path.chmod(0o600)

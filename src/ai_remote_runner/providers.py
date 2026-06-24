@@ -347,16 +347,18 @@ CLAUDE_SHELL_APPROVED_TEMPLATE = [
 CLAUDE_FULL_ACCESS_TEMPLATE = [
     "claude",
     "-p",
+    "--bare",
     "--output-format",
     "json",
     "--add-dir",
     "/",
     "--permission-mode",
-    "acceptEdits",
+    "bypassPermissions",
     "--tools",
     "Bash,Read,Write,Edit,Grep,Glob",
     "--allowedTools",
     "Bash(*)",
+    "--no-session-persistence",
 ]
 
 
@@ -483,6 +485,30 @@ def _state_from_ledger(ledger: BudgetLedger) -> Path:
         return ledger.path.parent.parent
     except Exception:
         return state_root()
+
+
+def _claude_timeout_args(provider_id: str = "claude-code") -> list[str]:
+    args = []
+    request_timeout = os.environ.get("CLAUDE_REQUEST_TIMEOUT", "").strip()
+    stream_timeout = os.environ.get("CLAUDE_STREAM_TIMEOUT", "").strip()
+    max_retries = os.environ.get("CLAUDE_MAX_RETRIES", "").strip()
+
+    if request_timeout and request_timeout.isdigit():
+        args.extend(["--request-timeout", request_timeout])
+    elif os.environ.get("ANTHROPIC_BASE_URL"):
+        args.extend(["--request-timeout", "180000"])
+
+    if stream_timeout and stream_timeout.isdigit():
+        args.extend(["--stream-timeout", stream_timeout])
+    elif os.environ.get("ANTHROPIC_BASE_URL"):
+        args.extend(["--stream-timeout", "600000"])
+
+    if max_retries and max_retries.isdigit():
+        args.extend(["--max-retries", max_retries])
+    elif os.environ.get("ANTHROPIC_BASE_URL"):
+        args.extend(["--max-retries", "5"])
+
+    return args
 
 
 def _run_claude_command(
@@ -629,7 +655,7 @@ def _claude_positive_int_value(raw: str, default: int, max_value: int = 5) -> in
     return max(0, min(parsed, max_value))
 
 
-def _claude_positive_int_env(name: str, default: int, max_value: int = 5) -> int:
+def _claude_positive_int_env(name: str, default: int, max_value: int = 10) -> int:
     return _claude_positive_int_value(os.environ.get(name, str(default)), default, max_value)
 
 
@@ -680,8 +706,12 @@ def _claude_is_transient_api_error(result: subprocess.CompletedProcess[str], out
 
 
 def _claude_retry_delay_seconds(attempt_index: int, provider_id: str = "claude-code") -> float:
-    base = _claude_nonnegative_float_value(_claude_adapter_env(provider_id, "CLAUDE_API_RETRY_SLEEP_SECONDS", "12"), 12.0)
-    return min(base * max(1, attempt_index), 120.0)
+    import random
+    base = _claude_nonnegative_float_value(_claude_adapter_env(provider_id, "CLAUDE_API_RETRY_SLEEP_SECONDS", "5"), 5.0)
+    exponential_delay = base * (2 ** max(0, attempt_index - 1))
+    capped_delay = min(exponential_delay, 120.0)
+    jitter = capped_delay * 0.2 * (random.random() * 2 - 1)
+    return max(1.0, capped_delay + jitter)
 
 
 def _codex_jsonl_last_agent_message(output: str) -> str:
@@ -1361,6 +1391,7 @@ def _invoke_claude_backend(
     }.get(permission_scope, CLAUDE_FULL_ACCESS_TEMPLATE)
     command = [
         *template,
+        *_claude_timeout_args(provider_id),
         *_claude_max_turn_args(_claude_adapter_env(provider_id, "CLAUDE_MAX_TURNS", "0")),
         "--append-system-prompt",
         instruction_prompt,
@@ -1390,7 +1421,7 @@ def _invoke_claude_backend(
     attempt_raws: list[dict[str, Any] | None] = [raw]
     attempt_costs: list[float | None] = [_actual_cost_usd(raw)]
     transient_retry_started = False
-    transient_retries = _claude_positive_int_value(_claude_adapter_env(provider_id, "CLAUDE_API_RETRY_ATTEMPTS", "3"), 3)
+    transient_retries = _claude_positive_int_value(_claude_adapter_env(provider_id, "CLAUDE_API_RETRY_ATTEMPTS", "5"), 5, max_value=10)
     for retry_index in range(1, transient_retries + 1):
         if not _claude_is_transient_api_error(result, output_text):
             break
