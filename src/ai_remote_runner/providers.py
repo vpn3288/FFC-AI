@@ -920,14 +920,16 @@ def _codex_failure_diagnostic(stdout: str, stderr: str) -> str:
         )
     if kind != "transient":
         return ""
-    if "websocket" in haystack.lower() or "responses_websocket" in haystack.lower():
+    if "websocket" in haystack.lower() or "responses_websocket" in haystack.lower() or "reconnecting" in haystack.lower():
         return (
-            "Codex 流式连接在自动重试后中断。runner 已按失败处理。"
-            "第三方 OpenAI 兼容代理在 Linux 服务环境中常见原因是 websocket 流不兼容；"
-            "安装脚本会把非官方 base_url 写入自定义 model_provider，并设置 wire_api=\"responses\"、"
-            "supports_websockets=false、request_max_retries=6、stream_max_retries=10。"
-            "请重新运行安装脚本或用 /ai 代理 设置 codex <base_url> "
-            "刷新配置后再试。"
+            "Codex 流式连接在自动重试后中断（Reconnecting... 5/5）。"
+            "第三方 OpenAI 兼容代理在 Linux 服务器上常见原因：websocket 长连接不稳定。\n\n"
+            "修复方法：\n"
+            "1. 运行修复脚本: bash scripts/fix-codex-reconnecting.sh\n"
+            "2. 或手动设置: /ai 代理 设置 codex <your-base-url>\n"
+            "3. 重启服务: sudo systemctl restart ai-telegram-bot\n\n"
+            "技术细节：脚本会配置 wire_api=\"responses\"、supports_websockets=false、"
+            "增加重试次数和超时时间，避免 websocket 连接问题。"
         )
     return "Codex 流式连接在自动重试后中断。runner 已按失败处理；请继续或重试该任务。"
 
