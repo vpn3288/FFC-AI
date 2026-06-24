@@ -55,7 +55,7 @@ apply_fix() {
   mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
   backup_settings
 
-  python3 <<'PYEOF'
+  CLAUDE_SETTINGS="$CLAUDE_SETTINGS" STATE_ROOT="$STATE_ROOT" python3 <<'PYEOF'
 import json
 import os
 from pathlib import Path
