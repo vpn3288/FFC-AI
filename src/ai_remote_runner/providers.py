@@ -488,27 +488,7 @@ def _state_from_ledger(ledger: BudgetLedger) -> Path:
 
 
 def _claude_timeout_args(provider_id: str = "claude-code") -> list[str]:
-    args = []
-    request_timeout = os.environ.get("CLAUDE_REQUEST_TIMEOUT", "").strip()
-    stream_timeout = os.environ.get("CLAUDE_STREAM_TIMEOUT", "").strip()
-    max_retries = os.environ.get("CLAUDE_MAX_RETRIES", "").strip()
-
-    if request_timeout and request_timeout.isdigit():
-        args.extend(["--request-timeout", request_timeout])
-    elif os.environ.get("ANTHROPIC_BASE_URL"):
-        args.extend(["--request-timeout", "180000"])
-
-    if stream_timeout and stream_timeout.isdigit():
-        args.extend(["--stream-timeout", stream_timeout])
-    elif os.environ.get("ANTHROPIC_BASE_URL"):
-        args.extend(["--stream-timeout", "600000"])
-
-    if max_retries and max_retries.isdigit():
-        args.extend(["--max-retries", max_retries])
-    elif os.environ.get("ANTHROPIC_BASE_URL"):
-        args.extend(["--max-retries", "5"])
-
-    return args
+    return []
 
 
 def _run_claude_command(
