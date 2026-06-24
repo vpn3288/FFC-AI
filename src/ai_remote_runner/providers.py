@@ -925,7 +925,8 @@ def _codex_failure_diagnostic(stdout: str, stderr: str) -> str:
             "Codex 流式连接在自动重试后中断。runner 已按失败处理。"
             "第三方 OpenAI 兼容代理在 Linux 服务环境中常见原因是 websocket 流不兼容；"
             "安装脚本会把非官方 base_url 写入自定义 model_provider，并设置 wire_api=\"responses\"、"
-            "supports_websockets=false、stream_max_retries=10。请重新运行安装脚本或用 /ai 代理 设置 codex <base_url> "
+            "supports_websockets=false、request_max_retries=6、stream_max_retries=10。"
+            "请重新运行安装脚本或用 /ai 代理 设置 codex <base_url> "
             "刷新配置后再试。"
         )
     return "Codex 流式连接在自动重试后中断。runner 已按失败处理；请继续或重试该任务。"

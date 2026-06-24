@@ -155,6 +155,7 @@ updated = replace_provider_base_url(updated, provider)
 updated = replace_provider_string(updated, provider, "wire_api", "responses")
 updated = replace_provider_string(updated, provider, "env_key", "OPENAI_API_KEY")
 updated = replace_provider_bool(updated, provider, "supports_websockets", False)
+updated = replace_provider_int(updated, provider, "request_max_retries", 6)
 updated = replace_provider_int(updated, provider, "stream_max_retries", 10)
 updated = replace_provider_int(updated, provider, "stream_idle_timeout_ms", 600000)
 if provider == compat_provider:

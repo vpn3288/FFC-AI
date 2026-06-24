@@ -344,6 +344,7 @@ def _codex_config_with_openai_compatible_provider(
     text = _replace_or_insert_provider_string(text, provider_id, "wire_api", "responses")
     text = _replace_or_insert_provider_string(text, provider_id, "env_key", "OPENAI_API_KEY")
     text = _replace_or_insert_provider_bool(text, provider_id, "supports_websockets", False)
+    text = _replace_or_insert_provider_int(text, provider_id, "request_max_retries", 6)
     text = _replace_or_insert_provider_int(text, provider_id, "stream_max_retries", 10)
     text = _replace_or_insert_provider_int(text, provider_id, "stream_idle_timeout_ms", 600000)
     return text

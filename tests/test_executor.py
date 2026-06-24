@@ -148,6 +148,7 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn('wire_api = "responses"', config)
             self.assertIn('env_key = "OPENAI_API_KEY"', config)
             self.assertIn("supports_websockets = false", config)
+            self.assertIn("request_max_retries = 6", config)
             self.assertNotIn('openai_base_url = "https://proxy.example/v1"', config)
             self.assertIn("[sandbox_workspace_write]", config)
             self.assertIn("network_access = true", config)
@@ -193,6 +194,7 @@ class ExecutorTests(unittest.TestCase):
             self.assertIn('name = "proxy"', config)
             self.assertIn('base_url = "https://new-proxy.example/v1"', config)
             self.assertIn("supports_websockets = false", config)
+            self.assertIn("request_max_retries = 6", config)
             self.assertIn('[model_providers.other]\nbase_url = "https://other.example/v1"', config)
             self.assertEqual(summary["base_url"], "https://new-proxy.example/v1")
 

@@ -397,6 +397,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIn("第三方 OpenAI 兼容代理", result.output_text)
         self.assertIn('supports_websockets=false', result.output_text)
+        self.assertIn("request_max_retries=6", result.output_text)
 
     def test_invoke_codex_sends_prompt_on_stdin(self) -> None:
         import subprocess

@@ -69,6 +69,7 @@ sudo bash -c 'set -e; apt-get update; apt-get install -y curl ca-certificates; f
 脚本会自动做这些事：
 
 - 安装系统依赖、Node.js LTS、Claude Code、Codex CLI、VSCode。
+- Codex CLI 按 `versions.lock` 安装当前锁定稳定版；如果机器已有旧版 Codex，会自动升级到锁定版本。
 - 创建 `/opt/ai-remote-runner`、`/var/lib/ai-remote-runner`、`/srv/ai-workspaces`。
 - 用 systemd 启动 runner 和 Telegram bot。
 - 引导你输入 API key、API 地址、模型名、Telegram token。
@@ -177,6 +178,18 @@ VSCode 后端配置：
 ```
 
 如果你把 `sk-ant-` 这种 Claude key 填给 `codex`，runner 会拒绝，防止配错。
+
+Codex 使用第三方 OpenAI 兼容代理时，runner 会写入自定义 `model_provider`，并设置：
+
+```toml
+wire_api = "responses"
+supports_websockets = false
+request_max_retries = 6
+stream_max_retries = 10
+stream_idle_timeout_ms = 600000
+```
+
+这样做是为了避免 Linux 服务环境里部分代理的 websocket/长流连接兼容问题。官方 OpenAI 地址留空时，脚本使用 Codex 官方推荐的 `openai_base_url` 配置。
 
 ---
 
@@ -404,6 +417,16 @@ AI_RUNNER_COMPONENTS=claude-code,telegram sudo -E bash scripts/install-runner.sh
 ### Codex子agent实时状态
 Codex运行时会把JSONL事件流转换成Telegram里的实时状态。默认会高亮显示审查者AI、子agent、命令执行、文件修改等状态。
 安装脚本默认写入 `CODEX_EXEC_EPHEMERAL=0`，普通 Telegram 消息会继续复用当前 runner 对话；Codex 返回 thread_id 后，runner 会在后续同一对话里使用 `codex exec resume` 续接。只有发送 `/ai 新对话` 或 `/ai 开启新对话` 才更换对话。若 Codex 上下文接近上限，Telegram 会显示警告；若 Codex 退出时仍有工具调用没返回结果，runner 会按“中断”处理，不会误报完成。
+
+如果 Telegram 里看到 `执行出错：Reconnecting... 5/5`，通常不是 Telegram 错，也不一定是 API key 或 base URL 错。Codex CLI 在 Linux 服务器上通过 JSONL/流式连接调用模型，第三方 OpenAI 兼容代理如果 websocket 或长连接实现不完整，就可能在自动重连 5 次后退出。处理方法：
+
+```text
+/ai 配置 查看 codex
+/ai 代理 设置 codex https://你的OpenAI兼容地址/v1
+/ai 密钥 设置 codex sk-你的OpenAI兼容key
+```
+
+然后重新运行安装脚本，让它升级 Codex CLI 并重写稳定性配置。Windows 上不出现，不代表 Linux 服务环境不会出现；两边的终端、服务环境、代理流式连接路径可能不同。
 
 ```
 /ai 子agent状态          # 查看当前是否开启

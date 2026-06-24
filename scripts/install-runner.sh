@@ -221,6 +221,27 @@ root_has_command() {
   fi
 }
 
+codex_installed_version() {
+  root_env_run codex --version 2>/dev/null | sed -n 's/.*\([0-9][0-9.]*\).*/\1/p' | head -n 1
+}
+
+install_codex_cli() {
+  local reason="$1"
+  log "$reason; installing $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION through npm"
+  ensure_codex_node
+  if [ "$DRY_RUN" = false ]; then
+    command -v npm >/dev/null 2>&1 || { log 'npm missing after Node.js install; Codex CLI cannot be installed'; exit 1; }
+    sudo npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+    root_has_command codex || { log 'codex npm install did not place codex on the root service PATH'; exit 1; }
+    root_env_run codex --version
+  else
+    log "would run sudo npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+  fi
+  CODEX_READY=true
+  CODEX_STATUS="installed"
+  CODEX_REMEDIATION_ZH=""
+}
+
 is_truthy() {
   case "${1:-}" in
     1|true|TRUE|yes|YES|on|ON|y|Y) return 0 ;;
@@ -815,7 +836,7 @@ log 'stage 04: install or verify requested Codex CLI provider'
 CODEX_NPM_PACKAGE="$(read_lock codex_npm_package || true)"
 CODEX_NPM_VERSION="$(read_lock codex_npm_version || true)"
 CODEX_NPM_PACKAGE="${CODEX_NPM_PACKAGE:-@openai/codex}"
-CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.138.0}"
+CODEX_NPM_VERSION="${CODEX_NPM_VERSION:-0.142.0}"
 CODEX_READY=false
 CODEX_STATUS="install_required"
 CODEX_REMEDIATION_ZH="Codex CLI 必须由安装脚本全局安装；若失败请检查网络、Node.js/npm、以及版本锁。"
@@ -832,24 +853,17 @@ CODEX_EXEC_FULL_ACCESS_MODE="unavailable"
 CODEX_TELEGRAM_REALTIME_STATUS=false
 if [ "$REQUEST_CODEX" = true ]; then
   if root_has_command codex; then
-    root_env_run codex --version
-    CODEX_READY=true
-    CODEX_STATUS="installed"
-    CODEX_REMEDIATION_ZH=""
-  elif command -v apt-get >/dev/null 2>&1; then
-    log "codex missing; installing $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION through npm"
-    ensure_codex_node
-    if [ "$DRY_RUN" = false ]; then
-      command -v npm >/dev/null 2>&1 || { log 'npm missing after Node.js install; Codex CLI cannot be installed'; exit 1; }
-      sudo npm install -g "$CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
-      root_has_command codex || { log 'codex npm install did not place codex on the root service PATH'; exit 1; }
+    CODEX_INSTALLED_VERSION="$(codex_installed_version || true)"
+    if [ "$DRY_RUN" = true ] || [ "$CODEX_INSTALLED_VERSION" = "$CODEX_NPM_VERSION" ]; then
       root_env_run codex --version
       CODEX_READY=true
       CODEX_STATUS="installed"
       CODEX_REMEDIATION_ZH=""
     else
-      log "would run sudo npm install -g $CODEX_NPM_PACKAGE@$CODEX_NPM_VERSION"
+      install_codex_cli "codex version ${CODEX_INSTALLED_VERSION:-unknown} does not match locked stable version $CODEX_NPM_VERSION"
     fi
+  elif command -v apt-get >/dev/null 2>&1 || command -v npm >/dev/null 2>&1; then
+    install_codex_cli "codex missing"
   else
     log 'codex missing and native package installer unavailable; Codex CLI is required for core install'
     exit 1
@@ -909,6 +923,7 @@ base_url = "$CODEX_EFFECTIVE_BASE_URL"
 wire_api = "responses"
 env_key = "OPENAI_API_KEY"
 supports_websockets = false
+request_max_retries = 6
 stream_max_retries = 10
 stream_idle_timeout_ms = 600000
 EOF

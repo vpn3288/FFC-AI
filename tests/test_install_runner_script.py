@@ -114,7 +114,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then
-                  printf 'codex-cli 0.138.0\\n'
+                  printf 'codex-cli 0.142.0\\n'
                   exit 0
                 fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
@@ -233,6 +233,7 @@ PY
             self.assertIn('wire_api = "responses"', codex_config)
             self.assertIn('env_key = "OPENAI_API_KEY"', codex_config)
             self.assertIn("supports_websockets = false", codex_config)
+            self.assertIn("request_max_retries = 6", codex_config)
             self.assertIn('approval_policy = "never"', codex_config)
             self.assertIn('sandbox_mode = "danger-full-access"', codex_config)
             self.assertIn("[sandbox_workspace_write]", codex_config)
@@ -310,7 +311,7 @@ PY
                 fakebin / "codex",
                 """
                 #!/usr/bin/env bash
-                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
+                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.142.0\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\\n' >&2; exit 1; fi
@@ -390,7 +391,7 @@ PY
                   printf '%s\n' "$*" >> "${NPM_CALLS:?}"
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
-if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
+if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.142.0\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
@@ -464,6 +465,106 @@ PY
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("npm install -g", npm_calls.read_text(encoding="utf-8"))
 
+    def test_old_codex_version_upgrades_to_locked_stable_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            state = root / "state"
+            workspaces = root / "workspaces"
+            install = root / "install"
+            npm_calls = root / "npm-calls.txt"
+            state.mkdir()
+            (state / "config.env").write_text("AI_BRIDGE_SHARED_SECRET=" + "A" * 43 + "\n", encoding="utf-8")
+
+            write_executable(
+                fakebin / "sudo",
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "${1:-}" = "env" ]; then
+                  shift
+                  exec env "$@"
+                fi
+                if [ "${1:-}" = "npm" ] && [ "${2:-}" = "install" ] && [ "${3:-}" = "-g" ]; then
+                  printf '%s\n' "$*" >> "${NPM_CALLS:?}"
+                  cat > "$(dirname "$0")/codex" <<'CODEX'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.142.0\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
+if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi
+if [ "${1:-}" = "exec" ]; then exit 0; fi
+exit 0
+CODEX
+                  chmod +x "$(dirname "$0")/codex"
+                  exit 0
+                fi
+                if [ "${1:-}" = "python3" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "venv" ]; then
+                  mkdir -p "$4/bin"
+                  cat > "$4/bin/python" <<'PY'
+#!/usr/bin/env bash
+exit 0
+PY
+                  chmod +x "$4/bin/python"
+                  exit 0
+                fi
+                if [[ "${1:-}" == */.venv/bin/python ]] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pip" ]; then
+                  exit 0
+                fi
+                if [ "${1:-}" = "tee" ] && [[ "${2:-}" == /etc/systemd/system/* ]]; then
+                  cat > "${FAKE_SYSTEMD_DIR:?}/$(basename "$2")"
+                  exit 0
+                fi
+                exec "$@"
+                """,
+            )
+            write_executable(fakebin / "apt-get", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "bash", "#!/bin/sh\nexec /bin/bash \"$@\"\n")
+            write_executable(fakebin / "sh", "#!/bin/sh\nexec /bin/sh \"$@\"\n")
+            write_executable(fakebin / "id", "#!/usr/bin/env bash\nif [ \"${1:-}\" = \"-u\" ]; then printf '0\\n'; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+            write_executable(fakebin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(fakebin / "node", "#!/usr/bin/env bash\nprintf 'v24.2.0\\n'\n")
+            write_executable(fakebin / "npm", "#!/usr/bin/env bash\nexit 0\n")
+            write_executable(
+                fakebin / "codex",
+                """
+                #!/usr/bin/env bash
+                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.130.0\\n'; exit 0; fi
+                exit 0
+                """,
+            )
+
+            env = clean_env()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_REMOTE_STATE": str(state),
+                    "AI_WORKSPACE_ROOT": str(workspaces),
+                    "AI_REMOTE_INSTALL_ROOT": str(install),
+                    "AI_RUNNER_COMPONENTS": "codex",
+                    "AI_SERVICE_PATH": f"{fakebin}:/usr/bin:/bin",
+                    "AI_VSCODE_ROOT_WRAPPER": str(root / "code-root"),
+                    "AI_VSCODE_ROOT_DIR": str(root / "vscode-root"),
+                    "AI_DEFAULT_PROVIDER": "codex",
+                    "FAKE_SYSTEMD_DIR": str(root),
+                    "NPM_CALLS": str(npm_calls),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install-runner.sh")],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            npm_output = npm_calls.read_text(encoding="utf-8")
+            self.assertIn("npm install -g", npm_output)
+            self.assertIn("@openai/codex@0.142.0", npm_output)
+            self.assertIn("does not match locked stable version 0.142.0", result.stdout)
+
     def test_codex_preflight_rejects_strict_config_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -510,7 +611,7 @@ PY
                 fakebin / "codex",
                 """
                 #!/usr/bin/env bash
-                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\\n'; exit 0; fi
+                if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.142.0\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\\n'; exit 0; fi
                 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then
@@ -662,7 +763,7 @@ PY
                   printf '%s\n' "$*" >> "${NPM_CALLS:?}"
                   cat > "$(dirname "$0")/codex" <<'CODEX'
 #!/usr/bin/env bash
-if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.138.0\n'; exit 0; fi
+if [ "${1:-}" = "--version" ]; then printf 'codex-cli 0.142.0\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "resume" ] && [ "${3:-}" = "--help" ]; then printf 'usage: codex exec resume [--json] [--output-last-message] [SESSION_ID] [PROMPT]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then printf 'usage: codex exec [--json] [--ephemeral] [--cd] [--output-last-message] [--output-schema] [--sandbox] [--add-dir] [--skip-git-repo-check]\n'; exit 0; fi
 if [ "${1:-}" = "exec" ] && printf ' %s ' "$*" | grep -q ' --strict-config '; then printf 'Failed to read output schema file /missing: No such file or directory (os error 2)\n' >&2; exit 1; fi

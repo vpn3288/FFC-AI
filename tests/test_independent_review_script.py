@@ -235,6 +235,7 @@ PY
             self.assertIn("[model_providers.ffc_openai_compat]", observed_text)
             self.assertIn('base_url = "https://review.example/v1"', observed_text)
             self.assertIn("supports_websockets = false", observed_text)
+            self.assertIn("request_max_retries = 6", observed_text)
             self.assertIn("stream_max_retries = 10", observed_text)
             self.assertIn("stream_idle_timeout_ms = 600000", observed_text)
 
@@ -312,6 +313,7 @@ PY
             self.assertIn("[model_providers.proxy]", observed_text)
             self.assertIn('base_url = "https://review.example/v1"', observed_text)
             self.assertIn("supports_websockets = false", observed_text)
+            self.assertIn("request_max_retries = 6", observed_text)
             self.assertIn("stream_max_retries = 10", observed_text)
             self.assertIn("stream_idle_timeout_ms = 600000", observed_text)
 
