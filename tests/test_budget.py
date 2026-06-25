@@ -46,6 +46,16 @@ class BudgetTests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertEqual(reason, "ok")
 
+    def test_mark_interrupted_only_updates_reserved_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = BudgetLedger(Path(tmp) / "ledger.json")
+            ledger.reserve("run-1", "claude-code", 0.5)
+            interrupted = ledger.mark_interrupted_if_reserved("run-1", status="stale_interrupted")
+            self.assertIsNotNone(interrupted)
+            self.assertEqual(interrupted["status"], "stale_interrupted")
+            self.assertEqual(ledger.load()["daily_used_usd_estimate"], 0.5)
+            self.assertIsNone(ledger.mark_interrupted_if_reserved("missing"))
+
 
 if __name__ == "__main__":
     unittest.main()

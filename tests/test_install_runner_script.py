@@ -137,6 +137,10 @@ PY
                   printf 'claude-code 1.0.0\\n'
                   exit 0
                 fi
+                if [ "${1:-}" = "-p" ]; then
+                  printf '{"result":"OK"}\\n'
+                  exit 0
+                fi
                 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
                   printf '{"loggedIn":true}\\n'
                   exit 0
@@ -203,6 +207,7 @@ PY
             self.assertIn("AI_REQUIRE_SHELL_CONFIRMATION=0\n", config)
             self.assertIn("AI_PROCESS_CONTROL_ENABLED=1\n", config)
             self.assertIn("AI_TASK_TIMEOUT_SECONDS=7200\n", config)
+            self.assertIn("TELEGRAM_SHUTDOWN_DRAIN_SECONDS=7200\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
             self.assertIn(f"CODEX_HOME={root_home / '.codex'}\n", config)
             self.assertIn("TERM=xterm-256color\n", config)
@@ -323,6 +328,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'claude-code 1.0.0\\n'; exit 0; fi
+                if [ "${1:-}" = "-p" ]; then printf '{"result":"OK"}\\n'; exit 0; fi
                 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi
                 exit 0
                 """,
@@ -360,6 +366,8 @@ PY
             self.assertIn(str(install / ".venv" / "bin" / "python"), telegram_unit.read_text(encoding="utf-8"))
             self.assertIn("User=root", telegram_unit.read_text(encoding="utf-8"))
             self.assertIn("Restart=always", telegram_unit.read_text(encoding="utf-8"))
+            self.assertIn("TimeoutStopSec=7200", telegram_unit.read_text(encoding="utf-8"))
+            self.assertIn("KillMode=mixed", telegram_unit.read_text(encoding="utf-8"))
             self.assertIn("Telegram service installed but not started", result.stdout)
             manifest = json.loads((state / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertTrue(manifest["telegram_enabled"])
@@ -432,6 +440,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'claude-code 1.0.0\\n'; exit 0; fi
+                if [ "${1:-}" = "-p" ]; then printf '{"result":"OK"}\\n'; exit 0; fi
                 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi
                 exit 0
                 """,
@@ -675,6 +684,7 @@ PY
                   cat > "$(dirname "$0")/claude" <<'CLAUDE'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'claude-code 2.1.153\n'; exit 0; fi
+if [ "${1:-}" = "-p" ]; then printf '{"result":"OK"}\n'; exit 0; fi
 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then printf '{"loggedIn":true}\n'; exit 0; fi
 exit 0
 CLAUDE
@@ -832,6 +842,7 @@ SETUP
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'claude-code 1.0.0\\n'; exit 0; fi
+                if [ "${1:-}" = "-p" ]; then printf '{"result":"OK"}\\n'; exit 0; fi
                 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi
                 exit 0
                 """,
@@ -1189,6 +1200,7 @@ PY
                 """
                 #!/usr/bin/env bash
                 if [ "${1:-}" = "--version" ]; then printf 'claude-code 1.0.0\\n'; exit 0; fi
+                if [ "${1:-}" = "-p" ]; then printf '{"result":"OK"}\\n'; exit 0; fi
                 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi
                 exit 0
                 """,
@@ -1229,8 +1241,8 @@ PY
             self.assertIn("ANTHROPIC_AUTH_TOKEN=fixture-token", config)
             self.assertIn("CLAUDE_MODEL=opus\n", config)
             self.assertIn("CLAUDE_MAX_TURNS=0\n", config)
-            self.assertIn("CLAUDE_API_RETRY_ATTEMPTS=3\n", config)
-            self.assertIn("CLAUDE_API_RETRY_SLEEP_SECONDS=12\n", config)
+            self.assertIn("CLAUDE_API_RETRY_ATTEMPTS=5\n", config)
+            self.assertIn("CLAUDE_API_RETRY_SLEEP_SECONDS=5\n", config)
             self.assertNotIn("OPENAI_API_KEY=", config)
 
     def test_dry_run_does_not_execute_real_provider_or_runner_commands(self) -> None:

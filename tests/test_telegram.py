@@ -661,6 +661,38 @@ class TelegramBotTests(unittest.TestCase):
             self.assertEqual(saved["last_skip_reason"], "chat_has_running_task")
             self.assertEqual(saved["next_due_at"], 1300)
 
+    def test_stale_task_without_live_process_is_marked_interrupted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            state.mkdir(parents=True)
+            config = TelegramConfig(token="token", allowed_chat_ids={"123"})
+            client = FakeTelegramClient(config)
+            runtime = RunnerRuntime(state, Path(tmp) / "workspaces")
+            runtime.ledger.reserve("run-stale", "claude-code", 0.25)
+            (state / "telegram-tasks.json").write_text(
+                json.dumps(
+                    {
+                        "task-stale": {
+                            "task_id": "task-stale",
+                            "chat_id": "123",
+                            "provider": "claude-code",
+                            "done": False,
+                            "started_at": int(time.time()),
+                            "last_run_id": "run-stale",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bot = TelegramBot(config, client, runtime, state)
+
+            self.assertFalse(bot.chat_has_running_task("123"))
+
+            task_data = json.loads((state / "telegram-tasks.json").read_text(encoding="utf-8"))
+            self.assertTrue(task_data["task-stale"]["done"])
+            self.assertEqual(task_data["task-stale"]["response_status"], "stale_interrupted")
+            self.assertEqual(runtime.ledger.load()["runs"]["run-stale"]["status"], "stale_interrupted")
+
     def test_codex_realtime_events_are_visible_in_status_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = TelegramConfig(token="token", allowed_chat_ids={"123"}, status_interval_seconds=0.01)

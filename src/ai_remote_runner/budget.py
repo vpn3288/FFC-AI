@@ -105,3 +105,14 @@ class BudgetLedger:
         run["completed_at"] = int(time.time())
         self.save(data)
         return run
+
+    def mark_interrupted_if_reserved(self, run_id: str, status: str = "interrupted") -> dict[str, Any] | None:
+        data = self.load()
+        run = data.get("runs", {}).get(run_id)
+        if not isinstance(run, dict) or run.get("status") != "reserved":
+            return None
+        run["status"] = status
+        run["actual_usd"] = run.get("actual_usd")
+        run["completed_at"] = int(time.time())
+        self.save(data)
+        return run

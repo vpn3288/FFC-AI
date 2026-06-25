@@ -25,7 +25,7 @@ from .task_control import (
 
 
 PROBE_TIMEOUT_SECONDS = 30
-AUTH_PROBE_TIMEOUT_SECONDS = 60
+AUTH_PROBE_TIMEOUT_SECONDS = 8
 CODEX_EXEC_HELP_COMMAND = ["codex", "exec", "--help"]
 CODEX_EXEC_RESUME_HELP_COMMAND = ["codex", "exec", "resume", "--help"]
 
@@ -137,6 +137,8 @@ def _codex_exec_help_has(*needles: str) -> bool:
 def _claude_auth_ready() -> bool:
     if not shutil.which("claude"):
         return False
+    if _claude_env_auth_configured():
+        return True
     result = _run_probe(["claude", "auth", "status", "--json"], timeout_seconds=AUTH_PROBE_TIMEOUT_SECONDS)
     if result is None:
         return False
@@ -147,6 +149,13 @@ def _claude_auth_ready() -> bool:
     except json.JSONDecodeError:
         return False
     return bool(data.get("loggedIn") or data.get("apiProvider"))
+
+
+def _claude_env_auth_configured() -> bool:
+    for name in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        if os.environ.get(name, "").strip():
+            return True
+    return False
 
 
 def discover_claude() -> dict[str, Any]:
@@ -307,7 +316,6 @@ def provider_status() -> list[dict[str, Any]]:
 CLAUDE_CHAT_ONLY_TEMPLATE = [
     "claude",
     "-p",
-    "--bare",
     "--output-format",
     "json",
     "--permission-mode",
@@ -324,7 +332,7 @@ CLAUDE_EDIT_APPROVED_TEMPLATE = [
     "--output-format",
     "json",
     "--permission-mode",
-    "bypassPermissions",
+    "acceptEdits",
     "--tools",
     "Read,Grep,Glob,Edit,Write",
     "--no-session-persistence",
@@ -337,7 +345,7 @@ CLAUDE_SHELL_APPROVED_TEMPLATE = [
     "--output-format",
     "json",
     "--permission-mode",
-    "bypassPermissions",
+    "acceptEdits",
     "--tools",
     "Read,Grep,Glob,Edit,Write,Bash",
     "--no-session-persistence",
@@ -502,6 +510,26 @@ def _run_claude_command(
     provider: str = "claude-code",
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+
+    # Ensure third-party API settings are explicitly passed to Claude Code
+    # This fixes the issue where Claude Code ignores ANTHROPIC_BASE_URL
+    if "ANTHROPIC_BASE_URL" in env and "ANTHROPIC_AUTH_TOKEN" in env:
+        base_url = env.get("ANTHROPIC_BASE_URL", "").strip()
+        auth_token = env.get("ANTHROPIC_AUTH_TOKEN", "").strip()
+
+        # Only apply if both are set and base_url is not the official Anthropic API
+        if base_url and auth_token and "api.anthropic.com" not in base_url:
+            # Force Claude Code to use third-party API by ensuring these are set
+            env["ANTHROPIC_BASE_URL"] = base_url
+            env["ANTHROPIC_AUTH_TOKEN"] = auth_token
+
+            # Additional environment variables to ensure Claude Code respects third-party API
+            env["ANTHROPIC_API_URL"] = base_url
+            env["ANTHROPIC_API_KEY"] = auth_token
+
+            # Disable any OAuth that might interfere
+            env["CLAUDE_CODE_DISABLE_OAUTH"] = "1"
+
     if state is None or not run_id:
         return subprocess.run(command, cwd=workspace, env=env, input=prompt, text=True, capture_output=True, timeout=timeout_seconds, check=False)
     return run_registered(
@@ -687,6 +715,7 @@ def _claude_is_transient_api_error(result: subprocess.CompletedProcess[str], out
 
 def _claude_retry_delay_seconds(attempt_index: int, provider_id: str = "claude-code") -> float:
     import random
+
     base = _claude_nonnegative_float_value(_claude_adapter_env(provider_id, "CLAUDE_API_RETRY_SLEEP_SECONDS", "5"), 5.0)
     exponential_delay = base * (2 ** max(0, attempt_index - 1))
     capped_delay = min(exponential_delay, 120.0)
@@ -1356,7 +1385,7 @@ def _invoke_claude_backend(
     ledger: BudgetLedger,
     run_id: str | None = None,
     reserved_usd: float = 1.0,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int = 300,
     max_output_bytes: int = 200000,
     emit: Callable[[dict[str, Any]], None] | None = None,
     permission_scope: str = "full",

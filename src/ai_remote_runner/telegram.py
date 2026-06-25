@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import threading
 import time
 import uuid
@@ -17,6 +18,7 @@ from .paths import state_root, workspace_root
 from .phone_render import render_event_text, render_response_text
 from .providers import configured_provider_names_from_env, normalize_provider_name
 from .storage import atomic_write_json
+from .task_control import active_processes
 
 
 MAX_TELEGRAM_MESSAGE_CHARS = 3900
@@ -25,6 +27,14 @@ DEFAULT_TELEGRAM_RESERVED_USD = 0.0
 
 def _new_draft_id() -> int:
     return uuid.uuid4().int % 2_147_483_647 or 1
+
+
+def _bounded_int_env(name: str, default: int, *, minimum: int = 0, maximum: int = 86400) -> int:
+    try:
+        value = int(float(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+    return min(maximum, max(minimum, value))
 
 
 def load_config_env(root: Path | None = None) -> None:
@@ -57,6 +67,7 @@ class TelegramConfig:
     native_draft_progress: bool = False
     native_draft_allow_chat_ids: frozenset[str] = frozenset()
     group_mode: str = "mention"
+    shutdown_drain_seconds: int = 900
 
     @classmethod
     def from_env(cls) -> "TelegramConfig":
@@ -83,6 +94,12 @@ class TelegramConfig:
             native_draft_progress=os.environ.get("TELEGRAM_NATIVE_DRAFT_PROGRESS", "0").lower() in {"1", "true", "yes"},
             native_draft_allow_chat_ids=frozenset(item.strip() for item in raw_draft_allow.split(",") if item.strip()),
             group_mode=os.environ.get("TELEGRAM_GROUP_MODE", "mention").strip().lower() or "mention",
+            shutdown_drain_seconds=_bounded_int_env(
+                "TELEGRAM_SHUTDOWN_DRAIN_SECONDS",
+                _bounded_int_env("AI_TASK_TIMEOUT_SECONDS", 900, minimum=60, maximum=86400),
+                minimum=5,
+                maximum=86400,
+            ),
         )
 
 
@@ -203,9 +220,13 @@ class TelegramBot:
         self._tasks: dict[str, TelegramTask] = {}
         self._task_threads: dict[str, threading.Thread] = {}
         self._tasks_lock = threading.Lock()
+        self._stop_event = threading.Event()
         self.bot_username = ""
         self.bot_user_id = ""
         self.state.mkdir(parents=True, exist_ok=True)
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
     def record_transport_failure(self, kind: str, exc: BaseException) -> None:
         self.state.mkdir(parents=True, exist_ok=True)
@@ -282,6 +303,44 @@ class TelegramBot:
                 # Telegram task is finishing; do not let that crash the background runner.
                 return
 
+    def mark_stale_interrupted_tasks(self) -> int:
+        if not self.tasks_path.exists():
+            return 0
+        try:
+            data = json.loads(self.tasks_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return 0
+        if not isinstance(data, dict):
+            return 0
+        with self._tasks_lock:
+            in_memory_task_ids = set(self._tasks)
+            in_memory_run_ids = {task.last_run_id for task in self._tasks.values() if task.last_run_id}
+        live_run_ids = {str(record.get("run_id") or "") for record in active_processes(self.state)}
+        now = int(time.time())
+        changed = 0
+        for task_id, item in data.items():
+            if not isinstance(item, dict) or item.get("done"):
+                continue
+            if str(task_id) in in_memory_task_ids:
+                continue
+            run_id = str(item.get("last_run_id") or "")
+            if run_id and (run_id in live_run_ids or run_id in in_memory_run_ids):
+                continue
+            item["done"] = True
+            item["response_status"] = "stale_interrupted"
+            item["last_status_detail"] = "runner/bot 进程曾重启，后端子进程已不在活跃列表；旧任务已按中断处理。"
+            item["stale_interrupted_at"] = now
+            data[task_id] = item
+            if run_id:
+                self.runtime.ledger.mark_interrupted_if_reserved(run_id, status="stale_interrupted")
+            changed += 1
+        if changed:
+            try:
+                atomic_write_json(self.tasks_path, data)
+            except FileNotFoundError:
+                return changed
+        return changed
+
     def load_auto_continue(self) -> dict[str, Any]:
         path = self.state / "telegram-auto-continue.json"
         if not path.exists():
@@ -301,6 +360,7 @@ class TelegramBot:
         atomic_write_json(self.state / "telegram-auto-continue.json", data)
 
     def chat_has_running_task(self, chat_id: str) -> bool:
+        self.mark_stale_interrupted_tasks()
         now = time.time()
         with self._tasks_lock:
             if any(task.chat_id == chat_id and not task.done for task in self._tasks.values()):
@@ -1061,22 +1121,26 @@ class TelegramBot:
             self.client.delete_webhook(drop_pending_updates=False)
         if self.config.sync_commands_on_startup:
             self.client.set_my_commands(self.telegram_menu_commands())
+        self.mark_stale_interrupted_tasks()
 
     def poll_forever(self) -> None:
         self.startup_check()
         offset = self.load_offset()
-        while True:
+        while not self._stop_event.is_set():
             try:
                 updates = self.client.get_updates(offset, self.config.poll_timeout_seconds)
                 for update in updates:
+                    if self._stop_event.is_set():
+                        break
                     update_id = int(update.get("update_id", 0))
                     self.handle_update(update)
                     offset = max(offset or 0, update_id + 1)
                     self.save_offset(offset)
-                self.run_due_auto_continue()
+                if not self._stop_event.is_set():
+                    self.run_due_auto_continue()
             except (error.URLError, TimeoutError, RuntimeError, HTTPException, OSError, json.JSONDecodeError) as exc:
                 self.record_transport_failure("getUpdates", exc)
-                time.sleep(5)
+                self._stop_event.wait(5)
 
 
 def serve() -> None:
@@ -1084,4 +1148,18 @@ def serve() -> None:
     load_config_env(root)
     config = TelegramConfig.from_env()
     runtime = RunnerRuntime(root, Path(os.environ.get("AI_WORKSPACE_ROOT", str(workspace_root()))), os.environ.get("MATTERMOST_WEBHOOK_URL"))
-    TelegramBot(config, TelegramClient(config), runtime, root).poll_forever()
+    bot = TelegramBot(config, TelegramClient(config), runtime, root)
+
+    def request_shutdown(_signum: int, _frame: object) -> None:
+        bot.stop()
+
+    previous_handlers: dict[int, object] = {}
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, request_shutdown)
+    try:
+        bot.poll_forever()
+    finally:
+        bot.drain_background_tasks(timeout_seconds=float(config.shutdown_drain_seconds))
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)

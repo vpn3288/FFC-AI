@@ -221,6 +221,22 @@ root_has_command() {
   fi
 }
 
+timeout_command() {
+  if [ -x /usr/bin/timeout ]; then
+    printf '/usr/bin/timeout'
+  else
+    printf 'timeout'
+  fi
+}
+
+claude_root_smoke_ready() {
+  local timeout_bin timeout_seconds
+  timeout_bin="$(timeout_command)"
+  timeout_seconds="${CLAUDE_PREFLIGHT_TIMEOUT_SECONDS:-45}"
+  printf 'reply with: OK\n' | root_env_run "$timeout_bin" -k 5 "$timeout_seconds" \
+    claude -p --output-format json --permission-mode plan --tools '' >/dev/null
+}
+
 codex_installed_version() {
   root_env_run codex --version 2>/dev/null | sed -n 's/.*\([0-9][0-9.]*\).*/\1/p' | head -n 1
 }
@@ -1055,6 +1071,7 @@ if [ "$DRY_RUN" = false ]; then
   PREVIOUS_TELEGRAM_RESERVED_USD="$(config_value TELEGRAM_RESERVED_USD)"
   PREVIOUS_TELEGRAM_STATUS_INTERVAL_SECONDS="$(config_value TELEGRAM_STATUS_INTERVAL_SECONDS)"
   PREVIOUS_TELEGRAM_STATUS_MIN_UPDATE_SECONDS="$(config_value TELEGRAM_STATUS_MIN_UPDATE_SECONDS)"
+  PREVIOUS_TELEGRAM_SHUTDOWN_DRAIN_SECONDS="$(config_value TELEGRAM_SHUTDOWN_DRAIN_SECONDS)"
   PREVIOUS_TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP="$(config_value TELEGRAM_CLEAR_WEBHOOK_ON_STARTUP)"
   PREVIOUS_TELEGRAM_SYNC_COMMANDS_ON_STARTUP="$(config_value TELEGRAM_SYNC_COMMANDS_ON_STARTUP)"
   PREVIOUS_TELEGRAM_ALLOWED_UPDATES="$(config_value TELEGRAM_ALLOWED_UPDATES)"
@@ -1083,6 +1100,7 @@ if [ "$DRY_RUN" = false ]; then
   EFFECTIVE_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS="${VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-${PREVIOUS_VSCODE_CLAUDE_API_RETRY_SLEEP_SECONDS:-5}}"
   EFFECTIVE_CODEX_EXEC_EPHEMERAL="${CODEX_EXEC_EPHEMERAL:-0}"
   EFFECTIVE_AI_PROCESS_CONTROL_ENABLED="${AI_PROCESS_CONTROL_ENABLED:-${PREVIOUS_AI_PROCESS_CONTROL_ENABLED:-1}}"
+  EFFECTIVE_TELEGRAM_SHUTDOWN_DRAIN_SECONDS="${TELEGRAM_SHUTDOWN_DRAIN_SECONDS:-${PREVIOUS_TELEGRAM_SHUTDOWN_DRAIN_SECONDS:-$EFFECTIVE_AI_TASK_TIMEOUT_SECONDS}}"
   sudo tee "$STATE_ROOT/config.env" >/dev/null <<EOF
 AI_REMOTE_STATE=$STATE_ROOT
 AI_WORKSPACE_ROOT=$WORKSPACE_ROOT
@@ -1097,6 +1115,7 @@ PATH=$SERVICE_PATH
 TERM=$AI_SERVICE_TERM
 AI_TASK_RESERVED_USD=$EFFECTIVE_AI_TASK_RESERVED_USD
 AI_TASK_TIMEOUT_SECONDS=$EFFECTIVE_AI_TASK_TIMEOUT_SECONDS
+TELEGRAM_SHUTDOWN_DRAIN_SECONDS=$EFFECTIVE_TELEGRAM_SHUTDOWN_DRAIN_SECONDS
 AI_BRIDGE_SHARED_SECRET=$BRIDGE_SECRET
 EOF
   if [ "$REQUEST_CLAUDE" = true ]; then
@@ -1252,6 +1271,8 @@ User=root
 EnvironmentFile=$STATE_ROOT/config.env
 WorkingDirectory=$INSTALL_ROOT
 ExecStart=$RUNNER_PYTHON -m ai_remote_runner.cli telegram
+TimeoutStopSec=$EFFECTIVE_TELEGRAM_SHUTDOWN_DRAIN_SECONDS
+KillMode=mixed
 Restart=always
 RestartSec=5
 
@@ -1319,7 +1340,7 @@ if [ "$DRY_RUN" = false ] && { [ "$REQUEST_CLAUDE" = true ] || [ "$REQUEST_VSCOD
     CLAUDE_PREFLIGHT_LABEL="vscode Claude backend"
   fi
   root_has_command claude || { log "claude is required before core_ready for requested provider $CLAUDE_PREFLIGHT_LABEL"; exit 1; }
-  root_env_run claude auth status --json >/dev/null || { log "claude auth/API config is required before core_ready for requested provider $CLAUDE_PREFLIGHT_LABEL"; exit 1; }
+  claude_root_smoke_ready || { log "claude CLI smoke failed before core_ready for requested provider $CLAUDE_PREFLIGHT_LABEL"; exit 1; }
 fi
 if [ "$DRY_RUN" = false ] && [ "$REQUEST_CODEX" = true ]; then
   root_has_command codex || { log 'codex is required before core_ready for requested provider codex'; exit 1; }

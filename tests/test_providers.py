@@ -16,6 +16,7 @@ from ai_remote_runner.providers import (
     normalize_provider_name,
     provider_status,
 )
+from ai_remote_runner.providers import _claude_auth_ready
 from ai_remote_runner.providers import _emit_codex_jsonl_events
 from ai_remote_runner.providers import _emit_codex_stderr_line
 from ai_remote_runner.providers import discover_codex
@@ -180,6 +181,27 @@ class ProviderTests(unittest.TestCase):
         discover_codex.assert_not_called()
         self.assertFalse(any(item["available"] for item in status))
         self.assertFalse(any(item["configured"] for item in status))
+
+    def test_claude_auth_ready_uses_env_without_auth_status_probe(self) -> None:
+        with (
+            patch.dict("os.environ", {"ANTHROPIC_AUTH_TOKEN": "token"}, clear=True),
+            patch("ai_remote_runner.providers.shutil.which", return_value="/usr/bin/claude"),
+            patch("ai_remote_runner.providers._run_probe") as run_probe,
+        ):
+            self.assertTrue(_claude_auth_ready())
+        run_probe.assert_not_called()
+
+    def test_claude_auth_ready_fallback_probe_has_short_timeout(self) -> None:
+        import subprocess
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout='{"loggedIn":true}', stderr="")
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("ai_remote_runner.providers.shutil.which", return_value="/usr/bin/claude"),
+            patch("ai_remote_runner.providers._run_probe", return_value=completed) as run_probe,
+        ):
+            self.assertTrue(_claude_auth_ready())
+        self.assertEqual(run_probe.call_args.kwargs["timeout_seconds"], 8)
 
     def test_codex_command_fails_when_full_access_flag_unavailable(self) -> None:
         def no_full_access(_: list[str], *needles: str) -> bool:
@@ -507,7 +529,8 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(result.status, "completed")
             command = _registered_command(run.call_args)
             self.assertIn("Read,Grep,Glob,Edit,Write", command)
-            self.assertEqual(command[command.index("--permission-mode") + 1], "bypassPermissions")
+            self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
+            self.assertNotIn("bypassPermissions", command)
             self.assertNotIn("--model", command)
             self.assertEqual(_registered_input(run.call_args), "prompt")
             self.assertNotIn("prompt", command)

@@ -58,6 +58,21 @@ if [ -z "${AI_RUNNER_PROVIDERS+x}" ]; then
 fi
 export AI_RUNNER_PROVIDERS
 
+timeout_command() {
+  if [ -x /usr/bin/timeout ]; then
+    printf '/usr/bin/timeout'
+  else
+    printf 'timeout'
+  fi
+}
+
+claude_auth_or_env_ready() {
+  if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    return 0
+  fi
+  "$(timeout_command)" -k 5 "${CLAUDE_AUTH_PROBE_TIMEOUT_SECONDS:-8}" claude auth status --json >/dev/null 2>&1
+}
+
 python3 -m ai_remote_runner.cli providers >/dev/null
 python3 -m ai_remote_runner.cli index >/dev/null
 : "${AI_BRIDGE_SHARED_SECRET:?AI_BRIDGE_SHARED_SECRET is required for bridge loopback validation}"
@@ -200,7 +215,7 @@ run_provider_smoke_step() {
 }
 if [[ ",$AI_RUNNER_PROVIDERS," == *",claude-code,"* ]]; then
   command -v claude >/dev/null 2>&1 || { printf '[validate-core-ready] claude is required for requested provider claude-code\n' >&2; exit 1; }
-  claude auth status --json >/dev/null
+  claude_auth_or_env_ready || { printf '[validate-core-ready] Claude auth/env quick check failed for claude-code\n' >&2; exit 1; }
   run_provider_smoke_step claude-code "$CLAUDE_FILE_PROMPT" file-tmp
   grep -q "$SMOKE_TOKEN" "$SMOKE_WORKSPACE/full-access-smoke-claude.txt" || {
     printf '[validate-core-ready] Claude Code did not prove file/tool full access in smoke workspace\n' >&2
@@ -228,7 +243,7 @@ fi
 if [[ ",$AI_RUNNER_PROVIDERS," == *",vscode,"* ]]; then
   command -v code >/dev/null 2>&1 || { printf '[validate-core-ready] code is required for requested provider vscode\n' >&2; exit 1; }
   command -v claude >/dev/null 2>&1 || { printf '[validate-core-ready] claude backend is required for requested provider vscode\n' >&2; exit 1; }
-  claude auth status --json >/dev/null
+  claude_auth_or_env_ready || { printf '[validate-core-ready] Claude auth/env quick check failed for vscode backend\n' >&2; exit 1; }
   run_provider_smoke_step vscode "$VSCODE_FILE_PROMPT" file-tmp
   grep -q "$SMOKE_TOKEN" "$SMOKE_WORKSPACE/full-access-smoke-vscode.txt" || {
     printf '[validate-core-ready] VSCode adapter did not prove file/tool full access in smoke workspace\n' >&2
