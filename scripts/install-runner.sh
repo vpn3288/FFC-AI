@@ -182,9 +182,11 @@ root_env_run() {
   )
   if [ "${REQUEST_CLAUDE:-false}" = true ] || [ "${REQUEST_VSCODE_CLAUDE_BACKEND:-false}" = true ]; then
     env_args+=(
-      ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}"
-      ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
-      ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${ANTHROPIC_API_URL:-}}"
+      ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-${ANTHROPIC_BASE_URL:-}}"
+      ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
+      ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${ANTHROPIC_AUTH_TOKEN:-}}"
+      CLAUDE_CODE_DISABLE_OAUTH="${CLAUDE_CODE_DISABLE_OAUTH:-1}"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-0}"
       CLAUDE_CODE_ATTRIBUTION_HEADER="${CLAUDE_CODE_ATTRIBUTION_HEADER:-}"
     )
@@ -234,7 +236,7 @@ claude_root_smoke_ready() {
   timeout_bin="$(timeout_command)"
   timeout_seconds="${CLAUDE_PREFLIGHT_TIMEOUT_SECONDS:-45}"
   printf 'reply with: OK\n' | root_env_run "$timeout_bin" -k 5 "$timeout_seconds" \
-    claude -p --output-format json --permission-mode plan --tools '' >/dev/null
+    claude -p --bare --output-format json --add-dir / --permission-mode acceptEdits --tools Bash,Read,Write,Edit,Grep,Glob --allowedTools 'Bash(*)' >/dev/null
 }
 
 codex_installed_version() {
@@ -332,8 +334,10 @@ PY
 
 write_claude_settings() {
   if [ -z "${ANTHROPIC_BASE_URL:-}" ] &&
+    [ -z "${ANTHROPIC_API_URL:-}" ] &&
     [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] &&
     [ -z "${ANTHROPIC_API_KEY:-}" ] &&
+    [ -z "${CLAUDE_CODE_DISABLE_OAUTH:-}" ] &&
     [ -z "${CLAUDE_CODE_ATTRIBUTION_HEADER:-}" ] &&
     [ -z "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC+x}" ]; then
     return 0
@@ -346,9 +350,11 @@ write_claude_settings() {
   sudo mkdir -p "$AI_TOOL_HOME/.claude"
   sudo env \
     AI_TOOL_HOME="$AI_TOOL_HOME" \
-    ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}" \
-    ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}" \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${ANTHROPIC_API_URL:-}}" \
+    ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-${ANTHROPIC_BASE_URL:-}}" \
+    ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${ANTHROPIC_AUTH_TOKEN:-}}" \
+    CLAUDE_CODE_DISABLE_OAUTH="${CLAUDE_CODE_DISABLE_OAUTH:-1}" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}" \
     CLAUDE_CODE_ATTRIBUTION_HEADER="${CLAUDE_CODE_ATTRIBUTION_HEADER:-}" \
     CLAUDE_REQUEST_TIMEOUT="${CLAUDE_REQUEST_TIMEOUT:-180000}" \
@@ -362,8 +368,10 @@ from pathlib import Path
 env = {}
 for key in (
     "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_DISABLE_OAUTH",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ATTRIBUTION_HEADER",
 ):
@@ -371,7 +379,7 @@ for key in (
     if value:
         env[key] = value
 
-third_party_api = bool(os.environ.get("ANTHROPIC_BASE_URL", "").strip())
+third_party_api = bool(os.environ.get("ANTHROPIC_BASE_URL", "").strip() or os.environ.get("ANTHROPIC_API_URL", "").strip())
 request_timeout = int(os.environ.get("CLAUDE_REQUEST_TIMEOUT", "180000"))
 max_retries = int(os.environ.get("CLAUDE_MAX_RETRIES", "5"))
 stream_timeout = int(os.environ.get("CLAUDE_STREAM_TIMEOUT", "600000"))
@@ -384,6 +392,8 @@ if third_party_api:
     data["streamTimeout"] = stream_timeout
     if "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in env:
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+    if "CLAUDE_CODE_DISABLE_OAUTH" not in env:
+        env["CLAUDE_CODE_DISABLE_OAUTH"] = "1"
 
 path = Path(os.environ["AI_TOOL_HOME"]) / ".claude" / "settings.json"
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -402,9 +412,11 @@ write_vscode_claude_settings() {
   sudo env \
     AI_TOOL_HOME="$AI_TOOL_HOME" \
     VSCODE_CLAUDE_MODEL="$VSCODE_CLAUDE_MODEL" \
-    ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}" \
-    ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}" \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${ANTHROPIC_API_URL:-}}" \
+    ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-${ANTHROPIC_BASE_URL:-}}" \
+    ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${ANTHROPIC_AUTH_TOKEN:-}}" \
+    CLAUDE_CODE_DISABLE_OAUTH="${CLAUDE_CODE_DISABLE_OAUTH:-1}" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}" \
     CLAUDE_CODE_ATTRIBUTION_HEADER="${CLAUDE_CODE_ATTRIBUTION_HEADER:-0}" \
     CLAUDE_REQUEST_TIMEOUT="${CLAUDE_REQUEST_TIMEOUT:-180000}" \
@@ -425,8 +437,10 @@ env = {str(k): str(v) for k, v in env.items()}
 env["CLAUDE_MODEL"] = os.environ["VSCODE_CLAUDE_MODEL"]
 for key in (
     "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_DISABLE_OAUTH",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ATTRIBUTION_HEADER",
 ):
@@ -440,6 +454,8 @@ if third_party_api:
     data["requestTimeout"] = int(os.environ.get("CLAUDE_REQUEST_TIMEOUT", "180000"))
     data["maxRetries"] = int(os.environ.get("CLAUDE_MAX_RETRIES", "5"))
     data["streamTimeout"] = int(os.environ.get("CLAUDE_STREAM_TIMEOUT", "600000"))
+    if "CLAUDE_CODE_DISABLE_OAUTH" not in env:
+        env["CLAUDE_CODE_DISABLE_OAUTH"] = "1"
 
 data["env"] = env
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -799,6 +815,7 @@ validate_provider_runtime_config() {
   validate_http_url_value CODEX_BASE_URL
   validate_http_url_value CODEX_OPENAI_BASE_URL
   validate_http_url_value ANTHROPIC_BASE_URL
+  validate_http_url_value ANTHROPIC_API_URL
   validate_codex_model_provider_value
   if [ "$REQUEST_CODEX" = true ]; then
     local codex_key="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
@@ -843,7 +860,7 @@ if should_write_claude_settings; then
   write_claude_settings
 elif [ "$REQUEST_VSCODE_CLAUDE_BACKEND" = true ]; then
   log 'stage 02b: defer Claude environment settings to VSCode Claude backend writer'
-elif [ -n "${ANTHROPIC_BASE_URL:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_ATTRIBUTION_HEADER:-}" ]; then
+elif [ -n "${ANTHROPIC_BASE_URL:-}" ] || [ -n "${ANTHROPIC_API_URL:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_DISABLE_OAUTH:-}" ] || [ -n "${CLAUDE_CODE_ATTRIBUTION_HEADER:-}" ]; then
   log 'stage 02b: skip Claude environment settings because Claude Code is not requested'
 fi
 
@@ -1134,17 +1151,21 @@ EOF
     if [ -n "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC+x}" ]; then
       printf 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=%s\n' "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-0}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     fi
+    if [ -n "${CLAUDE_CODE_DISABLE_OAUTH:-}" ] || [ -n "${ANTHROPIC_BASE_URL:-}" ] || [ -n "${ANTHROPIC_API_URL:-}" ]; then
+      printf 'CLAUDE_CODE_DISABLE_OAUTH=%s\n' "${CLAUDE_CODE_DISABLE_OAUTH:-1}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    fi
     if [ -n "${CLAUDE_CODE_ATTRIBUTION_HEADER:-}" ]; then
       printf 'CLAUDE_CODE_ATTRIBUTION_HEADER=%s\n' "$CLAUDE_CODE_ATTRIBUTION_HEADER" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     fi
-    if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
-    printf 'ANTHROPIC_BASE_URL=%s\n' "$ANTHROPIC_BASE_URL" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    if [ -n "${ANTHROPIC_BASE_URL:-}" ] || [ -n "${ANTHROPIC_API_URL:-}" ]; then
+      printf 'ANTHROPIC_BASE_URL=%s\n' "${ANTHROPIC_BASE_URL:-$ANTHROPIC_API_URL}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     fi
-    if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
-    printf 'ANTHROPIC_AUTH_TOKEN=%s\n' "$ANTHROPIC_AUTH_TOKEN" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    if [ -n "${ANTHROPIC_API_URL:-}" ] || [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+      printf 'ANTHROPIC_API_URL=%s\n' "${ANTHROPIC_API_URL:-$ANTHROPIC_BASE_URL}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     fi
-    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-      printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+    if [ -n "${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}" ]; then
+      printf 'ANTHROPIC_AUTH_TOKEN=%s\n' "${ANTHROPIC_AUTH_TOKEN:-$ANTHROPIC_API_KEY}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
+      printf 'ANTHROPIC_API_KEY=%s\n' "${ANTHROPIC_API_KEY:-$ANTHROPIC_AUTH_TOKEN}" | sudo tee -a "$STATE_ROOT/config.env" >/dev/null
     fi
   fi
   if [ "$REQUEST_CODEX" = true ] && { [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; }; then

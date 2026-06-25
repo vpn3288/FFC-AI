@@ -361,12 +361,11 @@ CLAUDE_FULL_ACCESS_TEMPLATE = [
     "--add-dir",
     "/",
     "--permission-mode",
-    "bypassPermissions",
+    "acceptEdits",
     "--tools",
     "Bash,Read,Write,Edit,Grep,Glob",
     "--allowedTools",
     "Bash(*)",
-    "--no-session-persistence",
 ]
 
 
@@ -513,9 +512,9 @@ def _run_claude_command(
 
     # Ensure third-party API settings are explicitly passed to Claude Code
     # This fixes the issue where Claude Code ignores ANTHROPIC_BASE_URL
-    if "ANTHROPIC_BASE_URL" in env and "ANTHROPIC_AUTH_TOKEN" in env:
-        base_url = env.get("ANTHROPIC_BASE_URL", "").strip()
-        auth_token = env.get("ANTHROPIC_AUTH_TOKEN", "").strip()
+    if (env.get("ANTHROPIC_BASE_URL") or env.get("ANTHROPIC_API_URL")) and (env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY")):
+        base_url = (env.get("ANTHROPIC_BASE_URL") or env.get("ANTHROPIC_API_URL") or "").strip()
+        auth_token = (env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY") or "").strip()
 
         # Only apply if both are set and base_url is not the official Anthropic API
         if base_url and auth_token and "api.anthropic.com" not in base_url:
@@ -606,6 +605,12 @@ CLAUDE_PERMANENT_API_ERROR_MARKERS = (
     "http 400",
     "http 401",
     "http 403",
+)
+CLAUDE_ROOT_REJECTED_PERMISSION_MARKERS = (
+    "--dangerously-skip-permissions cannot be used with root/sudo privileges",
+    "dangerously-skip-permissions cannot be used with root",
+    "cannot be used with root/sudo privileges",
+    "bypasspermissions",
 )
 
 
@@ -698,6 +703,56 @@ def _claude_output(result: subprocess.CompletedProcess[str]) -> tuple[dict[str, 
 
 def _claude_error_haystack(result: subprocess.CompletedProcess[str], output_text: str) -> str:
     return "\n".join(part for part in (output_text, result.stderr, result.stdout) if part).lower()
+
+
+def _claude_root_permission_rejected(result: subprocess.CompletedProcess[str], output_text: str) -> bool:
+    haystack = _claude_error_haystack(result, output_text)
+    if not haystack:
+        return False
+    if "root/sudo" not in haystack and "root" not in haystack:
+        return False
+    return any(marker in haystack for marker in CLAUDE_ROOT_REJECTED_PERMISSION_MARKERS)
+
+
+def _claude_failure_detail(
+    provider_id: str,
+    result: subprocess.CompletedProcess[str],
+    output_text: str,
+    command: list[str],
+) -> str:
+    detail = (output_text or result.stderr or result.stdout or f"returncode={result.returncode}").strip()
+    haystack = _claude_error_haystack(result, output_text)
+    notes: list[str] = []
+    if _claude_root_permission_rejected(result, output_text):
+        notes.append(
+            "Diagnostic: Claude Code rejected a dangerous permission-bypass mode under root/sudo. "
+            "Current FFC-AI uses --permission-mode acceptEdits with explicit --tools/--allowedTools; "
+            "reinstall/update the runner and remove any old wrapper or venv that still adds "
+            "--dangerously-skip-permissions or bypassPermissions."
+        )
+    elif any(marker in haystack for marker in CLAUDE_PERMANENT_API_ERROR_MARKERS):
+        notes.append(
+            "Diagnostic: Claude Code reported a permanent API/model/auth error. "
+            "Check ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY, and CLAUDE_MODEL."
+        )
+    elif _claude_is_transient_api_error(result, output_text):
+        notes.append(
+            "Diagnostic: Claude Code reported a temporary upstream/API error after retries. "
+            "The runner already retried it; check the third-party Claude gateway health and rate limits."
+        )
+    elif detail.lower() in {"failed", "error"}:
+        notes.append(
+            "Diagnostic: Claude Code exited non-zero but returned only a generic failure. "
+            "Run scripts/diagnose-claude-code.sh on the server and inspect journalctl -u ai-telegram-bot."
+        )
+    if "--dangerously-skip-permissions" in command or "bypassPermissions" in command:
+        notes.append(
+            "Diagnostic: the generated Claude command still contains a root-unsafe permission bypass flag; "
+            "this install is running stale code."
+        )
+    if not notes:
+        return detail
+    return "\n\n".join([detail, *notes]) if detail else "\n\n".join(notes)
 
 
 def _claude_is_transient_api_error(result: subprocess.CompletedProcess[str], output_text: str) -> bool:
@@ -1499,6 +1554,8 @@ def _invoke_claude_backend(
                 return ProviderResult(actual_run_id, provider_id, "timeout", "", raw, -1)
     if len(output_text.encode("utf-8")) > max_output_bytes:
         output_text = output_text.encode("utf-8")[:max_output_bytes].decode("utf-8", errors="ignore")
+    if result.returncode != 0:
+        output_text = _claude_failure_detail(provider_id, result, output_text, command)
     if result.returncode == 0 and not output_text.strip():
         output_text = f"{public_name_zh} 返回了空内容；runner 已按失败处理。请重试，或把问题描述得更具体。"
         status = "empty_output"

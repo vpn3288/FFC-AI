@@ -19,6 +19,7 @@ from ai_remote_runner.providers import (
 from ai_remote_runner.providers import _claude_auth_ready
 from ai_remote_runner.providers import _emit_codex_jsonl_events
 from ai_remote_runner.providers import _emit_codex_stderr_line
+from ai_remote_runner.providers import _run_claude_command
 from ai_remote_runner.providers import discover_codex
 from ai_remote_runner.providers import discover_vscode
 from ai_remote_runner.budget import BudgetLedger
@@ -604,6 +605,49 @@ class ProviderTests(unittest.TestCase):
             self.assertIn("--tools", command)
             self.assertIn("Bash,Read,Write,Edit,Grep,Glob", command)
             self.assertNotIn("--dangerously-skip-permissions", command)
+
+    def test_claude_root_rejected_permission_failure_has_diagnostic(self) -> None:
+        import tempfile
+        import subprocess
+
+        completed = subprocess.CompletedProcess(
+            ["claude"],
+            1,
+            stdout="",
+            stderr="--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("ai_remote_runner.providers.run_registered", return_value=completed):
+                result = invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+        self.assertEqual(result.status, "failed")
+        self.assertIn("root/sudo", result.output_text)
+        self.assertIn("Diagnostic: Claude Code rejected", result.output_text)
+        self.assertIn("acceptEdits", result.output_text)
+
+    def test_claude_subprocess_links_api_key_aliases_for_third_party_proxy(self) -> None:
+        import tempfile
+        import subprocess
+
+        completed = subprocess.CompletedProcess(["claude"], 0, stdout="{}", stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "ANTHROPIC_API_URL": "https://proxy.example",
+                        "ANTHROPIC_API_KEY": "proxy-key",
+                    },
+                    clear=True,
+                ),
+                patch("subprocess.run", return_value=completed) as run,
+            ):
+                _run_claude_command(["claude", "-p"], Path(tmp), "prompt", 5)
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://proxy.example")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "proxy-key")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "proxy-key")
+        self.assertEqual(env["ANTHROPIC_API_URL"], "https://proxy.example")
+        self.assertEqual(env["CLAUDE_CODE_DISABLE_OAUTH"], "1")
 
     def test_invoke_claude_uses_model_only_when_explicitly_configured(self) -> None:
         import tempfile

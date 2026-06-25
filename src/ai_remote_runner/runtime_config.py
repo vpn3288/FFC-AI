@@ -147,8 +147,10 @@ def apply_config_env(state: Path, updates: dict[str, str]) -> dict[str, str]:
         "TELEGRAM_RESERVED_USD",
         "TELEGRAM_GROUP_MODE",
         "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_DISABLE_OAUTH",
         "OPENAI_API_KEY",
         "CODEX_BASE_URL",
         "AI_BRIDGE_SHARED_SECRET",
@@ -510,8 +512,8 @@ def apply_api_key(state: Path, target: str, api_key: str) -> dict[str, Any]:
         _write_json_private(codex_home() / "auth.json", auth)
         apply_config_env(state, {"OPENAI_API_KEY": api_key})
     elif target in {"claude-code", "vscode"}:
-        _write_claude_env({"ANTHROPIC_AUTH_TOKEN": api_key})
-        apply_config_env(state, {"ANTHROPIC_AUTH_TOKEN": api_key})
+        _write_claude_env({"ANTHROPIC_AUTH_TOKEN": api_key, "ANTHROPIC_API_KEY": api_key})
+        apply_config_env(state, {"ANTHROPIC_AUTH_TOKEN": api_key, "ANTHROPIC_API_KEY": api_key})
     else:
         raise ValueError(f"unsupported_target:{target}")
     return {"target": target, "api_key": redact_secret(api_key), "api_key_configured": True}
@@ -524,8 +526,8 @@ def apply_base_url(state: Path, target: str, base_url: str) -> dict[str, Any]:
         _write_codex_config(config_text)
         apply_config_env(state, {"CODEX_BASE_URL": base_url})
     elif target in {"claude-code", "vscode"}:
-        _write_claude_env({"ANTHROPIC_BASE_URL": base_url})
-        apply_config_env(state, {"ANTHROPIC_BASE_URL": base_url})
+        _write_claude_env({"ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_API_URL": base_url})
+        apply_config_env(state, {"ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_API_URL": base_url})
     else:
         raise ValueError(f"unsupported_target:{target}")
     return {"target": target, "base_url": base_url}

@@ -1004,7 +1004,12 @@ class ExecutorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             runtime = RunnerRuntime(root / "state", root / "workspaces")
-            with patch.dict("os.environ", {"CODEX_HOME": str(root / "codex-home")}, clear=False):
+            claude_key = "sk-ant-" + "c" * 24
+            with patch.dict(
+                "os.environ",
+                {"AI_TOOL_HOME": str(root / "root-home"), "CODEX_HOME": str(root / "codex-home")},
+                clear=False,
+            ):
                 wrong_key = execute(
                     parse_command("/ai 密钥 设置 codex sk-ant-" + "x" * 24),
                     {"request_id": "bad-key", "raw_text": "/ai 密钥 设置 codex sk-ant-redacted"},
@@ -1015,11 +1020,33 @@ class ExecutorTests(unittest.TestCase):
                     {"request_id": "bad-url", "raw_text": "/ai 代理 设置 codex ftp://proxy.example/v1"},
                     runtime,
                 )
+                claude_key_result = execute(
+                    parse_command(f"/ai 密钥 设置 claude-code {claude_key}"),
+                    {"request_id": "claude-key", "raw_text": "/ai 密钥 设置 claude-code <redacted>"},
+                    runtime,
+                )
+                claude_proxy_result = execute(
+                    parse_command("/ai 代理 设置 claude-code https://claude-proxy.example"),
+                    {"request_id": "claude-url", "raw_text": "/ai 代理 设置 claude-code https://claude-proxy.example"},
+                    runtime,
+                )
 
             self.assertEqual(wrong_key["status"], "error")
             self.assertEqual(wrong_key["error"]["code"], "wrong_api_key_family")
             self.assertEqual(bad_url["status"], "error")
             self.assertEqual(bad_url["error"]["code"], "invalid_base_url")
+            self.assertEqual(claude_key_result["status"], "accepted")
+            self.assertEqual(claude_proxy_result["status"], "accepted")
+            settings = json.loads((root / "root-home" / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(settings["env"]["ANTHROPIC_AUTH_TOKEN"], claude_key)
+            self.assertEqual(settings["env"]["ANTHROPIC_API_KEY"], claude_key)
+            self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://claude-proxy.example")
+            self.assertEqual(settings["env"]["ANTHROPIC_API_URL"], "https://claude-proxy.example")
+            config_env = (runtime.state / "config.env").read_text(encoding="utf-8")
+            self.assertIn(f"ANTHROPIC_AUTH_TOKEN={claude_key}", config_env)
+            self.assertIn(f"ANTHROPIC_API_KEY={claude_key}", config_env)
+            self.assertIn("ANTHROPIC_BASE_URL=https://claude-proxy.example", config_env)
+            self.assertIn("ANTHROPIC_API_URL=https://claude-proxy.example", config_env)
 
     def test_cc_switch_commands_update_live_configs_and_record_sync(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
