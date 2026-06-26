@@ -19,13 +19,17 @@ path = Path(os.environ["CONFIG_ENV"])
 path.parent.mkdir(parents=True, exist_ok=True)
 lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 updates = {
-    "AI_TASK_TIMEOUT_SECONDS": "7200",
-    "TELEGRAM_SHUTDOWN_DRAIN_SECONDS": "7200",
-    "CLAUDE_API_RETRY_ATTEMPTS": "5",
+    "AI_TASK_TIMEOUT_SECONDS": "3600",
+    "TELEGRAM_SHUTDOWN_DRAIN_SECONDS": "3600",
+    "CLAUDE_MAX_TURNS": "50",
+    "CLAUDE_API_RETRY_ATTEMPTS": "8",
     "CLAUDE_API_RETRY_SLEEP_SECONDS": "5",
+    "VSCODE_CLAUDE_MAX_TURNS": "50",
+    "VSCODE_CLAUDE_API_RETRY_ATTEMPTS": "8",
     "TELEGRAM_STATUS_INTERVAL_SECONDS": "5",
     "TELEGRAM_STATUS_MIN_UPDATE_SECONDS": "0.8",
     "AI_PROCESS_CONTROL_ENABLED": "1",
+    "AI_LOCAL_EXEC_TIMEOUT_SECONDS": "600",
 }
 seen = set()
 out = []
