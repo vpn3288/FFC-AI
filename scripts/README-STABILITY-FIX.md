@@ -1,4 +1,4 @@
-# Claude Code 稳定性修复工具 / Stability Fix Tools
+﻿# Claude Code 稳定性修复工具 / Stability Fix Tools
 
 ## 快速开始 / Quick Start
 
@@ -17,7 +17,7 @@ bash scripts/diagnose-claude-stability.sh
 
 - 自动备份配置
 - 优化所有关键参数
-- 重启服务应用更改
+- 写入待重启提示，不会直接重启
 - 显示优化摘要
 
 ```bash
@@ -188,7 +188,7 @@ bash scripts/quick-fix-claude-stability.sh
 # 查看日志
 journalctl -u ai-telegram-bot -f
 
-# 重启服务
+# after all active AI tasks finish, restart from SSH
 sudo systemctl restart ai-telegram-bot ai-remote-runner
 
 # 检查配置

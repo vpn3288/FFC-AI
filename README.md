@@ -1,4 +1,4 @@
-## ⚠️ 重要：稳定性修复 / Important: Stability Fix
+﻿## ⚠️ 重要：稳定性修复 / Important: Stability Fix
 
 **如果你遇到以下问题：**
 - Claude Code 任务频繁中断
@@ -13,7 +13,9 @@ cd /path/to/FFC-AI
 bash scripts/quick-fix-claude-stability.sh
 ```
 
-这会自动优化配置并重启服务，预计成功率从 40-80% 提升到 70-95%。
+这会自动优化配置，不会在任务内重启服务，预计成功率从 40-80% 提升到 70-95%。
+
+如果脚本提示需要重启，请等当前 AI 任务结束后从 SSH 终端执行重启命令；不要让 Telegram 里的 AI 任务自己重启 `ai-telegram-bot`，否则会造成 `returncode=143` 或 systemd 自重启等待。
 
 **详细信息：** 查看 [CLAUDE_CODE_STABILITY_FIX.md](CLAUDE_CODE_STABILITY_FIX.md)
 

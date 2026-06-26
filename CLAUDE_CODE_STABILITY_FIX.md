@@ -1,4 +1,4 @@
-# Claude Code 稳定性修复 / Claude Code Stability Fix
+﻿# Claude Code 稳定性修复 / Claude Code Stability Fix
 
 ## 问题概述 / Problem Overview
 
@@ -27,14 +27,21 @@ bash scripts/quick-fix-claude-stability.sh
 这个脚本会：
 - ✅ 备份现有配置
 - ✅ 优化所有关键参数
-- ✅ 自动重启服务
+- ✅ 写入待重启提示，不会直接重启服务
 - ✅ 显示优化摘要
+
+如果当前是在 Telegram AI 任务里执行，脚本只会写入 `/var/lib/ai-remote-runner/pending-service-restart.txt`。等所有 AI 任务结束后，再从 SSH 终端手动执行：
+
+```bash
+sudo systemctl restart ai-telegram-bot ai-remote-runner
+```
 
 ### 方法二：手动优化
 
 ```bash
 cd /path/to/FFC-AI
 bash scripts/optimize-stability.sh
+# after all active AI tasks finish, run from SSH:
 sudo systemctl restart ai-telegram-bot ai-remote-runner
 ```
 
@@ -184,7 +191,7 @@ df -h /srv/ai-workspaces
 # 1. 确认配置文件已更新
 cat /var/lib/ai-remote-runner/config.env | grep CLAUDE_MAX_TURNS
 
-# 2. 完全重启服务
+# 2. 没有活跃 AI 任务时，从 SSH 终端完全重启服务
 sudo systemctl stop ai-telegram-bot
 sudo systemctl stop ai-remote-runner
 sleep 2
@@ -207,7 +214,7 @@ journalctl -u ai-telegram-bot -n 50
 # 1. 测试 API 连接
 curl -I https://cc-vibe.com
 
-# 2. 增加超时（如果需要）
+# 2. 增加超时（如果需要）；没有活跃 AI 任务时再从 SSH 重启
 echo "AI_TASK_TIMEOUT_SECONDS=5400" | sudo tee -a /var/lib/ai-remote-runner/config.env
 sudo systemctl restart ai-telegram-bot
 

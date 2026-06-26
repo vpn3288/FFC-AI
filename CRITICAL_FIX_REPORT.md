@@ -1,4 +1,4 @@
-# 🔴 Claude Code 稳定性问题 - 根本原因分析报告
+﻿# 🔴 Claude Code 稳定性问题 - 根本原因分析报告
 
 ## 问题现状
 
@@ -23,21 +23,25 @@
 
 ## 修复方案
 
-### 方案 1：自动重启（推荐）
+### 方案 1：写入稳定性配置（推荐）
 
 ```bash
 cd /root/FFC-AI
 bash scripts/fix-stability-restart.sh
 ```
 
-### 方案 2：手动重启
+这个脚本不会直接重启服务。它会写入稳定性配置，并在需要时写入 `/var/lib/ai-remote-runner/pending-service-restart.txt`。
+
+### 方案 2：任务结束后从 SSH 手动重启
 
 ```bash
 sudo systemctl restart ai-telegram-bot.service
 systemctl status ai-telegram-bot.service
 ```
 
-### 方案 3：验证后重启
+不要在 Telegram AI 任务内部执行这个重启命令，否则当前任务会杀掉自己并可能卡在 systemd restart job。
+
+### 方案 3：验证配置差异
 
 ```bash
 cd /root/FFC-AI
@@ -95,13 +99,13 @@ def _claude_max_turn_args(raw: object | None = None) -> list[str]:
   - 复杂任务：30-50 轮
   - 超过 50 轮通常是陷入循环或任务描述不清
 
-## 立即执行
+## 从 SSH 手动执行
 
 ```bash
 sudo systemctl restart ai-telegram-bot.service
 ```
 
-**注意：** 重启会中断当前正在执行的任务，请确保没有重要任务正在运行。
+**注意：** 只能在没有活跃 AI 任务时，从 SSH 终端手动执行。不要让 Telegram AI 任务自己执行这条命令，否则会中断当前任务并可能卡住 systemd restart job。
 
 ## 验证修复
 

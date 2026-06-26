@@ -13,6 +13,7 @@ CODEX_HOME="${AI_CODEX_HOME:-$AI_TOOL_HOME/.codex}"
 VSCODE_ROOT_WRAPPER="${AI_VSCODE_ROOT_WRAPPER:-/usr/local/bin/code-root}"
 VSCODE_ROOT_DIR="${AI_VSCODE_ROOT_DIR:-/root/.vscode-root}"
 VSCODE_SETTINGS_DIR="${AI_VSCODE_SETTINGS_DIR:-$VSCODE_ROOT_DIR/User}"
+SAFE_BIN_DIR="${AI_SAFE_BIN_DIR:-$INSTALL_ROOT/safe-bin}"
 SERVICE_PATH="${AI_SERVICE_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 AI_SERVICE_TERM="${AI_SERVICE_TERM:-xterm-256color}"
 RUNNER_PYTHON="$INSTALL_ROOT/.venv/bin/python"
@@ -253,6 +254,130 @@ restart_or_defer_service() {
     return 0
   fi
   run sudo systemctl restart "$unit"
+}
+
+install_systemctl_guard() {
+  if [ "$DRY_RUN" = true ]; then
+    log "would install guarded systemctl wrapper in $SAFE_BIN_DIR"
+    return 0
+  fi
+  sudo mkdir -p "$SAFE_BIN_DIR"
+  sudo tee "$SAFE_BIN_DIR/systemctl" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_SYSTEMCTL="${FFC_AI_REAL_SYSTEMCTL:-/usr/bin/systemctl}"
+STATE_ROOT="${AI_REMOTE_STATE:-/var/lib/ai-remote-runner}"
+SELF_UNIT="ai-telegram-bot.service"
+
+inside_unit() {
+  if [ -n "${FFC_AI_CGROUP_TEXT:-}" ]; then
+    case "$FFC_AI_CGROUP_TEXT" in
+      *"$1"*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  grep -q -- "$1" "${FFC_AI_CGROUP_FILE:-/proc/$$/cgroup}" 2>/dev/null
+}
+
+normalize_unit() {
+  case "$1" in
+    ai-telegram-bot|ai-telegram-bot.service) printf 'ai-telegram-bot.service' ;;
+    ai-remote-runner|ai-remote-runner.service) printf 'ai-remote-runner.service' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+write_pending_restart() {
+  local unit="$1"
+  local action="$2"
+  local timestamp pending_file
+  timestamp="$(date -Is)"
+  pending_file="$STATE_ROOT/pending-service-restart.txt"
+  mkdir -p "$STATE_ROOT"
+  if [ -s "$pending_file" ] && grep -q "^unit=$unit$" "$pending_file"; then
+    return 0
+  fi
+  {
+    printf '[restart:%s]\n' "$timestamp"
+    printf 'unit=%s\n' "$unit"
+    printf 'reason=%s\n' "Blocked systemctl $action from inside $SELF_UNIT to avoid SIGTERM/returncode=143 self-termination"
+    printf 'created_at=%s\n' "$timestamp"
+    printf 'command=sudo systemctl %s %s\n' "$action" "$unit"
+    printf '\n'
+  } >> "$pending_file"
+  chmod 0600 "$pending_file"
+}
+
+action="${1:-}"
+case "$action" in
+  restart|try-restart|reload-or-restart|reload-or-try-restart|stop|kill)
+    if inside_unit "$SELF_UNIT"; then
+      shift || true
+      blocked=0
+      for raw_unit in "$@"; do
+        case "$raw_unit" in
+          -*|'') continue ;;
+        esac
+        unit="$(normalize_unit "$raw_unit")"
+        case "$unit" in
+          ai-telegram-bot.service|ai-remote-runner.service)
+            write_pending_restart "$unit" "$action"
+            blocked=1
+            ;;
+        esac
+      done
+      if [ "$blocked" = 1 ]; then
+        printf '[systemctl-guard] blocked systemctl %s on FFC-AI service from inside %s; restart deferred in %s/pending-service-restart.txt\n' "$action" "$SELF_UNIT" "$STATE_ROOT" >&2
+        exit 77
+      fi
+      set -- "$action" "$@"
+    fi
+    ;;
+esac
+
+exec "$REAL_SYSTEMCTL" "$@"
+EOF
+  sudo tee "$SAFE_BIN_DIR/sudo" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_SUDO="${FFC_AI_REAL_SUDO:-/usr/bin/sudo}"
+case "$0" in
+  */*) SCRIPT_DIR="${0%/*}" ;;
+  *) SCRIPT_DIR="." ;;
+esac
+
+args=("$@")
+idx=0
+while [ "$idx" -lt "${#args[@]}" ]; do
+  case "${args[$idx]}" in
+    --)
+      idx=$((idx + 1))
+      break
+      ;;
+    -n|-E|-H|-S|-k|-K|-v|-b)
+      idx=$((idx + 1))
+      ;;
+    -*)
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+cmd="${args[$idx]:-}"
+case "$cmd" in
+  systemctl|/usr/bin/systemctl|/bin/systemctl)
+    exec "$SCRIPT_DIR/systemctl" "${args[@]:$((idx + 1))}"
+    ;;
+esac
+
+exec "$REAL_SUDO" "$@"
+EOF
+  sudo chmod 0755 "$SAFE_BIN_DIR/systemctl"
+  sudo chmod 0755 "$SAFE_BIN_DIR/sudo"
 }
 
 root_has_command() {
@@ -1121,6 +1246,7 @@ fi
 log 'stage 06: create runner directories'
 run sudo mkdir -p "$STATE_ROOT"/{credentials,instructions/snapshots,budget} "$WORKSPACE_ROOT" "$INSTALL_ROOT"
 install_default_runtime_guardrails
+install_systemctl_guard
 run sudo rm -rf "$INSTALL_ROOT/src"
 run sudo cp -R "$REPO_ROOT"/src "$INSTALL_ROOT"/
 run sudo cp "$REPO_ROOT"/pyproject.toml "$INSTALL_ROOT"/
@@ -1207,7 +1333,7 @@ AI_REQUIRE_SHELL_CONFIRMATION=$AI_REQUIRE_SHELL_CONFIRMATION
 AI_PROCESS_CONTROL_ENABLED=$EFFECTIVE_AI_PROCESS_CONTROL_ENABLED
 HOME=$AI_TOOL_HOME
 CODEX_HOME=$CODEX_HOME
-PATH=$SERVICE_PATH
+PATH=$SAFE_BIN_DIR:$SERVICE_PATH
 TERM=$AI_SERVICE_TERM
 AI_TASK_RESERVED_USD=$EFFECTIVE_AI_TASK_RESERVED_USD
 AI_TASK_TIMEOUT_SECONDS=$EFFECTIVE_AI_TASK_TIMEOUT_SECONDS
@@ -1518,6 +1644,7 @@ if [ "$DRY_RUN" = false ]; then
   "install_root": "$INSTALL_ROOT",
   "ai_tool_home": "$AI_TOOL_HOME",
   "codex_home": "$CODEX_HOME",
+  "safe_bin_dir": "$SAFE_BIN_DIR",
   "runner_enabled": true,
   "default_provider": "$AI_DEFAULT_PROVIDER",
   "configured_providers": "$AI_RUNNER_PROVIDERS",

@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+BASH = os.environ.get("BASH", "bash")
 
 
 def write_executable(path: Path, content: str) -> None:
@@ -30,6 +31,31 @@ def clean_env() -> dict[str, str]:
 
 
 class InstallRunnerScriptTests(unittest.TestCase):
+    def test_systemctl_guard_is_installed_to_block_self_restart(self) -> None:
+        text = (ROOT / "scripts" / "install-runner.sh").read_text(encoding="utf-8")
+        start = text.index("  sudo tee \"$SAFE_BIN_DIR/systemctl\" >/dev/null <<'EOF'")
+        end = text.index("\nEOF\n  sudo tee \"$SAFE_BIN_DIR/sudo\"", start)
+        guard = text[start:end]
+        self.assertIn("SELF_UNIT=\"ai-telegram-bot.service\"", guard)
+        self.assertIn("FFC_AI_CGROUP_TEXT", guard)
+        self.assertIn("restart|try-restart|reload-or-restart|reload-or-try-restart|stop|kill", guard)
+        self.assertIn("ai-telegram-bot.service|ai-remote-runner.service", guard)
+        self.assertIn("pending-service-restart.txt", guard)
+        self.assertIn("returncode=143", guard)
+        self.assertIn("exit 77", guard)
+
+    def test_sudo_guard_routes_systemctl_to_systemctl_guard(self) -> None:
+        text = (ROOT / "scripts" / "install-runner.sh").read_text(encoding="utf-8")
+        start = text.index("  sudo tee \"$SAFE_BIN_DIR/sudo\" >/dev/null <<'EOF'")
+        end = text.index("\nEOF\n  sudo chmod 0755 \"$SAFE_BIN_DIR/systemctl\"", start)
+        guard = text[start:end]
+        self.assertIn("REAL_SUDO", guard)
+        self.assertIn("SCRIPT_DIR", guard)
+        self.assertIn("systemctl|/usr/bin/systemctl|/bin/systemctl", guard)
+        self.assertIn("exec \"$SCRIPT_DIR/systemctl\"", guard)
+        self.assertNotIn("id -u", guard)
+        self.assertNotIn("dirname", guard)
+
     def test_codex_runner_defaults_full_root_and_preserves_platform_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -210,6 +236,7 @@ PY
             self.assertIn("TELEGRAM_SHUTDOWN_DRAIN_SECONDS=7200\n", config)
             self.assertIn(f"HOME={root_home}\n", config)
             self.assertIn(f"CODEX_HOME={root_home / '.codex'}\n", config)
+            self.assertIn(f"PATH={install / 'safe-bin'}:{fakebin}:/usr/bin:/bin\n", config)
             self.assertIn("TERM=xterm-256color\n", config)
             self.assertIn(f"AI_BRIDGE_SHARED_SECRET={existing_bridge_secret}\n", config)
             self.assertIn("MATTERMOST_PLATFORM_URL=https://mattermost.example\n", config)
@@ -219,6 +246,12 @@ PY
             guardrails = (state / "instructions" / "global.md").read_text(encoding="utf-8")
             self.assertIn("returncode=143", guardrails)
             self.assertIn("Do not restart", guardrails)
+            systemctl_guard = install / "safe-bin" / "systemctl"
+            self.assertTrue(systemctl_guard.exists())
+            self.assertIn("blocked systemctl", systemctl_guard.read_text(encoding="utf-8"))
+            sudo_guard = install / "safe-bin" / "sudo"
+            self.assertTrue(sudo_guard.exists())
+            self.assertIn("systemctl", sudo_guard.read_text(encoding="utf-8"))
             policy = json.loads((state / "conversation-policy.json").read_text(encoding="utf-8"))
             self.assertEqual(policy["permission_scope"], "full")
             provider_selection = json.loads((state / "provider-selection.json").read_text(encoding="utf-8"))
@@ -257,6 +290,7 @@ PY
             self.assertFalse(manifest["vscode_ready"])
             self.assertEqual(manifest["configured_providers"], "codex")
             self.assertEqual(manifest["process_control_enabled"], "1")
+            self.assertEqual(manifest["safe_bin_dir"], str(install / "safe-bin"))
             self.assertTrue(manifest["codex_exec_json_available"])
             self.assertTrue(manifest["codex_exec_ephemeral_available"])
             self.assertTrue(manifest["codex_exec_resume_available"])
