@@ -16,6 +16,32 @@ fail() {
   exit 1
 }
 
+inside_systemd_unit() {
+  local unit="$1"
+  grep -q -- "$unit" "/proc/$$/cgroup" 2>/dev/null
+}
+
+write_pending_restart() {
+  local state_dir
+  state_dir="$(dirname "$CONFIG_FILE")"
+  local pending_file="$state_dir/pending-service-restart.txt"
+  local timestamp
+  timestamp="$(date -Is)"
+  mkdir -p "$state_dir"
+  if [ -s "$pending_file" ] && grep -q '^unit=ai-telegram-bot.service ai-remote-runner.service$' "$pending_file"; then
+    return 0
+  fi
+  {
+    printf '[restart:%s]\n' "$timestamp"
+    printf 'unit=%s\n' 'ai-telegram-bot.service ai-remote-runner.service'
+    printf 'reason=%s\n' 'Claude third-party API settings changed; restart after the active task finishes'
+    printf 'created_at=%s\n' "$timestamp"
+    printf 'command=%s\n' 'sudo systemctl restart ai-telegram-bot ai-remote-runner'
+    printf '\n'
+  } >> "$pending_file"
+  chmod 0600 "$pending_file"
+}
+
 [ -f "$CONFIG_FILE" ] || fail "config file not found: $CONFIG_FILE"
 
 set -a
@@ -43,6 +69,7 @@ ANTHROPIC_BASE_URL="$BASE_URL" \
 ANTHROPIC_API_URL="$API_URL" \
 ANTHROPIC_AUTH_TOKEN="$API_KEY" \
 ANTHROPIC_API_KEY="$API_KEY" \
+CLAUDE_CODE_DISABLE_OAUTH="${CLAUDE_CODE_DISABLE_OAUTH:-1}" \
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}" \
 python3 - <<'PY'
 import json
@@ -95,7 +122,7 @@ updates = {
     "ANTHROPIC_API_URL": api_url,
     "ANTHROPIC_AUTH_TOKEN": api_key,
     "ANTHROPIC_API_KEY": api_key,
-    "CLAUDE_CODE_DISABLE_OAUTH": "1",
+    "CLAUDE_CODE_DISABLE_OAUTH": os.environ.get("CLAUDE_CODE_DISABLE_OAUTH", "1"),
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": os.environ.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
     "AI_TASK_TIMEOUT_SECONDS": "7200",
     "CLAUDE_API_RETRY_ATTEMPTS": "5",
@@ -169,4 +196,10 @@ else
 fi
 
 log "updated config.env and Claude settings"
-log "restart with: systemctl restart ai-telegram-bot ai-remote-runner"
+if inside_systemd_unit "ai-telegram-bot.service"; then
+  write_pending_restart
+  log "restart deferred because this script is running inside ai-telegram-bot.service"
+  log "after this task finishes, run: sudo systemctl restart ai-telegram-bot ai-remote-runner"
+else
+  log "restart with: sudo systemctl restart ai-telegram-bot ai-remote-runner"
+fi

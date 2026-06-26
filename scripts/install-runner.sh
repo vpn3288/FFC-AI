@@ -214,6 +214,47 @@ runner_cli() {
   fi
 }
 
+inside_systemd_unit() {
+  local unit="$1"
+  grep -q -- "$unit" "/proc/$$/cgroup" 2>/dev/null
+}
+
+defer_service_restart() {
+  local unit="$1"
+  local reason="$2"
+  local pending_file="$STATE_ROOT/pending-service-restart.txt"
+  local timestamp
+  timestamp="$(date -Is)"
+  if [ "$DRY_RUN" = true ]; then
+    log "would defer restart of $unit: $reason"
+    return 0
+  fi
+  sudo mkdir -p "$STATE_ROOT"
+  if [ -s "$pending_file" ] && sudo grep -q "^unit=$unit$" "$pending_file"; then
+    log "restart of $unit is already deferred; run after this task finishes: sudo systemctl restart $unit"
+    return 0
+  fi
+  {
+    printf '[restart:%s]\n' "$timestamp"
+    printf 'unit=%s\n' "$unit"
+    printf 'reason=%s\n' "$reason"
+    printf 'created_at=%s\n' "$timestamp"
+    printf 'command=sudo systemctl restart %s\n' "$unit"
+    printf '\n'
+  } | sudo tee -a "$pending_file" >/dev/null
+  sudo chmod 0600 "$pending_file"
+  log "deferred restart of $unit because this script is running inside ai-telegram-bot.service; run: sudo systemctl restart $unit"
+}
+
+restart_or_defer_service() {
+  local unit="$1"
+  if inside_systemd_unit "ai-telegram-bot.service"; then
+    defer_service_restart "$unit" "avoid terminating the active Telegram/Claude task with SIGTERM/returncode=143"
+    return 0
+  fi
+  run sudo systemctl restart "$unit"
+}
+
 root_has_command() {
   if [ "$DRY_RUN" = true ]; then
     printf '[dry-run] root env PATH=%s command -v %s\n' "$SERVICE_PATH" "$1"
@@ -237,6 +278,43 @@ claude_root_smoke_ready() {
   timeout_seconds="${CLAUDE_PREFLIGHT_TIMEOUT_SECONDS:-45}"
   printf 'reply with: OK\n' | root_env_run "$timeout_bin" -k 5 "$timeout_seconds" \
     claude -p --bare --output-format json --add-dir / --permission-mode acceptEdits --tools Bash,Read,Write,Edit,Grep,Glob --allowedTools 'Bash(*)' >/dev/null
+}
+
+install_default_runtime_guardrails() {
+  local instructions_file="$STATE_ROOT/instructions/global.md"
+  local marker="returncode=143"
+  if [ "$DRY_RUN" = true ]; then
+    log "would ensure runtime guardrails exist in $instructions_file"
+    return 0
+  fi
+  sudo mkdir -p "$STATE_ROOT/instructions"
+  if [ -f "$instructions_file" ] && sudo grep -q "$marker" "$instructions_file"; then
+    return 0
+  fi
+  if [ -s "$instructions_file" ]; then
+    sudo cp "$instructions_file" "$instructions_file.backup.$(date +%Y%m%d_%H%M%S)"
+    sudo tee -a "$instructions_file" >/dev/null <<'EOF'
+
+# Runtime Safety Guardrails
+
+You are running inside ai-telegram-bot.service. Do not restart, stop, kill, or daemon-reload ai-telegram-bot.service or ai-remote-runner.service while handling a Telegram task, because doing so terminates the active Claude Code process and causes returncode=143.
+
+Do not run commands such as systemctl kill/restart/stop ai-telegram-bot.service, systemctl kill/restart/stop ai-remote-runner.service, pkill against the runner, or edits that require immediate service restart during the same task. If a service restart is necessary, write the exact commands as a recommendation for the operator to run after the task is finished.
+
+Prefer read-only diagnostics first: systemctl status/show, journalctl, ps, cat config files, and grep logs. If a fix requires changing files, apply the file change but defer the service restart unless the operator explicitly asked for an immediate restart and accepts that the current task will end.
+EOF
+  else
+    sudo tee "$instructions_file" >/dev/null <<'EOF'
+# Runtime Safety Guardrails
+
+You are running inside ai-telegram-bot.service. Do not restart, stop, kill, or daemon-reload ai-telegram-bot.service or ai-remote-runner.service while handling a Telegram task, because doing so terminates the active Claude Code process and causes returncode=143.
+
+Do not run commands such as systemctl kill/restart/stop ai-telegram-bot.service, systemctl kill/restart/stop ai-remote-runner.service, pkill against the runner, or edits that require immediate service restart during the same task. If a service restart is necessary, write the exact commands as a recommendation for the operator to run after the task is finished.
+
+Prefer read-only diagnostics first: systemctl status/show, journalctl, ps, cat config files, and grep logs. If a fix requires changing files, apply the file change but defer the service restart unless the operator explicitly asked for an immediate restart and accepts that the current task will end.
+EOF
+  fi
+  sudo chmod 0600 "$instructions_file"
 }
 
 codex_installed_version() {
@@ -1042,6 +1120,7 @@ fi
 
 log 'stage 06: create runner directories'
 run sudo mkdir -p "$STATE_ROOT"/{credentials,instructions/snapshots,budget} "$WORKSPACE_ROOT" "$INSTALL_ROOT"
+install_default_runtime_guardrails
 run sudo rm -rf "$INSTALL_ROOT/src"
 run sudo cp -R "$REPO_ROOT"/src "$INSTALL_ROOT"/
 run sudo cp "$REPO_ROOT"/pyproject.toml "$INSTALL_ROOT"/
@@ -1278,7 +1357,7 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable ai-remote-runner.service
-    sudo systemctl restart ai-remote-runner.service
+    restart_or_defer_service ai-remote-runner.service
     if [ "$ENABLE_TELEGRAM" = true ]; then
       sudo tee /etc/systemd/system/ai-telegram-bot.service >/dev/null <<EOF
 [Unit]
@@ -1303,7 +1382,7 @@ EOF
       sudo systemctl daemon-reload
       if [ -n "$(config_value TELEGRAM_BOT_TOKEN)" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
         sudo systemctl enable --now ai-telegram-bot.service
-        sudo systemctl restart ai-telegram-bot.service
+        restart_or_defer_service ai-telegram-bot.service
       else
         log 'Telegram service installed but not started; run scripts/pair-telegram.sh after creating a BotFather token'
       fi

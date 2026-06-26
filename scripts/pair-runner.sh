@@ -14,6 +14,43 @@ SLASH_TOKEN_FILE=""
 SLASH_TOKEN_STDIN=false
 TRANSFER_METHOD=""
 
+inside_systemd_unit() {
+  local unit="$1"
+  grep -q -- "$unit" "/proc/$$/cgroup" 2>/dev/null
+}
+
+defer_service_restart() {
+  local unit="$1"
+  local pending_file="$STATE_ROOT/pending-service-restart.txt"
+  local timestamp
+  timestamp="$(date -Is)"
+  sudo mkdir -p "$STATE_ROOT"
+  if [ -s "$pending_file" ] && sudo grep -q "^unit=$unit$" "$pending_file"; then
+    printf '[pair-runner] restart already deferred; run after this task finishes: sudo systemctl daemon-reload && sudo systemctl restart %s\n' "$unit"
+    return 0
+  fi
+  {
+    printf '[restart:%s]\n' "$timestamp"
+    printf 'unit=%s\n' "$unit"
+    printf 'reason=%s\n' "avoid terminating the active Telegram/Claude task with SIGTERM/returncode=143"
+    printf 'created_at=%s\n' "$timestamp"
+    printf 'command=sudo systemctl daemon-reload && sudo systemctl restart %s\n' "$unit"
+    printf '\n'
+  } | sudo tee -a "$pending_file" >/dev/null
+  sudo chmod 0600 "$pending_file"
+  printf '[pair-runner] restart deferred because this script is running inside ai-telegram-bot.service; run after this task finishes: sudo systemctl daemon-reload && sudo systemctl restart %s\n' "$unit"
+}
+
+reload_and_restart_or_defer_runner() {
+  if inside_systemd_unit "ai-telegram-bot.service"; then
+    defer_service_restart ai-remote-runner.service
+  else
+    sudo systemctl daemon-reload
+    sudo systemctl restart ai-remote-runner.service
+    printf '[pair-runner] ai-remote-runner.service restarted\n'
+  fi
+}
+
 usage() {
   printf 'usage: %s --platform-url URL --webhook-url URL --transfer-method ssh|broker|manual-secure [--bot-token TOKEN] [--bridge-secret-file PATH|--bridge-secret-stdin] [--slash-token-file PATH|--slash-token-stdin]\n' "$0"
 }
@@ -102,9 +139,7 @@ AI_BRIDGE_SECRET_TRANSFER_METHOD=$TRANSFER_METHOD
 EOF
 sudo chmod 0600 "$STATE_ROOT/config.env"
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ai-remote-runner.service >/dev/null 2>&1; then
-  sudo systemctl daemon-reload
-  sudo systemctl restart ai-remote-runner.service
-  printf '[pair-runner] ai-remote-runner.service restarted\n'
+  reload_and_restart_or_defer_runner
 fi
 printf '[pair-runner] pairing config written; running bridge loopback validation\n'
 if [ "${PAIR_RUNNER_SKIP_VALIDATE:-false}" != true ]; then

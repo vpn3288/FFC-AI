@@ -25,6 +25,42 @@ DELETE_WEBHOOK="${PAIR_TELEGRAM_DELETE_WEBHOOK:-true}"
 DISCOVER_TIMEOUT_SECONDS="${PAIR_TELEGRAM_DISCOVER_TIMEOUT_SECONDS:-45}"
 BOT_INFO_JSON=""
 
+inside_systemd_unit() {
+  local unit="$1"
+  grep -q -- "$unit" "/proc/$$/cgroup" 2>/dev/null
+}
+
+defer_service_restart() {
+  local unit="$1"
+  local pending_file="$STATE_ROOT/pending-service-restart.txt"
+  local timestamp
+  timestamp="$(date -Is)"
+  sudo mkdir -p "$STATE_ROOT"
+  if [ -s "$pending_file" ] && sudo grep -q "^unit=$unit$" "$pending_file"; then
+    printf '[pair-telegram] restart already deferred; run after this task finishes: sudo systemctl restart %s\n' "$unit"
+    return 0
+  fi
+  {
+    printf '[restart:%s]\n' "$timestamp"
+    printf 'unit=%s\n' "$unit"
+    printf 'reason=%s\n' "avoid terminating the active Telegram/Claude task with SIGTERM/returncode=143"
+    printf 'created_at=%s\n' "$timestamp"
+    printf 'command=sudo systemctl restart %s\n' "$unit"
+    printf '\n'
+  } | sudo tee -a "$pending_file" >/dev/null
+  sudo chmod 0600 "$pending_file"
+  printf '[pair-telegram] restart deferred because this script is running inside ai-telegram-bot.service; run after this task finishes: sudo systemctl restart %s\n' "$unit"
+}
+
+restart_or_defer_telegram_service() {
+  sudo systemctl enable --now ai-telegram-bot.service
+  if inside_systemd_unit "ai-telegram-bot.service"; then
+    defer_service_restart ai-telegram-bot.service
+  else
+    sudo systemctl restart ai-telegram-bot.service
+  fi
+}
+
 usage() {
   printf 'usage: %s [--bot-token TOKEN|--bot-token-file PATH|--bot-token-stdin] [--telegram-id ID|--chat-id ID[,ID...]|--discover-chat-id] [--api-base URL] [--reserved-usd USD] [--status-interval SECONDS] [--status-min-update SECONDS] [--group-mode mention|reply|all] [--native-draft-progress] [--keep-webhook]\n' "$0"
 }
@@ -460,9 +496,8 @@ if [ "$DISCOVER_CHAT_ID" = true ]; then
 fi
 if command -v systemctl >/dev/null 2>&1 && [ -f "$TELEGRAM_SYSTEMD_UNIT" ]; then
   sudo systemctl daemon-reload
-  sudo systemctl enable --now ai-telegram-bot.service
-  sudo systemctl restart ai-telegram-bot.service
-  printf '[pair-telegram] ai-telegram-bot.service started\n'
+  restart_or_defer_telegram_service
+  printf '[pair-telegram] ai-telegram-bot.service enabled\n'
 else
   printf '[pair-telegram] systemd service not found; run /opt/ai-remote-runner/run-telegram-local.sh manually on non-systemd installs\n'
 fi

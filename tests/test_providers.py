@@ -624,6 +624,19 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("Diagnostic: Claude Code rejected", result.output_text)
         self.assertIn("acceptEdits", result.output_text)
 
+    def test_claude_sigterm_failure_has_service_restart_diagnostic(self) -> None:
+        import tempfile
+        import subprocess
+
+        completed = subprocess.CompletedProcess(["claude"], 143, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("ai_remote_runner.providers.run_registered", return_value=completed):
+                result = invoke_claude("prompt", Path(tmp), "instructions", BudgetLedger(Path(tmp) / "ledger.json"), reserved_usd=0.1)
+        self.assertEqual(result.status, "failed")
+        self.assertIn("returncode=143", result.output_text)
+        self.assertIn("terminated by SIGTERM", result.output_text)
+        self.assertIn("ai-telegram-bot.service", result.output_text)
+
     def test_claude_subprocess_links_api_key_aliases_for_third_party_proxy(self) -> None:
         import tempfile
         import subprocess

@@ -434,6 +434,59 @@ class PairTelegramScriptTests(unittest.TestCase):
             self.assertIn("TELEGRAM_ALLOWED_CHAT_IDS=123,-456\n", config)
             self.assertIn("systemctl restart ai-telegram-bot.service", calls.read_text(encoding="utf-8"))
 
+    def test_pair_telegram_defers_restart_when_running_inside_bot_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            service = root / "ai-telegram-bot.service"
+            state.mkdir()
+            service.write_text("[Service]\n", encoding="utf-8")
+            fakebin, calls = self.make_fakebin(root)
+            write_executable(
+                fakebin / "grep",
+                """
+                #!/usr/bin/env bash
+                if [ "${1:-}" = "-q" ] && [ "${2:-}" = "--" ] && [ "${3:-}" = "ai-telegram-bot.service" ]; then
+                  exit 0
+                fi
+                exec /bin/grep "$@"
+                """,
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fakebin}:{env['PATH']}",
+                    "AI_REMOTE_STATE": str(state),
+                    "CALLS": str(calls),
+                    "TELEGRAM_SYSTEMD_UNIT": str(service),
+                    "PAIR_TELEGRAM_VERIFY_API": "false",
+                    "PAIR_TELEGRAM_VALIDATE_CORE_READY": "false",
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "pair-telegram.sh"),
+                    "--bot-token",
+                    "test-token:ABC_def",
+                    "--chat-id",
+                    "123",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            call_text = calls.read_text(encoding="utf-8")
+            self.assertIn("systemctl enable --now ai-telegram-bot.service", call_text)
+            self.assertNotIn("systemctl restart ai-telegram-bot.service", call_text)
+            pending = (state / "pending-service-restart.txt").read_text(encoding="utf-8")
+            self.assertIn("returncode=143", pending)
+            self.assertIn("sudo systemctl restart ai-telegram-bot.service", pending)
+
     def test_pair_telegram_runs_core_ready_validation_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

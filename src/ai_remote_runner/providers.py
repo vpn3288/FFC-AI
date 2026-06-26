@@ -612,6 +612,7 @@ CLAUDE_ROOT_REJECTED_PERMISSION_MARKERS = (
     "cannot be used with root/sudo privileges",
     "bypasspermissions",
 )
+CLAUDE_TERMINATED_RETURN_CODES = {-15, 143}
 
 
 def _claude_max_turn_args(raw: object | None = None) -> list[str]:
@@ -714,6 +715,11 @@ def _claude_root_permission_rejected(result: subprocess.CompletedProcess[str], o
     return any(marker in haystack for marker in CLAUDE_ROOT_REJECTED_PERMISSION_MARKERS)
 
 
+def _claude_terminated_by_sigterm(result: subprocess.CompletedProcess[str], output_text: str) -> bool:
+    detail = (output_text or result.stderr or result.stdout or "").lower()
+    return int(result.returncode or 0) in CLAUDE_TERMINATED_RETURN_CODES or "returncode=143" in detail or "sigterm" in detail
+
+
 def _claude_failure_detail(
     provider_id: str,
     result: subprocess.CompletedProcess[str],
@@ -729,6 +735,13 @@ def _claude_failure_detail(
             "Current FFC-AI uses --permission-mode acceptEdits with explicit --tools/--allowedTools; "
             "reinstall/update the runner and remove any old wrapper or venv that still adds "
             "--dangerously-skip-permissions or bypassPermissions."
+        )
+    elif _claude_terminated_by_sigterm(result, output_text):
+        notes.append(
+            "Diagnostic: Claude Code was terminated by SIGTERM. "
+            "On systemd installs this usually means ai-telegram-bot.service was restarted, stopped, or killed while the task was still running. "
+            "Do not run systemctl kill/restart/stop ai-telegram-bot.service or ai-remote-runner.service from inside an active AI task; "
+            "defer service restarts until after the task finishes and inspect journalctl -u ai-telegram-bot around the failure time."
         )
     elif any(marker in haystack for marker in CLAUDE_PERMANENT_API_ERROR_MARKERS):
         notes.append(
